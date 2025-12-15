@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research Search Engine</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #f8fafc;
+            --bg-secondary: #ffffff;
+            --bg-card: #ffffff;
+            --accent: #1e40af;
+            --accent-hover: #3b82f6;
+            --accent-light: #dbeafe;
+            --text-primary: #1e293b;
+            --text-secondary: #475569;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --success: #059669;
+            --warning: #d97706;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+            padding: 1rem 0;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent);
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            color: var(--text-secondary);
+            font-size: 1rem;
+        }
+
+        /* Search Section */
+        .search-section {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+        }
+
+        .search-row {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 0;
+        }
+
+        .search-input-wrapper {
+            flex: 1;
+            position: relative;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 1rem 1.5rem;
+            font-size: 1.1rem;
+            background: var(--bg-card);
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-light);
+        }
+
+        .search-btn {
+            padding: 1rem 2rem;
+            font-size: 1rem;
+            font-weight: 600;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+
+        .search-btn:hover {
+            background: var(--accent-hover);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .filter-toggle-btn {
+            padding: 1rem 1.5rem;
+            font-size: 1rem;
+            font-weight: 500;
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .filter-toggle-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .filter-toggle-btn.active {
+            background: var(--accent-light);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        /* Filters Panel */
+        .filters-panel {
+            display: none;
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border);
+            animation: slideDown 0.2s ease;
+        }
+
+        .filters-panel.open {
+            display: block;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .filters-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            align-items: flex-end;
+            margin-bottom: 1rem;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .filter-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .filter-input, .filter-select {
+            padding: 0.5rem 0.75rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            min-width: 120px;
+        }
+
+        .filter-input:focus, .filter-select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .apply-filters-btn {
+            padding: 0.5rem 1.5rem;
+            font-size: 0.9rem;
+            font-weight: 600;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .apply-filters-btn:hover {
+            background: var(--accent-hover);
+        }
+
+        .clear-filters-btn {
+            padding: 0.5rem 1rem;
+            font-size: 0.9rem;
+            background: transparent;
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .clear-filters-btn:hover {
+            color: var(--text-primary);
+            border-color: var(--text-muted);
+        }
+
+        /* Search In Chips */
+        .search-in-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .chip {
+            padding: 0.5rem 1rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .chip:hover {
+            border-color: var(--accent);
+        }
+
+        .chip.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
+
+        /* Active Filters Display */
+        .active-filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .active-filter-tag {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.35rem 0.75rem;
+            background: rgba(99, 102, 241, 0.15);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 6px;
+            font-size: 0.8rem;
+            color: var(--accent-hover);
+        }
+
+        .active-filter-tag .remove {
+            cursor: pointer;
+            opacity: 0.7;
+        }
+
+        .active-filter-tag .remove:hover {
+            opacity: 1;
+        }
+
+        /* Results Section */
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .results-count {
+            color: var(--text-secondary);
+        }
+
+        .results-count span {
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        /* Result Cards */
+        .results-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .result-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem;
+            transition: box-shadow 0.2s, border-color 0.2s;
+            box-shadow: var(--shadow);
+        }
+
+        .result-card:hover {
+            border-color: var(--accent-hover);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .result-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.75rem;
+            cursor: pointer;
+        }
+
+        .result-title:hover {
+            color: var(--accent);
+        }
+
+        .result-abstract {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            margin-bottom: 1rem;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .result-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            align-items: center;
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .meta-icon {
+            font-size: 1rem;
+        }
+
+        /* Author Badges */
+        .authors-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+        }
+
+        .author-badge {
+            position: relative;
+            padding: 0.3rem 0.6rem;
+            background: var(--accent-light);
+            border: 1px solid var(--accent-hover);
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: var(--accent);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .author-badge:hover {
+            background: var(--accent);
+            color: white;
+        }
+
+        .author-tooltip {
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--text-primary);
+            border-radius: 6px;
+            padding: 0.4rem 0.6rem;
+            font-size: 0.75rem;
+            color: white;
+            white-space: nowrap;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.2s;
+            z-index: 10;
+            margin-bottom: 0.35rem;
+            box-shadow: var(--shadow-lg);
+        }
+
+        .author-badge:hover .author-tooltip {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* Subject Area Tags */
+        .subject-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            margin-top: 0.75rem;
+        }
+
+        .subject-tag {
+            padding: 0.2rem 0.5rem;
+            background: #ecfdf5;
+            border: 1px solid #a7f3d0;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            color: var(--success);
+        }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 2rem;
+        }
+
+        .page-btn {
+            padding: 0.5rem 1rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .page-btn:hover:not(:disabled) {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .page-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .page-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
+
+        .page-info {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-muted);
+        }
+
+        .loader-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .rabbit-circle {
+            position: relative;
+            width: 100px;
+            height: 100px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .rabbit-circle::before {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 3px solid var(--border);
+            border-radius: 50%;
+            border-top-color: var(--accent);
+            animation: spin 1s linear infinite;
+        }
+
+        .rabbit-circle::after {
+            content: '';
+            position: absolute;
+            width: 120%;
+            height: 120%;
+            border: 2px solid var(--accent-light);
+            border-radius: 50%;
+            animation: pulse 1.5s ease-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.2); opacity: 0; }
+        }
+
+        .rabbit {
+            font-size: 2.5rem;
+            animation: bounce 0.6s ease-in-out infinite;
+            z-index: 1;
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+
+        .loading-message {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .loading-dots {
+            display: flex;
+            gap: 0.3rem;
+            justify-content: center;
+        }
+
+        .loading-dots span {
+            width: 6px;
+            height: 6px;
+            background: var(--accent);
+            border-radius: 50%;
+            animation: dotPulse 1.2s ease-in-out infinite;
+        }
+
+        .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes dotPulse {
+            0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        .slow-message {
+            font-size: 0.85rem;
+            color: var(--warning);
+            opacity: 0;
+            animation: fadeIn 0.5s ease forwards;
+            animation-delay: 4s;
+        }
+
+        @keyframes fadeIn {
+            to { opacity: 1; }
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 4rem;
+            color: var(--text-muted);
+        }
+
+        .empty-state h3 {
+            font-size: 1.25rem;
+            margin-bottom: 0.5rem;
+        }
+
+        /* ========== Responsive Design ========== */
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+            }
+
+            .header p {
+                font-size: 0.9rem;
+            }
+
+            .search-section {
+                padding: 1rem;
+            }
+
+            .search-row {
+                flex-direction: column;
+                gap: 0.75rem;
+            }
+
+            .search-input {
+                padding: 0.875rem 1rem;
+                font-size: 1rem;
+            }
+
+            .search-btn, .filter-toggle-btn {
+                width: 100%;
+                padding: 0.875rem;
+            }
+
+            .filters-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .filter-group {
+                width: 100%;
+            }
+
+            .filter-input, .filter-select {
+                width: 100%;
+            }
+
+            .apply-filters-btn, .clear-filters-btn {
+                width: 100%;
+                padding: 0.75rem;
+            }
+
+            .search-in-group {
+                justify-content: center;
+            }
+
+            .chip {
+                font-size: 0.8rem;
+                padding: 0.4rem 0.75rem;
+            }
+
+            .result-card {
+                padding: 1rem;
+            }
+
+            .result-title {
+                font-size: 1.05rem;
+            }
+
+            .result-abstract {
+                font-size: 0.9rem;
+            }
+
+            .result-meta {
+                gap: 0.5rem;
+            }
+
+            .meta-item {
+                font-size: 0.8rem;
+            }
+
+            .authors-list {
+                gap: 0.35rem;
+            }
+
+            .author-badge {
+                font-size: 0.75rem;
+                padding: 0.25rem 0.5rem;
+            }
+
+            .subject-tags {
+                gap: 0.3rem;
+            }
+
+            .subject-tag {
+                font-size: 0.65rem;
+            }
+
+            .pagination {
+                flex-wrap: wrap;
+                gap: 0.35rem;
+            }
+
+            .page-btn {
+                padding: 0.4rem 0.75rem;
+                font-size: 0.85rem;
+            }
+
+            .page-info {
+                width: 100%;
+                text-align: center;
+                margin-top: 0.5rem;
+            }
+
+            .loading {
+                padding: 2rem 1rem;
+            }
+
+            .rabbit-circle {
+                width: 80px;
+                height: 80px;
+            }
+
+            .rabbit {
+                font-size: 2rem;
+            }
+
+            .loading-message {
+                font-size: 0.9rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 0.75rem;
+            }
+
+            .header {
+                margin-bottom: 1rem;
+            }
+
+            .header h1 {
+                font-size: 1.25rem;
+            }
+
+            .header p {
+                font-size: 0.8rem;
+            }
+
+            .search-input {
+                font-size: 0.95rem;
+            }
+
+            .chip {
+                font-size: 0.75rem;
+                padding: 0.35rem 0.6rem;
+            }
+
+            .result-title {
+                font-size: 1rem;
+            }
+
+            .result-abstract {
+                -webkit-line-clamp: 2;
+            }
+
+            .meta-item {
+                font-size: 0.75rem;
+            }
+
+            .active-filter-tag {
+                font-size: 0.7rem;
+                padding: 0.25rem 0.5rem;
+            }
+
+            .empty-state {
+                padding: 2rem 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🔬 Research Search Engine</h1>
+            <p>Hybrid semantic search powered by SPECTER2 & OpenSearch</p>
+        </div>
+
+        <!-- Search Section -->
+        <div class="search-section">
+            <div class="search-row">
+                <div class="search-input-wrapper">
+                    <input type="text" class="search-input" id="searchQuery" 
+                           placeholder="Search for research papers..." 
+                           onkeypress="if(event.key==='Enter') search()">
+                </div>
+                <button class="filter-toggle-btn" id="filterToggle" onclick="toggleFilters()">
+                    ⚙️ Filters
+                </button>
+                <button class="search-btn" onclick="search()">🔍 Search</button>
+            </div>
+
+            <!-- Active Filters Display -->
+            <div class="active-filters" id="activeFilters"></div>
+
+            <!-- Collapsible Filters Panel -->
+            <div class="filters-panel" id="filtersPanel">
+                <div class="filters-row">
+                    <div class="filter-group">
+                        <span class="filter-label">Year From</span>
+                        <input type="number" class="filter-input" id="yearFrom" placeholder="2020" min="1900" max="2025">
+                    </div>
+                    <div class="filter-group">
+                        <span class="filter-label">Year To</span>
+                        <input type="number" class="filter-input" id="yearTo" placeholder="2024" min="1900" max="2025">
+                    </div>
+                    <div class="filter-group">
+                        <span class="filter-label">Per Page</span>
+                        <select class="filter-select" id="perPage">
+                            <option value="10">10</option>
+                            <option value="20" selected>20</option>
+                            <option value="50">50</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <span class="filter-label">Sort By</span>
+                        <select class="filter-select" id="sortBy">
+                            <option value="relevance">Relevance</option>
+                            <option value="date">Date</option>
+                            <option value="citations">Citations</option>
+                        </select>
+                    </div>
+                    <button class="apply-filters-btn" onclick="applyFilters()">Apply Filters</button>
+                    <button class="clear-filters-btn" onclick="clearFilters()">Clear</button>
+                </div>
+
+                <div class="filter-group">
+                    <span class="filter-label">Search In (N-gram enabled for partial matching)</span>
+                    <div class="search-in-group">
+                        <div class="chip active" data-field="title" onclick="toggleChip(this)">📝 Title</div>
+                        <div class="chip active" data-field="abstract" onclick="toggleChip(this)">📄 Abstract</div>
+                        <div class="chip" data-field="author" onclick="toggleChip(this)">👤 Author</div>
+                        <div class="chip" data-field="subject_area" onclick="toggleChip(this)">🏷️ Subject Area</div>
+                        <div class="chip" data-field="field" onclick="toggleChip(this)">🔬 Field</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div id="resultsContainer">
+            <div class="empty-state">
+                <h3>🔍 Start your search</h3>
+                <p>Enter a query above to find research papers</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== Configuration ==========
+        const API_URL = 'https://ais710.tufesports.me/api/v1';
+
+        // ========== State ==========
+        let currentPage = 1;
+        let totalPages = 1;
+        let lastQuery = '';
+        let appliedFilters = {};
+        let filtersOpen = false;
+
+        // ========== Filter Functions ==========
+        function toggleFilters() {
+            filtersOpen = !filtersOpen;
+            const panel = document.getElementById('filtersPanel');
+            const btn = document.getElementById('filterToggle');
+            
+            if (filtersOpen) {
+                panel.classList.add('open');
+                btn.classList.add('active');
+            } else {
+                panel.classList.remove('open');
+                btn.classList.remove('active');
+            }
+        }
+
+        function toggleChip(chip) {
+            chip.classList.toggle('active');
+        }
+
+        function getSearchInFields() {
+            const chips = document.querySelectorAll('.chip.active');
+            return Array.from(chips).map(c => c.dataset.field);
+        }
+
+        function applyFilters() {
+            const yearFrom = document.getElementById('yearFrom').value;
+            const yearTo = document.getElementById('yearTo').value;
+            const perPage = document.getElementById('perPage').value;
+            const sort = document.getElementById('sortBy').value;
+            const searchIn = getSearchInFields();
+
+            appliedFilters = {
+                yearFrom: yearFrom || null,
+                yearTo: yearTo || null,
+                perPage: parseInt(perPage),
+                sort,
+                searchIn
+            };
+
+            updateActiveFiltersDisplay();
+            
+            // Re-search with new filters if there's a query
+            if (lastQuery) {
+                search(1);
+            }
+        }
+
+        function clearFilters() {
+            document.getElementById('yearFrom').value = '';
+            document.getElementById('yearTo').value = '';
+            document.getElementById('perPage').value = '20';
+            document.getElementById('sortBy').value = 'relevance';
+            
+            // Reset chips to default (title + abstract)
+            document.querySelectorAll('.chip').forEach(chip => {
+                if (chip.dataset.field === 'title' || chip.dataset.field === 'abstract') {
+                    chip.classList.add('active');
+                } else {
+                    chip.classList.remove('active');
+                }
+            });
+
+            appliedFilters = {};
+            updateActiveFiltersDisplay();
+
+            if (lastQuery) {
+                search(1);
+            }
+        }
+
+        function updateActiveFiltersDisplay() {
+            const container = document.getElementById('activeFilters');
+            let html = '';
+
+            if (appliedFilters.yearFrom) {
+                html += `<div class="active-filter-tag">From: ${appliedFilters.yearFrom} <span class="remove" onclick="removeFilter('yearFrom')">×</span></div>`;
+            }
+            if (appliedFilters.yearTo) {
+                html += `<div class="active-filter-tag">To: ${appliedFilters.yearTo} <span class="remove" onclick="removeFilter('yearTo')">×</span></div>`;
+            }
+            if (appliedFilters.sort && appliedFilters.sort !== 'relevance') {
+                html += `<div class="active-filter-tag">Sort: ${appliedFilters.sort} <span class="remove" onclick="removeFilter('sort')">×</span></div>`;
+            }
+            if (appliedFilters.searchIn && appliedFilters.searchIn.length > 0 && appliedFilters.searchIn.length < 5) {
+                html += `<div class="active-filter-tag">Fields: ${appliedFilters.searchIn.join(', ')} <span class="remove" onclick="removeFilter('searchIn')">×</span></div>`;
+            }
+
+            container.innerHTML = html;
+        }
+
+        function removeFilter(filterName) {
+            if (filterName === 'yearFrom') {
+                document.getElementById('yearFrom').value = '';
+                appliedFilters.yearFrom = null;
+            } else if (filterName === 'yearTo') {
+                document.getElementById('yearTo').value = '';
+                appliedFilters.yearTo = null;
+            } else if (filterName === 'sort') {
+                document.getElementById('sortBy').value = 'relevance';
+                appliedFilters.sort = 'relevance';
+            } else if (filterName === 'searchIn') {
+                document.querySelectorAll('.chip').forEach(chip => {
+                    if (chip.dataset.field === 'title' || chip.dataset.field === 'abstract') {
+                        chip.classList.add('active');
+                    } else {
+                        chip.classList.remove('active');
+                    }
+                });
+                appliedFilters.searchIn = ['title', 'abstract'];
+            }
+            
+            updateActiveFiltersDisplay();
+            if (lastQuery) search(1);
+        }
+
+        // ========== Search Function ==========
+        async function search(page = 1) {
+            const query = document.getElementById('searchQuery').value.trim();
+            if (!query) return;
+
+            currentPage = page;
+            lastQuery = query;
+
+            const container = document.getElementById('resultsContainer');
+            container.innerHTML = `
+                <div class="loading">
+                    <div class="loader-wrapper">
+                        <div class="rabbit-circle">
+                            <div class="rabbit">🐇</div>
+                        </div>
+                        <div class="loading-message">Searching through research papers</div>
+                        <div class="loading-dots">
+                            <span></span><span></span><span></span>
+                        </div>
+                        <div class="slow-message">⏳ Taking longer than usual, please wait...</div>
+                    </div>
+                </div>
+            `;
+
+            // Use applied filters or defaults
+            const perPage = appliedFilters.perPage || 20;
+            const sort = appliedFilters.sort || 'relevance';
+            const searchIn = appliedFilters.searchIn || [];
+
+            const payload = {
+                query,
+                page,
+                per_page: perPage,
+                sort,
+                filters: {}
+            };
+
+            if (appliedFilters.yearFrom) payload.filters.year_from = parseInt(appliedFilters.yearFrom);
+            if (appliedFilters.yearTo) payload.filters.year_to = parseInt(appliedFilters.yearTo);
+            if (searchIn.length > 0 && searchIn.length < 5) {
+                payload.search_in = searchIn;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/search`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                renderResults(data);
+            } catch (error) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <h3>❌ Error</h3>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        // ========== Render Functions ==========
+        function renderResults(data) {
+            const container = document.getElementById('resultsContainer');
+            const { results, pagination, facets, cacheHit } = data;
+
+            if (!results || results.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <h3>📭 No results found</h3>
+                        <p>Try different keywords or adjust your filters</p>
+                    </div>
+                `;
+                return;
+            }
+
+            totalPages = pagination.total_pages;
+
+            let html = `
+                <div class="results-header">
+                    <div class="results-count">
+                        Found <span>${pagination.total.toLocaleString()}</span> results 
+                        ${cacheHit ? '⚡ (cached)' : ''}
+                    </div>
+                </div>
+                <div class="results-list">
+            `;
+
+            results.forEach(doc => {
+                const authors = doc.authors || [];
+                const subjectAreas = doc.subject_area || [];
+                
+                html += `
+                    <div class="result-card">
+                        <div class="result-title">${escapeHtml(doc.title || 'Untitled')}</div>
+                        <div class="result-abstract">${escapeHtml(doc.abstract || 'No abstract available')}</div>
+                        
+                        <div class="result-meta">
+                            <div class="meta-item">
+                                <span class="meta-icon">📅</span>
+                                ${doc.publication_year || 'N/A'}
+                            </div>
+                            <div class="meta-item">
+                                <span class="meta-icon">📊</span>
+                                ${doc.citation_count || 0} citations
+                            </div>
+                            <div class="meta-item">
+                                <span class="meta-icon">📁</span>
+                                ${doc.document_type || 'Article'}
+                            </div>
+                            <div class="meta-item">
+                                <span class="meta-icon">🔬</span>
+                                ${doc.field_associated || 'N/A'}
+                            </div>
+                        </div>
+
+                        <div class="authors-list">
+                            ${authors.map(author => {
+                                // Handle both object format and string format
+                                const name = author.author_name || author.name || author;
+                                const affiliation = author.author_affiliation || author.affiliation;
+                                return `
+                                    <div class="author-badge">
+                                        ${escapeHtml(name)}
+                                        ${affiliation ? `<div class="author-tooltip">${escapeHtml(affiliation)}</div>` : ''}
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+
+                        <div class="subject-tags">
+                            ${subjectAreas.map(area => `
+                                <span class="subject-tag">${escapeHtml(area)}</span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            html += renderPagination(pagination);
+
+            container.innerHTML = html;
+        }
+
+        function renderPagination(pagination) {
+            const { page, total_pages } = pagination;
+            let html = '<div class="pagination">';
+
+            html += `<button class="page-btn" onclick="search(1)" ${page === 1 ? 'disabled' : ''}>« First</button>`;
+            html += `<button class="page-btn" onclick="search(${page - 1})" ${page === 1 ? 'disabled' : ''}>‹ Prev</button>`;
+
+            const startPage = Math.max(1, page - 2);
+            const endPage = Math.min(total_pages, page + 2);
+
+            for (let i = startPage; i <= endPage; i++) {
+                html += `<button class="page-btn ${i === page ? 'active' : ''}" onclick="search(${i})">${i}</button>`;
+            }
+
+            html += `<button class="page-btn" onclick="search(${page + 1})" ${page === total_pages ? 'disabled' : ''}>Next ›</button>`;
+            html += `<button class="page-btn" onclick="search(${total_pages})" ${page === total_pages ? 'disabled' : ''}>Last »</button>`;
+
+            html += `<span class="page-info">Page ${page} of ${total_pages}</span>`;
+            html += '</div>';
+
+            return html;
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
