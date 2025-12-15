@@ -25,6 +25,13 @@ services:
       - 9600:9600  # required for Performance Analyzer
     networks:
       - opensearch-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1536M
+        reservations:
+          memory: 1G
   opensearch-node2:
     image: opensearchproject/opensearch:latest
     container_name: opensearch-node2
@@ -47,6 +54,13 @@ services:
       - opensearch-data2:/usr/share/opensearch/data
     networks:
       - opensearch-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1536M
+        reservations:
+          memory: 1G
   opensearch-dashboards:
     image: opensearchproject/opensearch-dashboards:latest
     container_name: opensearch-dashboards
@@ -58,6 +72,13 @@ services:
       OPENSEARCH_HOSTS: '["https://opensearch-node1:9200","https://opensearch-node2:9200"]'
     networks:
       - opensearch-net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          memory: 256M
 
   redis:
     image: redis:7-alpine
@@ -74,6 +95,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          memory: 64M
 
 volumes:
   opensearch-data1:

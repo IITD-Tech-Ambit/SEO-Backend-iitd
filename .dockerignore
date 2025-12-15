@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+.env.local
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+coverage/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+docker/
+
+# Assets (not needed in containers)
+assets/
+README.md
+LICENSE
+
+# Model cache (mounted as volume)
+.cache/
+
+# Test files
+tests/
+*.test.js
+*.spec.js

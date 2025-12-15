@@ -1,8 +1,9 @@
 # Python Embedding Service with SPECTER2
+# Note: torch is installed separately in Dockerfile (CPU variant)
 
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 transformers==4.37.0
-torch==2.1.0
 pydantic==2.5.0
 python-dotenv==1.0.0
+

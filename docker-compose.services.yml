@@ -1,0 +1,103 @@
+# ============================================
+# Application Services - Docker Compose
+# ============================================
+# Run with: docker-compose -f docker-compose.services.yml up -d
+# 
+# Prerequisites: 
+#   - docker-compose.yml (OpenSearch + Redis) must be running
+#   - Copy .env.example to .env and configure
+
+version: '3.8'
+
+services:
+  # ─────────────────────────────────────────────
+  # Fastify Search API
+  # ─────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: search-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      # OpenSearch
+      - OPENSEARCH_NODE=https://opensearch-node1:9200
+      - OPENSEARCH_USER=${OPENSEARCH_USER:-admin}
+      - OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD}
+      # MongoDB (external)
+      - MONGODB_URI=${MONGODB_URI}
+      # Redis
+      - REDIS_URL=redis://redis:6379
+      # Embedding Service
+      - EMBEDDING_SERVICE_URL=http://embedding:8001
+    depends_on:
+      embedding:
+        condition: service_healthy
+    networks:
+      - opensearch-net
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/v1/search/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+
+  # ─────────────────────────────────────────────
+  # SPECTER2 Embedding Service
+  # ─────────────────────────────────────────────
+  embedding:
+    build:
+      context: .
+      dockerfile: docker/embedding.Dockerfile
+    container_name: embedding-service
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8001
+      - MODEL_NAME=allenai/specter2_base
+      - MAX_LENGTH=512
+      - BATCH_SIZE=32
+    volumes:
+      # Persist HuggingFace model cache
+      - embedding-cache:/app/.cache
+    networks:
+      - opensearch-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 120s  # Model download takes time
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 1G
+
+volumes:
+  embedding-cache:
+    driver: local
+
+networks:
+  opensearch-net:
+    external: true
+    name: opensearch_opensearch-net
+
