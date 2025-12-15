@@ -320,7 +320,8 @@ class BatchIndexer:
 
 def create_index_if_not_exists(os_client: OpenSearch):
     """
-    Create the OpenSearch index with proper mapping if it doesn't exist
+    Create the OpenSearch index with proper mapping if it doesn't exist.
+    Includes custom analyzers for N-gram and Phonetic matching.
     """
     index_name = config.OPENSEARCH_INDEX
     
@@ -329,6 +330,30 @@ def create_index_if_not_exists(os_client: OpenSearch):
         return
     
     mapping = {
+        "settings": {
+            "index": {
+                "knn": True,
+                "number_of_shards": 3,
+                "number_of_replicas": 1,
+                "max_ngram_diff": 2
+            },
+            "analysis": {
+                "filter": {
+                    "ngram_filter": {
+                        "type": "ngram",
+                        "min_gram": 2,
+                        "max_gram": 4
+                    }
+                },
+                "analyzer": {
+                    "ngram_analyzer": {
+                        "type": "custom",
+                        "tokenizer": "standard",
+                        "filter": ["lowercase", "ngram_filter"]
+                    }
+                }
+            }
+        },
         "mappings": {
             "properties": {
                 "mongo_id": {
@@ -350,20 +375,40 @@ def create_index_if_not_exists(os_client: OpenSearch):
                     "type": "text",
                     "analyzer": "standard",
                     "fields": {
-                        "keyword": {"type": "keyword"}
+                        "keyword": {"type": "keyword"},
+                        "ngram": {
+                            "type": "text",
+                            "analyzer": "ngram_analyzer"
+                        }
                     }
                 },
                 "publication_year": {
                     "type": "integer"
                 },
                 "field_associated": {
-                    "type": "keyword"
+                    "type": "text",
+                    "analyzer": "standard",
+                    "fields": {
+                        "keyword": {"type": "keyword"},
+                        "ngram": {
+                            "type": "text",
+                            "analyzer": "ngram_analyzer"
+                        }
+                    }
                 },
                 "document_type": {
                     "type": "keyword"
                 },
                 "subject_area": {
-                    "type": "keyword"
+                    "type": "text",
+                    "analyzer": "standard",
+                    "fields": {
+                        "keyword": {"type": "keyword"},
+                        "ngram": {
+                            "type": "text",
+                            "analyzer": "ngram_analyzer"
+                        }
+                    }
                 },
                 "citation_count": {
                     "type": "integer"
@@ -381,13 +426,6 @@ def create_index_if_not_exists(os_client: OpenSearch):
                         }
                     }
                 }
-            }
-        },
-        "settings": {
-            "index": {
-                "knn": True,
-                "number_of_shards": 3,
-                "number_of_replicas": 1
             }
         }
     }

@@ -56,7 +56,7 @@ export default class SearchService {
         }
 
         if (filters?.field_associated) {
-            mustFilters.push({ term: { field_associated: filters.field_associated } });
+            mustFilters.push({ term: { 'field_associated.keyword': filters.field_associated } });
         }
 
         if (filters?.document_type) {
@@ -64,7 +64,7 @@ export default class SearchService {
         }
 
         if (filters?.subject_area?.length) {
-            mustFilters.push({ terms: { subject_area: filters.subject_area } });
+            mustFilters.push({ terms: { 'subject_area.keyword': filters.subject_area } });
         }
 
         return mustFilters;
@@ -93,16 +93,28 @@ export default class SearchService {
 
         // Only use custom fields if explicitly specified
         if (searchIn && Array.isArray(searchIn) && searchIn.length > 0) {
+            // Enhanced field mapping with N-gram and Phonetic sub-fields
+            // Author: ngram for partial matching (S.K -> Sanjay Kumar), phonetic for sound-alike
+            // Subject/Field: ngram for abbreviations (Chem Eng -> Chemical Engineering)
             const fieldMapping = {
-                title: 'title^3',
-                abstract: 'abstract',
-                author: 'author_names',
-                subject_area: 'subject_area',
-                field: 'field_associated'
+                title: ['title^3'],
+                abstract: ['abstract'],
+                author: [
+                    'author_names^2',           // Standard match
+                    'author_names.ngram^1.5'    // Partial/abbreviation match
+                ],
+                subject_area: [
+                    'subject_area^2',           // Standard match
+                    'subject_area.ngram^1.5'    // Partial match
+                ],
+                field: [
+                    'field_associated^2',       // Standard match
+                    'field_associated.ngram^1.5' // Partial match
+                ]
             };
 
             const customFields = searchIn
-                .map(f => fieldMapping[f])
+                .flatMap(f => fieldMapping[f] || [])
                 .filter(Boolean);
 
             if (customFields.length > 0) {
@@ -140,7 +152,7 @@ export default class SearchService {
                 }
             },
             sort: sortClause,
-            // Aggregations for facets
+            // Aggregations for facets (use .keyword for text fields)
             aggs: {
                 years: {
                     terms: { field: 'publication_year', size: 20, order: { _key: 'desc' } }
@@ -149,10 +161,10 @@ export default class SearchService {
                     terms: { field: 'document_type', size: 10 }
                 },
                 fields: {
-                    terms: { field: 'field_associated', size: 20 }
+                    terms: { field: 'field_associated.keyword', size: 20 }
                 },
                 subject_areas: {
-                    terms: { field: 'subject_area', size: 30 }
+                    terms: { field: 'subject_area.keyword', size: 30 }
                 }
             }
         };
