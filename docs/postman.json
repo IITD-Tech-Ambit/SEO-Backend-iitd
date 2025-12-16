@@ -1,0 +1,357 @@
+{
+    "info": {
+        "_postman_id": "postman-api-collection",
+        "name": "SEO Research Ambit API",
+        "description": "# Research Search API\n\nA hybrid semantic + keyword search API for research documents powered by OpenSearch and SPECTER2 embeddings.\n\n## Features\n- **Hybrid Search**: Combines BM25 keyword search with SPECTER2 semantic embeddings\n- **N-gram Analyzers**: Partial matching on author names, subject areas, and fields\n- **Faceted Search**: Filter by year, document type, field, and subject area\n- **Flexible Sorting**: Sort by relevance, date, or citations\n\n## Base URL\n- Local: `http://localhost:3000/api/v1`\n- Production: Update the `{{base_url}}` variable\n\n## Authentication\nNo authentication required for search endpoints.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+        {
+            "key": "base_url",
+            "value": "http://localhost:3000/api/v1",
+            "type": "string"
+        }
+    ],
+    "item": [
+        {
+            "name": "Search",
+            "description": "Search endpoints for finding research documents",
+            "item": [
+                {
+                    "name": "Hybrid Search",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"polymer degradation\",\n    \"page\": 1,\n    \"per_page\": 20,\n    \"sort\": \"relevance\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/search",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "search"
+                            ]
+                        },
+                        "description": "## Hybrid Search\n\nSearch research documents using a combination of BM25 keyword matching and SPECTER2 semantic embeddings.\n\n### Request Body\n\n| Field | Type | Required | Description |\n|-------|------|----------|-------------|\n| `query` | string | ✅ | Search query (1-500 characters) |\n| `page` | integer | ❌ | Page number (default: 1) |\n| `per_page` | integer | ❌ | Results per page (1-100, default: 20) |\n| `sort` | string | ❌ | Sort order: `relevance`, `date`, `citations` |\n| `filters` | object | ❌ | Filter options (see below) |\n| `search_in` | array | ❌ | Fields to search: `title`, `abstract`, `author`, `subject_area`, `field` |\n\n### Filter Options\n\n| Field | Type | Description |\n|-------|------|-------------|\n| `year_from` | integer | Minimum publication year |\n| `year_to` | integer | Maximum publication year |\n| `field_associated` | string | Department/field filter |\n| `document_type` | string | Article, Review, Conference Paper, etc. |\n| `subject_area` | array | Subject area codes |\n\n### Response\n\nReturns matching documents with facets for filtering and pagination info."
+                    },
+                    "response": [
+                        {
+                            "name": "Success - Results Found",
+                            "originalRequest": {
+                                "method": "POST",
+                                "header": [],
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\n    \"query\": \"polymer\"\n}"
+                                },
+                                "url": {
+                                    "raw": "{{base_url}}/search",
+                                    "host": [
+                                        "{{base_url}}"
+                                    ],
+                                    "path": [
+                                        "search"
+                                    ]
+                                }
+                            },
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "body": "{\n    \"results\": [\n        {\n            \"_id\": \"693ea76583acace877692939\",\n            \"title\": \"Interaction potential between polymer grafted nanosheets\",\n            \"abstract\": \"We examine the polymer mediated interaction...\",\n            \"authors\": [\n                {\n                    \"author_name\": \"Chokshi, P.\",\n                    \"author_affiliation\": \"Indian Institute of Technology Delhi\"\n                }\n            ],\n            \"publication_year\": 2019,\n            \"document_type\": \"Article\",\n            \"field_associated\": \"Chemical Engineering\",\n            \"citation_count\": 6\n        }\n    ],\n    \"facets\": {\n        \"years\": [{\"value\": 2024, \"count\": 79}],\n        \"document_types\": [{\"value\": \"Article\", \"count\": 150}],\n        \"fields\": [{\"value\": \"Chemical Engineering\", \"count\": 45}]\n    },\n    \"pagination\": {\n        \"page\": 1,\n        \"per_page\": 20,\n        \"total\": 250,\n        \"total_pages\": 13\n    },\n    \"cacheHit\": false\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Search with Filters",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"machine learning\",\n    \"page\": 1,\n    \"per_page\": 10,\n    \"sort\": \"citations\",\n    \"filters\": {\n        \"year_from\": 2020,\n        \"year_to\": 2024,\n        \"field_associated\": \"Computer Science\",\n        \"document_type\": \"Article\"\n    }\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/search",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "search"
+                            ]
+                        },
+                        "description": "## Search with Filters\n\nSearch with year range, field, and document type filters applied.\n\n### Example Filters\n- **Year Range**: 2020-2024\n- **Field**: Computer Science\n- **Document Type**: Article\n- **Sort**: By citation count (most cited first)"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Search by Author (N-gram)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"Sharma\",\n    \"search_in\": [\"author\"],\n    \"per_page\": 20\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/search",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "search"
+                            ]
+                        },
+                        "description": "## Search by Author Name\n\nSearch specifically in author names using N-gram partial matching.\n\n### N-gram Matching\nThe API uses N-gram analyzers (2-4 characters) for partial matching:\n- Searching \"Sha\" will match \"Sharma\", \"Shah\", \"Shankar\"\n- Searching \"Kumar\" will match all variations\n\n### `search_in` Options\n- `author` - Author names only\n- `title` - Paper titles only\n- `abstract` - Abstracts only\n- `subject_area` - Subject areas\n- `field` - Associated fields"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Search by Subject Area",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"query\": \"Engineering\",\n    \"search_in\": [\"subject_area\", \"field\"],\n    \"per_page\": 20\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/search",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "search"
+                            ]
+                        },
+                        "description": "## Search by Subject Area or Field\n\nSearch specifically in subject areas and associated fields.\n\n### Example\nSearching \"Eng\" will match:\n- \"Chemical Engineering\"\n- \"Mechanical Engineering\"\n- \"Environmental Engineering\"\n\n### Combined Field Search\nYou can search in multiple fields by providing an array:\n```json\n\"search_in\": [\"subject_area\", \"field\"]\n```"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Search Health Check",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/search/health",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "search",
+                                "health"
+                            ]
+                        },
+                        "description": "## Health Check\n\nCheck the health status of search services including:\n- OpenSearch connection\n- Embedding service availability\n- Redis cache status\n\n### Response\nReturns status of all dependent services."
+                    },
+                    "response": [
+                        {
+                            "name": "Healthy",
+                            "originalRequest": {
+                                "method": "GET",
+                                "header": [],
+                                "url": {
+                                    "raw": "{{base_url}}/search/health",
+                                    "host": [
+                                        "{{base_url}}"
+                                    ],
+                                    "path": [
+                                        "search",
+                                        "health"
+                                    ]
+                                }
+                            },
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "body": "{\n    \"status\": \"healthy\",\n    \"services\": {\n        \"opensearch\": \"connected\",\n        \"embedding\": \"available\",\n        \"redis\": \"connected\"\n    }\n}"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Documents",
+            "description": "Endpoints for retrieving individual documents",
+            "item": [
+                {
+                    "name": "Get Document by ID",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/document/:id",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "document",
+                                ":id"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "id",
+                                    "value": "693ea76583acace877692939",
+                                    "description": "MongoDB ObjectId or OpenSearch document ID"
+                                }
+                            ]
+                        },
+                        "description": "## Get Document by ID\n\nRetrieve a single research document by its ID.\n\n### Parameters\n\n| Parameter | Type | Description |\n|-----------|------|-------------|\n| `id` | string | MongoDB ObjectId or OpenSearch document ID |\n\n### Response\n\nReturns full document details including:\n- Title and abstract\n- Authors with affiliations\n- Publication metadata\n- Citation count\n- Subject areas\n- External links"
+                    },
+                    "response": [
+                        {
+                            "name": "Document Found",
+                            "originalRequest": {
+                                "method": "GET",
+                                "header": [],
+                                "url": {
+                                    "raw": "{{base_url}}/document/693ea76583acace877692939",
+                                    "host": [
+                                        "{{base_url}}"
+                                    ],
+                                    "path": [
+                                        "document",
+                                        "693ea76583acace877692939"
+                                    ]
+                                }
+                            },
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "body": "{\n    \"document\": {\n        \"_id\": \"693ea76583acace877692939\",\n        \"title\": \"Interaction potential between polymer grafted nanosheets\",\n        \"abstract\": \"We examine the polymer mediated interaction between two brush coated nanosheets...\",\n        \"authors\": [\n            {\n                \"author_name\": \"Chokshi, P.\",\n                \"author_email\": \"paresh@chemical.iitd.ac.in\",\n                \"author_affiliation\": \"Indian Institute of Technology Delhi\"\n            }\n        ],\n        \"publication_year\": 2019,\n        \"document_type\": \"Article\",\n        \"field_associated\": \"Chemical Engineering\",\n        \"citation_count\": 6,\n        \"subject_area\": [\"Chemical Engineering\", \"Materials Science\"]\n    }\n}"
+                        },
+                        {
+                            "name": "Document Not Found",
+                            "originalRequest": {
+                                "method": "GET",
+                                "header": [],
+                                "url": {
+                                    "raw": "{{base_url}}/document/invalid-id",
+                                    "host": [
+                                        "{{base_url}}"
+                                    ],
+                                    "path": [
+                                        "document",
+                                        "invalid-id"
+                                    ]
+                                }
+                            },
+                            "status": "Not Found",
+                            "code": 404,
+                            "_postman_previewlanguage": "json",
+                            "body": "{\n    \"error\": \"Not Found\",\n    \"message\": \"Document not found\",\n    \"statusCode\": 404\n}"
+                        }
+                    ]
+                },
+                {
+                    "name": "Get Documents by Author",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/documents/by-author/:authorId?page=1&per_page=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "documents",
+                                "by-author",
+                                ":authorId"
+                            ],
+                            "query": [
+                                {
+                                    "key": "page",
+                                    "value": "1",
+                                    "description": "Page number (default: 1)"
+                                },
+                                {
+                                    "key": "per_page",
+                                    "value": "20",
+                                    "description": "Results per page (1-100, default: 20)"
+                                }
+                            ],
+                            "variable": [
+                                {
+                                    "key": "authorId",
+                                    "value": "22952938400",
+                                    "description": "Scopus Author ID"
+                                }
+                            ]
+                        },
+                        "description": "## Get Documents by Author\n\nRetrieve all research documents published by a specific author.\n\n### Parameters\n\n| Parameter | Type | Location | Description |\n|-----------|------|----------|-------------|\n| `authorId` | string | path | Scopus Author ID |\n| `page` | integer | query | Page number (default: 1) |\n| `per_page` | integer | query | Results per page (1-100, default: 20) |\n\n### Response\n\nReturns paginated list of documents by the author."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Server",
+            "description": "Server health and status endpoints",
+            "item": [
+                {
+                    "name": "Server Health",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/../health",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "..",
+                                "health"
+                            ]
+                        },
+                        "description": "## Server Health\n\nCheck overall server health status.\n\n### Endpoint\n`GET /health`\n\n### Response\nReturns server status and uptime information."
+                    },
+                    "response": [
+                        {
+                            "name": "Healthy",
+                            "originalRequest": {
+                                "method": "GET",
+                                "header": [],
+                                "url": {
+                                    "raw": "http://localhost:3000/health",
+                                    "host": [
+                                        "http://localhost:3000"
+                                    ],
+                                    "path": [
+                                        "health"
+                                    ]
+                                }
+                            },
+                            "status": "OK",
+                            "code": 200,
+                            "_postman_previewlanguage": "json",
+                            "body": "{\n    \"status\": \"healthy\"\n}"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}
