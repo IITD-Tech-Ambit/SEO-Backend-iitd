@@ -333,6 +333,7 @@ def create_index_if_not_exists(os_client: OpenSearch):
         "settings": {
             "index": {
                 "knn": True,
+                "knn.algo_param.ef_search": 256,
                 "number_of_shards": 3,
                 "number_of_replicas": 1,
                 "max_ngram_diff": 2
@@ -419,10 +420,10 @@ def create_index_if_not_exists(os_client: OpenSearch):
                     "method": {
                         "name": "hnsw",
                         "space_type": "cosinesimil",
-                        "engine": "lucene",
+                        "engine": "faiss",
                         "parameters": {
-                            "ef_construction": 128,
-                            "m": 16
+                            "ef_construction": 512,
+                            "m": 32
                         }
                     }
                 }

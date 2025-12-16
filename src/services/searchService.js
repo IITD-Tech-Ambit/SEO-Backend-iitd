@@ -137,12 +137,12 @@ export default class SearchService {
                                 type: 'best_fields'
                             }
                         },
-                        // k-NN component
+                        // k-NN component - fetch 100 candidates for better ranking
                         {
                             knn: {
                                 embedding: {
                                     vector: embedding,
-                                    k: perPage
+                                    k: 100
                                 }
                             }
                         }
@@ -245,7 +245,37 @@ export default class SearchService {
         // Generate query embedding
         const embedding = await this.embeddingService.embedQuery(query);
 
-        // Build and execute OpenSearch query
+        // Pre-check: Run BM25-only query to verify query has keyword matches
+        // If BM25 returns 0 results, it's likely gibberish - skip kNN search
+        const bm25CheckQuery = {
+            size: 0,  // Don't need actual results, just count
+            query: {
+                multi_match: {
+                    query: query,
+                    fields: ['title', 'abstract', 'author_names']
+                }
+            }
+        };
+
+        const bm25CheckResponse = await this.opensearch.search({
+            index: this.indexName,
+            body: bm25CheckQuery
+        });
+
+        const bm25Matches = bm25CheckResponse.body.hits.total.value;
+
+        // If no BM25 matches, return empty results (gibberish query)
+        if (bm25Matches === 0) {
+            return {
+                results: [],
+                facets: {},
+                pagination: { page, per_page, total: 0, total_pages: 0 },
+                message: 'No relevant results found for your query',
+                cacheHit: false
+            };
+        }
+
+        // Build and execute OpenSearch hybrid query
         const osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, search_in);
 
         const osResponse = await this.opensearch.search({
