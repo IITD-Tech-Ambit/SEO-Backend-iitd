@@ -1087,8 +1087,8 @@
                                 ${doc.document_type || 'Article'}
                             </div>
                             <div class="meta-item">
-                                <span class="meta-icon">🔬</span>
-                                ${doc.field_associated || 'N/A'}
+                                <span class="meta-icon">🏷️</span>
+                                ${subjectAreas.length ? subjectAreas.join(', ') : 'N/A'}
                             </div>
                         </div>
 
