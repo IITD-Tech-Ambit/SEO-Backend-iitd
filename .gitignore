@@ -30,6 +30,16 @@ npm-debug.log*
 dist/
 build/
 
+# Go
+*.exe
+*.exe~
+*.dll
+*.dylib
+*.test
+*.out
+# Go binary (no extension on Unix)
+indexer_go/indexer
+
 # Python
 *.so
 .Python
