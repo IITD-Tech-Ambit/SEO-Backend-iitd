@@ -67,11 +67,17 @@ def get_device():
     elif config.USE_GPU == "true":
         if torch.cuda.is_available():
             return "cuda"
+        elif torch.backends.mps.is_available():
+            return "mps"  # Apple Silicon GPU
         else:
             logger.warning("GPU requested but not available, falling back to CPU")
             return "cpu"
     else:  # auto
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            return "cuda"
+        elif torch.backends.mps.is_available():
+            return "mps"  # Apple Silicon GPU
+        return "cpu"
 
 
 @asynccontextmanager
@@ -88,8 +94,8 @@ async def lifespan(app: FastAPI):
     state.model = AutoModel.from_pretrained(config.MODEL_NAME)
     
     # Move to device
-    if state.device == "cuda":
-        state.model = state.model.cuda()
+    if state.device in ("cuda", "mps"):
+        state.model = state.model.to(state.device)
     
     state.model.eval()
     
@@ -101,8 +107,8 @@ async def lifespan(app: FastAPI):
         truncation=True, 
         max_length=config.MAX_LENGTH
     )
-    if state.device == "cuda":
-        dummy_input = {k: v.cuda() for k, v in dummy_input.items()}
+    if state.device in ("cuda", "mps"):
+        dummy_input = {k: v.to(state.device) for k, v in dummy_input.items()}
     
     with torch.no_grad():
         state.model(**dummy_input)
@@ -149,8 +155,8 @@ async def embed(request: EmbedRequest):
     )
     
     # Move to device
-    if state.device == "cuda":
-        inputs = {k: v.cuda() for k, v in inputs.items()}
+    if state.device in ("cuda", "mps"):
+        inputs = {k: v.to(state.device) for k, v in inputs.items()}
     
     # Generate embeddings
     with torch.no_grad():

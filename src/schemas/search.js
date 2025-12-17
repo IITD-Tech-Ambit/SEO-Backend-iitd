@@ -83,6 +83,7 @@ export const searchResponseSchema = {
                     publication_year: { type: 'integer' },
                     document_type: { type: 'string' },
                     field_associated: { type: 'string' },
+                    subject_area: { type: 'array' },
                     citation_count: { type: 'integer' },
                     link: { type: 'string' }
                 }
@@ -93,7 +94,8 @@ export const searchResponseSchema = {
             properties: {
                 years: { type: 'array' },
                 document_types: { type: 'array' },
-                fields: { type: 'array' }
+                fields: { type: 'array' },
+                subject_areas: { type: 'array' }
             }
         },
         pagination: {
