@@ -1,73 +1,131 @@
-To run the search stack, first ensure Docker and Docker Compose are installed and that your system has at least 4–6 GB of free RAM, since OpenSearch is memory intensive. Create a `.env` file in the project root or export environment variables in your shell. At minimum, set `OPENSEARCH_INITIAL_ADMIN_PASSWORD`, `OPENSEARCH_PASSWORD`, and `MONGODB_URI`. For example:
+# Running the Search Stack
 
-OPENSEARCH_INITIAL_ADMIN_PASSWORD=your_admin_password  
-OPENSEARCH_PASSWORD=your_admin_password  
-MONGODB_URI=mongodb://localhost:27017  
+## Prerequisites
 
-Optionally, you may set `OPENSEARCH_USER=admin` if not already defined.
+- Docker and Docker Compose installed
+- Minimum 4–6 GB free RAM (OpenSearch is memory intensive)
 
-Once the environment variables are set, start the full Docker stack by running:
+Create a `.env` file in the project root or export environment variables in your shell. At minimum set:
 
+```env
+OPENSEARCH_INITIAL_ADMIN_PASSWORD=your_admin_password
+OPENSEARCH_PASSWORD=your_admin_password
+MONGODB_URI=mongodb://localhost:27017
+```
+
+Optionally set `OPENSEARCH_USER` (defaults to `admin`).
+
+## Start the stack
+
+```bash
 docker-compose -f docker/docker-compose.yml up -d
+```
 
-After startup, you can verify that all containers are running by executing:
+## Inspect running services
 
+List containers:
+
+```bash
 docker-compose -f docker/docker-compose.yml ps
+```
 
-To inspect logs for the main services (API, embedding service, OpenSearch, and Redis), run:
+Tail logs for main services:
 
+```bash
 docker-compose -f docker/docker-compose.yml logs -f api embedding opensearch-node1 redis
+```
 
-To verify that OpenSearch is reachable (TLS and authentication are enabled), run:
+## Health checks
 
+OpenSearch (TLS + auth):
+
+```bash
 curl -u ${OPENSEARCH_USER:-admin}:${OPENSEARCH_PASSWORD} -k https://localhost:9200/
+```
 
-To verify the embedding service health, run:
+Embedding service:
 
+```bash
 curl http://localhost:8001/health
+```
 
-To verify the search API health, run:
+API health:
 
+```bash
 curl http://localhost:3000/api/v1/search/health
+```
 
-By default, the stack pulls the images `sudarshan052/embedding-service:latest` and `sudarshan052/search-api:latest`. If you want to use local builds instead, replace the `image:` entries with `build:` blocks in `docker-compose.yml` or build and tag the images locally beforehand. OpenSearch and Redis data are persisted using the volumes `opensearch-data1`, `opensearch-data2`, and `redis-data`.
+## Notes
 
-For indexing data, the Python indexer is located in `services/indexer`. To run it locally, navigate to that directory and create a virtual environment using:
+- The compose uses images `sudarshan052/embedding-service:latest` and `sudarshan052/search-api:latest`. To use local builds, change `image:` to `build:` in `docker/docker-compose.yml` or build & tag images locally.
+- Volumes: `opensearch-data1`, `opensearch-data2`, `redis-data` persist data.
 
-cd services/indexer  
-python -m venv .venv  
-source .venv/bin/activate  
+---
 
-Install dependencies with:
+# Python indexer (services/indexer)
 
+Path: [services/indexer](services/indexer)
+
+### Run locally (recommended for development)
+
+```bash
+cd services/indexer
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+```
 
-Set the required environment variables for the indexer:
+Set environment variables (example):
 
-export MONGODB_URI="mongodb://localhost:27017"  
-export OPENSEARCH_NODE="https://localhost:9200"  
-export OPENSEARCH_USER=admin  
-export OPENSEARCH_PASSWORD=your_admin_password  
+```bash
+export MONGODB_URI="mongodb://localhost:27017"
+export OPENSEARCH_NODE="https://localhost:9200"
+export OPENSEARCH_USER=admin
+export OPENSEARCH_PASSWORD=your_admin_password
+```
 
-Then start the indexer using:
+Start the indexer (example flags):
 
-python run.py --create-index --reindex-all 
+```bash
+python run.py --create-index --reindex-all
+```
 
-If OpenSearch is unreachable, inspect its logs using:
+### Debug / helper scripts
+Helper scripts live in `services/indexer/scripts/` (for example `test_indexer.py` and `debug_mongo.py`) — run them from the same activated virtualenv.
 
+### Docker for indexer
+There is no official Python-indexer image in the compose. If you want a containerized indexer, create a Dockerfile that installs `requirements.txt` and runs `run.py`, then build and run it with Docker.
+
+---
+
+# Troubleshooting
+
+- If OpenSearch is unreachable, inspect its logs:
+
+```bash
 docker-compose -f docker/docker-compose.yml logs opensearch-node1
+```
 
-Ensure that `OPENSEARCH_INITIAL_ADMIN_PASSWORD` was set before the first startup. If the API returns 5xx errors, check the API logs and confirm the embedding service is healthy:
+- Confirm `OPENSEARCH_INITIAL_ADMIN_PASSWORD` was set before the first startup.
+- If the API returns 5xx, check API logs and embedding health:
 
-docker-compose -f docker/docker-compose.yml logs api  
+```bash
+docker-compose -f docker/docker-compose.yml logs api
 curl http://localhost:8001/health
+```
 
-To stop the entire stack and remove all persisted data, run:
+- Stop and remove the stack and volumes:
 
+```bash
 docker-compose -f docker/docker-compose.yml down --volumes
+```
 
-To pull the latest versions of all Docker images, run:
+- Pull latest images:
 
+```bash
 docker-compose -f docker/docker-compose.yml pull
+```
 
-Before running in a new environment, it is recommended to inspect `docker/docker-compose.yml` to verify environment variable placeholders and review `services/indexer/config.py` to confirm the exact environment variable names expected by the indexer.
+---
+
+Before running in a new environment, inspect `docker/docker-compose.yml` for required env placeholders and review `services/indexer/src/indexer/config.py` to confirm exact env variable names used by the indexer.
