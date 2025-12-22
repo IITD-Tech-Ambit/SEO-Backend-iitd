@@ -71,7 +71,7 @@ Path: [services_go/indexer_go](services_go/indexer_go)
 Build the indexer:
 
 ```bash
-cd services_go/indexer_go
+cd indexer_go
 go build -o indexer ./cmd/indexer
 ```
 
