@@ -62,17 +62,17 @@ curl http://localhost:3000/api/v1/search/health
 
 ---
 
-# Python indexer (services/indexer)
+# Go Indexer (services_go/indexer_go)
 
-Path: [services/indexer](services/indexer)
+Path: [services_go/indexer_go](services_go/indexer_go)
 
 ### Run locally (recommended for development)
 
+Build the indexer:
+
 ```bash
-cd services/indexer
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+cd services_go/indexer_go
+go build -o indexer ./cmd/indexer
 ```
 
 Set environment variables (example):
@@ -87,14 +87,8 @@ export OPENSEARCH_PASSWORD=your_admin_password
 Start the indexer (example flags):
 
 ```bash
-python run.py --create-index --reindex-all
+./indexer --create-index --reindex-all
 ```
-
-### Debug / helper scripts
-Helper scripts live in `services/indexer/scripts/` (for example `test_indexer.py` and `debug_mongo.py`) — run them from the same activated virtualenv.
-
-### Docker for indexer
-There is no official Python-indexer image in the compose. If you want a containerized indexer, create a Dockerfile that installs `requirements.txt` and runs `run.py`, then build and run it with Docker.
 
 ---
 
