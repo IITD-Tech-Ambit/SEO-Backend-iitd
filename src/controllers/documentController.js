@@ -76,3 +76,56 @@ export async function getDocumentsByAuthor(request, reply) {
         });
     }
 }
+
+/**
+ * Get similar documents using k-NN embeddings
+ */
+export async function getSimilarDocuments(request, reply) {
+    const { id } = request.params;
+    const { limit = 10 } = request.query;
+    const searchService = request.server.searchService;
+
+    try {
+        const result = await searchService.findSimilar(id, limit);
+        return result;
+
+    } catch (error) {
+        request.log.error({ error, id }, 'Similar documents fetch failed');
+
+        if (error.message === 'Document not found in search index') {
+            return reply.status(404).send({
+                error: 'Not Found',
+                message: `Document with ID ${id} not found in search index`,
+                statusCode: 404
+            });
+        }
+
+        return reply.status(500).send({
+            error: 'Internal Server Error',
+            message: 'Failed to fetch similar documents',
+            statusCode: 500
+        });
+    }
+}
+
+/**
+ * Get co-authors for a specific author
+ */
+export async function getCoAuthors(request, reply) {
+    const { id } = request.params;
+    const searchService = request.server.searchService;
+
+    try {
+        const result = await searchService.getCoAuthors(id);
+        return result;
+
+    } catch (error) {
+        request.log.error({ error, id }, 'Co-authors fetch failed');
+
+        return reply.status(500).send({
+            error: 'Internal Server Error',
+            message: 'Failed to fetch co-authors',
+            statusCode: 500
+        });
+    }
+}

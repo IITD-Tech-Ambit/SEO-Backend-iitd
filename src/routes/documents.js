@@ -1,5 +1,5 @@
-import { documentParamsSchema, errorResponseSchema } from '../schemas/search.js';
-import { getDocument, getDocumentsByAuthor } from '../controllers/documentController.js';
+import { documentParamsSchema, errorResponseSchema, similarRequestSchema, coauthorsParamsSchema } from '../schemas/search.js';
+import { getDocument, getDocumentsByAuthor, getSimilarDocuments, getCoAuthors } from '../controllers/documentController.js';
 
 /**
  * Document Routes
@@ -46,5 +46,48 @@ export default async function documentRoutes(fastify, options) {
             }
         },
         handler: getDocumentsByAuthor
+    });
+
+    // Find similar papers using k-NN
+    fastify.get('/document/:id/similar', {
+        schema: {
+            description: 'Find semantically similar papers using embeddings',
+            tags: ['documents'],
+            params: documentParamsSchema,
+            querystring: similarRequestSchema,
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        source: { type: 'object' },
+                        similar: { type: 'array' }
+                    }
+                },
+                404: errorResponseSchema,
+                500: errorResponseSchema
+            }
+        },
+        handler: getSimilarDocuments
+    });
+
+    // Get co-authors for an author (Phase 2 - after nested indexing)
+    fastify.get('/author/:id/collaborators', {
+        schema: {
+            description: 'Get co-authors and collaboration network for an author',
+            tags: ['authors'],
+            params: coauthorsParamsSchema,
+            response: {
+                200: {
+                    type: 'object',
+                    properties: {
+                        author_id: { type: 'string' },
+                        total_papers: { type: 'integer' },
+                        collaborators: { type: 'array' }
+                    }
+                },
+                500: errorResponseSchema
+            }
+        },
+        handler: getCoAuthors
     });
 }

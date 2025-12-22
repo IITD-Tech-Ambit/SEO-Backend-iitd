@@ -31,18 +31,41 @@ export const searchRequestSchema = {
                     type: 'string',
                     description: 'Article, Review, Conference Paper, etc.'
                 },
+                document_types: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Multiple document types (Article, Review, etc.)'
+                },
                 subject_area: {
                     type: 'array',
                     items: { type: 'string' },
                     description: 'Subject area codes'
+                },
+                // Nested author filters (Phase 2)
+                author_id: {
+                    type: 'string',
+                    description: 'Filter by specific author ID'
+                },
+                affiliation: {
+                    type: 'string',
+                    description: 'Filter by author affiliation/institution'
+                },
+                first_author_only: {
+                    type: 'boolean',
+                    description: 'Only return first-author papers'
+                },
+                interdisciplinary: {
+                    type: 'boolean',
+                    description: 'Papers spanning 3+ subject areas'
                 }
             },
             additionalProperties: false
         },
         sort: {
             type: 'string',
-            enum: ['relevance', 'date', 'citations'],
-            default: 'relevance'
+            enum: ['relevance', 'date', 'citations', 'impact', 'normalized'],
+            default: 'relevance',
+            description: 'Sort order. impact = citation-weighted, normalized = balanced BM25+kNN'
         },
         page: {
             type: 'integer',
@@ -93,6 +116,7 @@ export const searchResponseSchema = {
             type: 'object',
             properties: {
                 years: { type: 'array' },
+                year_ranges: { type: 'array' },
                 document_types: { type: 'array' },
                 fields: { type: 'array' },
                 subject_areas: { type: 'array' }
@@ -124,6 +148,30 @@ export const documentParamsSchema = {
         id: {
             type: 'string',
             description: 'MongoDB ObjectId or OpenSearch document ID'
+        }
+    }
+};
+
+export const similarRequestSchema = {
+    type: 'object',
+    properties: {
+        limit: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 50,
+            default: 10,
+            description: 'Number of similar papers to return'
+        }
+    }
+};
+
+export const coauthorsParamsSchema = {
+    type: 'object',
+    required: ['id'],
+    properties: {
+        id: {
+            type: 'string',
+            description: 'Author ID to find collaborators for'
         }
     }
 };

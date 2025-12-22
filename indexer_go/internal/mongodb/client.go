@@ -15,23 +15,33 @@ import (
 
 // Author represents an author in a research document
 type Author struct {
-	AuthorID          string `bson:"author_id"`
-	AuthorName        string `bson:"author_name"`
-	AuthorAffiliation string `bson:"author_affiliation"`
+	AuthorID             string              `bson:"author_id"`
+	AuthorEID            string              `bson:"author_eid"`
+	AuthorPosition       string              `bson:"author_position"`
+	AuthorName           string              `bson:"author_name"`
+	AuthorEmail          string              `bson:"author_email"`
+	AuthorAvailableNames []string            `bson:"author_avaialable_names"` // Note: MongoDB has typo in field name
+	AuthorOrcid          string              `bson:"author_orcid"`
+	AuthorAffiliation    string              `bson:"author_affiliation"`
+	MatchedProfile       *primitive.ObjectID `bson:"matched_profile"`
 }
 
 // Document represents a research document from MongoDB
 type Document struct {
-	ID              primitive.ObjectID `bson:"_id"`
-	Title           string             `bson:"title"`
-	Abstract        string             `bson:"abstract"`
-	Authors         []Author           `bson:"authors"`
-	PublicationYear int                `bson:"publication_year"`
-	FieldAssociated string             `bson:"field_associated"`
-	DocumentType    string             `bson:"document_type"`
-	SubjectArea     []string           `bson:"subject_area"`
-	CitationCount   int                `bson:"citation_count"`
-	OpenSearchID    string             `bson:"open_search_id"`
+	ID               primitive.ObjectID `bson:"_id"`
+	DocumentEID      string             `bson:"document_eid"`
+	DocumentScopusID string             `bson:"document_scopus_id"`
+	Link             string             `bson:"link"`
+	Title            string             `bson:"title"`
+	Abstract         string             `bson:"abstract"`
+	Authors          []Author           `bson:"authors"`
+	PublicationYear  int                `bson:"publication_year"`
+	FieldAssociated  string             `bson:"field_associated"`
+	DocumentType     string             `bson:"document_type"`
+	SubjectArea      []string           `bson:"subject_area"`
+	CitationCount    int                `bson:"citation_count"`
+	ReferenceCount   int                `bson:"reference_count"`
+	OpenSearchID     string             `bson:"open_search_id"`
 }
 
 // Client wraps MongoDB operations
@@ -140,6 +150,16 @@ func (c *Client) StreamDocuments(ctx context.Context, reindexAll bool, limit int
 	}()
 
 	return docChan, nil
+}
+
+// ClearOpenSearchIDs clears all open_search_id fields (for full reindex)
+func (c *Client) ClearOpenSearchIDs(ctx context.Context) error {
+	_, err := c.collection.UpdateMany(
+		ctx,
+		bson.M{},
+		bson.M{"$set": bson.M{"open_search_id": ""}},
+	)
+	return err
 }
 
 // IDUpdate holds a MongoDB ID and its corresponding OpenSearch ID

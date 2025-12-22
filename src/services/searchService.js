@@ -3,6 +3,13 @@ import crypto from 'crypto';
 /**
  * Search Service
  * Orchestrates hybrid search across OpenSearch and MongoDB
+ * 
+ * Optimizations:
+ * - Field weighting with subject_area boosting
+ * - Phrase matching for multi-word queries
+ * - Hybrid score normalization (BM25 + k-NN)
+ * - Citation-impact scoring option
+ * - Nested author search support
  */
 export default class SearchService {
     constructor(fastify, config) {
@@ -14,6 +21,30 @@ export default class SearchService {
         this.embeddingService = fastify.embeddingService;
         this.config = config;
         this.logger = fastify.log;
+
+        // Search tuning parameters (easily adjustable)
+        this.searchConfig = {
+            hybridWeights: {
+                bm25: 0.4,
+                vector: 0.6
+            },
+            fieldBoosts: {
+                title: 4,
+                titleExact: 5,
+                abstract: 1.5,
+                subjectArea: 3,
+                subjectAreaNgram: 2,
+                authorName: 2,
+                authorNameNgram: 1.5,
+                authorVariants: 2.5,
+                authorVariantsNgram: 1.5,
+                fieldAssociated: 2.5,
+                fieldAssociatedNgram: 1.5
+            },
+            phraseBoost: 2.5,
+            citationFactor: 0.3,
+            recencyScale: 5
+        };
     }
 
     /**
@@ -21,7 +52,6 @@ export default class SearchService {
      * Normalizes filters to ensure consistent caching
      */
     _getCacheKey(query, filters, sort, page, perPage, searchIn = null) {
-        // Normalize filters - remove undefined/null values for consistent hashing
         const normalizedFilters = filters ? Object.fromEntries(
             Object.entries(filters).filter(([_, v]) => v !== undefined && v !== null && v !== '')
         ) : {};
@@ -63,22 +93,214 @@ export default class SearchService {
             mustFilters.push({ term: { document_type: filters.document_type } });
         }
 
+        // Support both single and array document types
+        if (filters?.document_types?.length) {
+            mustFilters.push({ terms: { document_type: filters.document_types } });
+        }
+
         if (filters?.subject_area?.length) {
             mustFilters.push({ terms: { 'subject_area.keyword': filters.subject_area } });
+        }
+
+        // Nested author filters (Phase 2 - will work after reindexing)
+        if (filters?.author_id) {
+            mustFilters.push({
+                nested: {
+                    path: 'authors',
+                    query: { term: { 'authors.author_id': filters.author_id } }
+                }
+            });
+        }
+
+        if (filters?.affiliation) {
+            mustFilters.push({
+                nested: {
+                    path: 'authors',
+                    query: { match: { 'authors.author_affiliation': filters.affiliation } }
+                }
+            });
+        }
+
+        if (filters?.first_author_only === true) {
+            mustFilters.push({
+                nested: {
+                    path: 'authors',
+                    query: { term: { 'authors.author_position': 1 } }
+                }
+            });
+        }
+
+        // Interdisciplinary filter (3+ subject areas)
+        if (filters?.interdisciplinary === true) {
+            mustFilters.push({
+                range: { subject_area_count: { gte: 3 } }
+            });
         }
 
         return mustFilters;
     }
 
     /**
-     * Build OpenSearch hybrid query (BM25 + Vector)
-     * Uses native k-NN query for vector search
-     * @param searchIn - Array of fields to search in: title, abstract, author, subject_area, field. 
-     *                   If null/undefined, uses default hybrid (title, abstract, author_names)
+     * Get optimized search fields with boosting
+     * 
+     * Boost rationale:
+     * - title^4: Highest - query terms in title = strong match
+     * - title.exact^5: Exact title match = very strong
+     * - abstract^1.5: Body text, good signal but verbose
+     * - subject_area^3: Field matches = domain relevance
+     * - author_names^2: Author search common use case
+     * - field_associated^2.5: Department relevance
+     */
+    _getSearchFields(searchIn = null) {
+        const b = this.searchConfig.fieldBoosts;
+
+        // Default comprehensive search with optimized weights
+        const defaultFields = [
+            `title^${b.title}`,
+            `title.exact^${b.titleExact}`,
+            `abstract^${b.abstract}`,
+            `subject_area^${b.subjectArea}`,
+            `subject_area.ngram^${b.subjectAreaNgram}`,
+            `author_names^${b.authorName}`,
+            `author_names.ngram^${b.authorNameNgram}`,
+            `field_associated^${b.fieldAssociated}`,
+            `field_associated.ngram^${b.fieldAssociatedNgram}`
+        ];
+
+        if (!searchIn || searchIn.length === 0) {
+            return defaultFields;
+        }
+
+        // Field-specific search with optimized boosts
+        const fieldMapping = {
+            title: [`title^${b.title}`, `title.exact^${b.titleExact}`],
+            abstract: [`abstract^${b.abstract * 1.5}`],
+            author: [
+                `author_names^${b.authorName * 1.5}`,
+                `author_names.ngram^${b.authorNameNgram}`,
+                `author_name_variants^${b.authorVariants}`,
+                `author_name_variants.ngram^${b.authorVariantsNgram}`
+            ],
+            subject_area: [
+                `subject_area^${b.subjectArea * 1.5}`,
+                `subject_area.ngram^${b.subjectAreaNgram}`
+            ],
+            field: [
+                `field_associated^${b.fieldAssociated * 1.5}`,
+                `field_associated.ngram^${b.fieldAssociatedNgram}`
+            ]
+        };
+
+        return searchIn
+            .flatMap(f => fieldMapping[f] || [])
+            .filter(Boolean);
+    }
+
+    /**
+     * Build aggregations for faceted search
+     */
+    _getAggregations() {
+        return {
+            years: {
+                terms: { field: 'publication_year', size: 30, order: { _key: 'desc' } }
+            },
+            year_ranges: {
+                range: {
+                    field: 'publication_year',
+                    ranges: [
+                        { key: '2020-Present', from: 2020 },
+                        { key: '2010-2019', from: 2010, to: 2020 },
+                        { key: '2000-2009', from: 2000, to: 2010 },
+                        { key: 'Pre-2000', to: 2000 }
+                    ]
+                }
+            },
+            document_types: {
+                terms: { field: 'document_type', size: 15 }
+            },
+            fields: {
+                terms: { field: 'field_associated.keyword', size: 30 }
+            },
+            subject_areas: {
+                terms: { field: 'subject_area.keyword', size: 50 }
+            }
+        };
+    }
+
+    /**
+     * Build OpenSearch hybrid query with optimized scoring
+     * 
+     * Features:
+     * - Field weighting with subject_area boosting
+     * - Phrase matching for multi-word queries
+     * - Subject area match boosting
+     * - k-NN semantic search
      */
     _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
+        const searchFields = this._getSearchFields(searchIn);
+
+        // Detect multi-word query for phrase boosting
+        const words = query.trim().split(/\s+/);
+        const isMultiWord = words.length >= 2;
+
+        // Build should clauses
+        const shouldClauses = [];
+
+        // Primary BM25 search with optimized fields
+        shouldClauses.push({
+            multi_match: {
+                query: query,
+                fields: searchFields,
+                type: 'best_fields',
+                tie_breaker: 0.3,
+                fuzziness: 'AUTO'
+            }
+        });
+
+        // Phrase boost for multi-word queries
+        if (isMultiWord) {
+            shouldClauses.push({
+                multi_match: {
+                    query: query,
+                    fields: ['title^5', 'abstract^2'],
+                    type: 'phrase',
+                    slop: 2,
+                    boost: this.searchConfig.phraseBoost
+                }
+            });
+        }
+
+        // Subject area match boost
+        shouldClauses.push({
+            match: {
+                'subject_area': {
+                    query: query,
+                    boost: 2.0
+                }
+            }
+        });
+
+        // Field associated match boost
+        shouldClauses.push({
+            match: {
+                'field_associated': {
+                    query: query,
+                    boost: 1.5
+                }
+            }
+        });
+
+        // k-NN vector search
+        shouldClauses.push({
+            knn: {
+                embedding: {
+                    vector: embedding,
+                    k: 100
+                }
+            }
+        });
 
         // Build sort clause
         let sortClause = ['_score'];
@@ -88,38 +310,73 @@ export default class SearchService {
             sortClause = [{ citation_count: 'desc' }, '_score'];
         }
 
-        // Default hybrid fields (original behavior)
-        let searchFields = ['title^3', 'abstract', 'author_names'];
+        return {
+            size: perPage,
+            from,
+            _source: ['mongo_id', 'title', 'author_names', 'publication_year', 'citation_count'],
+            query: {
+                bool: {
+                    should: shouldClauses,
+                    minimum_should_match: 1,
+                    filter: filterClauses
+                }
+            },
+            sort: sortClause,
+            aggs: this._getAggregations()
+        };
+    }
 
-        // Only use custom fields if explicitly specified
-        if (searchIn && Array.isArray(searchIn) && searchIn.length > 0) {
-            // Enhanced field mapping with N-gram and Phonetic sub-fields
-            // Author: ngram for partial matching (S.K -> Sanjay Kumar), phonetic for sound-alike
-            // Subject/Field: ngram for abbreviations (Chem Eng -> Chemical Engineering)
-            const fieldMapping = {
-                title: ['title^3'],
-                abstract: ['abstract'],
-                author: [
-                    'author_names^2',           // Standard match
-                    'author_names.ngram^1.5'    // Partial/abbreviation match
-                ],
-                subject_area: [
-                    'subject_area^2',           // Standard match
-                    'subject_area.ngram^1.5'    // Partial match
-                ],
-                field: [
-                    'field_associated^2',       // Standard match
-                    'field_associated.ngram^1.5' // Partial match
-                ]
-            };
+    /**
+     * Build impact-weighted query using function_score
+     * Combines relevance with citation count and recency
+     */
+    _buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null) {
+        const from = (page - 1) * perPage;
+        const filterClauses = this._buildFilters(filters);
+        const searchFields = this._getSearchFields(searchIn);
+        const currentYear = new Date().getFullYear();
 
-            const customFields = searchIn
-                .flatMap(f => fieldMapping[f] || [])
-                .filter(Boolean);
+        // Detect multi-word query
+        const words = query.trim().split(/\s+/);
+        const isMultiWord = words.length >= 2;
 
-            if (customFields.length > 0) {
-                searchFields = customFields;
+        // Build should clauses
+        const shouldClauses = [
+            // BM25 search
+            {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    fuzziness: 'AUTO'
+                }
+            },
+            // Subject area boost
+            {
+                match: {
+                    'subject_area': { query: query, boost: 2.0 }
+                }
+            },
+            // k-NN
+            {
+                knn: {
+                    embedding: { vector: embedding, k: 100 }
+                }
             }
+        ];
+
+        // Add phrase boost
+        if (isMultiWord) {
+            shouldClauses.push({
+                multi_match: {
+                    query: query,
+                    fields: ['title^5', 'abstract^2'],
+                    type: 'phrase',
+                    slop: 2,
+                    boost: this.searchConfig.phraseBoost
+                }
+            });
         }
 
         return {
@@ -127,49 +384,123 @@ export default class SearchService {
             from,
             _source: ['mongo_id', 'title', 'author_names', 'publication_year', 'citation_count'],
             query: {
-                bool: {
-                    should: [
-                        // BM25 component with dynamic fields
+                function_score: {
+                    query: {
+                        bool: {
+                            should: shouldClauses,
+                            minimum_should_match: 1,
+                            filter: filterClauses
+                        }
+                    },
+                    functions: [
                         {
-                            multi_match: {
-                                query: query,
-                                fields: searchFields,
-                                type: 'best_fields'
-                            }
+                            // Log-scale citation boost (prevents dominance by highly-cited papers)
+                            field_value_factor: {
+                                field: 'citation_count',
+                                factor: this.searchConfig.citationFactor,
+                                modifier: 'log1p',
+                                missing: 0
+                            },
+                            weight: 1.2
                         },
-                        // k-NN component - fetch 100 candidates for better ranking
                         {
-                            knn: {
-                                embedding: {
-                                    vector: embedding,
-                                    k: 100
+                            // Recency boost: papers within scale years get boost
+                            gauss: {
+                                publication_year: {
+                                    origin: currentYear,
+                                    scale: this.searchConfig.recencyScale,
+                                    decay: 0.5
                                 }
-                            }
+                            },
+                            weight: 0.8
                         }
                     ],
-                    minimum_should_match: 1,
-                    filter: filterClauses
+                    score_mode: 'sum',
+                    boost_mode: 'multiply'
                 }
             },
-            sort: sortClause,
-            // Aggregations for facets (use .keyword for text fields)
-            aggs: {
-                years: {
-                    terms: { field: 'publication_year', size: 20, order: { _key: 'desc' } }
-                },
-                document_types: {
-                    terms: { field: 'document_type', size: 10 }
-                },
-                fields: {
-                    terms: { field: 'field_associated.keyword', size: 20 }
-                },
-                subject_areas: {
-                    terms: { field: 'subject_area.keyword', size: 30 }
-                }
-            }
+            aggs: this._getAggregations()
         };
     }
 
+    /**
+     * Build normalized hybrid query using script_score
+     * Normalizes BM25 and k-NN scores for fair combination
+     */
+    _buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null) {
+        const from = (page - 1) * perPage;
+        const filterClauses = this._buildFilters(filters);
+        const searchFields = this._getSearchFields(searchIn);
+        const weights = this.searchConfig.hybridWeights;
+
+        // Detect multi-word query
+        const words = query.trim().split(/\s+/);
+        const isMultiWord = words.length >= 2;
+
+        // Build should clauses for BM25 component
+        const bm25Clauses = [
+            {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'best_fields',
+                    tie_breaker: 0.3
+                }
+            },
+            {
+                match: {
+                    'subject_area': { query: query, boost: 2.0 }
+                }
+            }
+        ];
+
+        if (isMultiWord) {
+            bm25Clauses.push({
+                multi_match: {
+                    query: query,
+                    fields: ['title^5', 'abstract^2'],
+                    type: 'phrase',
+                    slop: 2,
+                    boost: this.searchConfig.phraseBoost
+                }
+            });
+        }
+
+        return {
+            size: perPage,
+            from,
+            _source: ['mongo_id', 'title', 'author_names', 'publication_year', 'citation_count'],
+            query: {
+                script_score: {
+                    query: {
+                        bool: {
+                            should: bm25Clauses,
+                            filter: filterClauses,
+                            minimum_should_match: 1
+                        }
+                    },
+                    script: {
+                        source: `
+                            // Normalize BM25 score (typically 0-20) to 0-1 range
+                            double bm25 = _score / (1.0 + _score);
+                            
+                            // k-NN cosine similarity (returns -1 to 1, normalize to 0-1)
+                            double knn = (cosineSimilarity(params.queryVector, 'embedding') + 1.0) / 2.0;
+                            
+                            // Weighted combination
+                            return params.bm25Weight * bm25 + params.vectorWeight * knn;
+                        `,
+                        params: {
+                            queryVector: embedding,
+                            bm25Weight: weights.bm25,
+                            vectorWeight: weights.vector
+                        }
+                    }
+                }
+            },
+            aggs: this._getAggregations()
+        };
+    }
 
     /**
      * Parse aggregations into facets
@@ -177,6 +508,10 @@ export default class SearchService {
     _parseFacets(aggregations) {
         return {
             years: aggregations?.years?.buckets?.map(b => ({
+                value: b.key,
+                count: b.doc_count
+            })) || [],
+            year_ranges: aggregations?.year_ranges?.buckets?.map(b => ({
                 value: b.key,
                 count: b.doc_count
             })) || [],
@@ -203,7 +538,6 @@ export default class SearchService {
 
         const mongoIds = osHits.map(hit => hit._source.mongo_id);
 
-        // Get ResearchDocument model
         const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
 
         const docs = await ResearchDocument.find({
@@ -212,7 +546,6 @@ export default class SearchService {
             .select('-__v')
             .lean();
 
-        // Create lookup map
         const docMap = new Map(docs.map(d => [d._id.toString(), d]));
 
         // Preserve OpenSearch ranking order
@@ -227,8 +560,7 @@ export default class SearchService {
     async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null }) {
         const cacheKey = this._getCacheKey(query, filters, sort, page, per_page, search_in);
 
-        // Debug: Log cache key and filters to diagnose caching issues
-        this.logger.info({ cacheKey, query, filters, search_in }, 'Search request - cache key generated');
+        this.logger.info({ cacheKey, query, filters, sort, search_in }, 'Search request');
 
         // Check cache
         try {
@@ -246,13 +578,12 @@ export default class SearchService {
         const embedding = await this.embeddingService.embedQuery(query);
 
         // Pre-check: Run BM25-only query to verify query has keyword matches
-        // If BM25 returns 0 results, it's likely gibberish - skip kNN search
         const bm25CheckQuery = {
-            size: 0,  // Don't need actual results, just count
+            size: 0,
             query: {
                 multi_match: {
                     query: query,
-                    fields: ['title', 'abstract', 'author_names']
+                    fields: ['title', 'abstract', 'author_names', 'subject_area']
                 }
             }
         };
@@ -264,7 +595,7 @@ export default class SearchService {
 
         const bm25Matches = bm25CheckResponse.body.hits.total.value;
 
-        // If no BM25 matches, return empty results (gibberish query)
+        // If no BM25 matches, return empty results
         if (bm25Matches === 0) {
             return {
                 results: [],
@@ -275,8 +606,15 @@ export default class SearchService {
             };
         }
 
-        // Build and execute OpenSearch hybrid query
-        const osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, search_in);
+        // Build query based on sort option
+        let osQuery;
+        if (sort === 'impact') {
+            osQuery = this._buildImpactQuery(query, embedding, filters, page, per_page, search_in);
+        } else if (sort === 'normalized') {
+            osQuery = this._buildNormalizedHybridQuery(query, embedding, filters, page, per_page, search_in);
+        } else {
+            osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, search_in);
+        }
 
         const osResponse = await this.opensearch.search({
             index: this.indexName,
@@ -316,19 +654,127 @@ export default class SearchService {
     }
 
     /**
+     * Find semantically similar papers using k-NN on existing embeddings
+     */
+    async findSimilar(documentId, limit = 10) {
+        // Get the source document's embedding from OpenSearch
+        const sourceQuery = await this.opensearch.search({
+            index: this.indexName,
+            body: {
+                query: { term: { mongo_id: documentId } },
+                _source: ['embedding', 'title', 'subject_area']
+            }
+        });
+
+        if (!sourceQuery.body.hits.hits.length) {
+            throw new Error('Document not found in search index');
+        }
+
+        const source = sourceQuery.body.hits.hits[0]._source;
+        const embedding = source.embedding;
+
+        // k-NN search excluding the source document
+        const similarQuery = await this.opensearch.search({
+            index: this.indexName,
+            body: {
+                size: limit,
+                _source: ['mongo_id'],
+                query: {
+                    bool: {
+                        must: [{
+                            knn: {
+                                embedding: { vector: embedding, k: limit + 5 }
+                            }
+                        }],
+                        must_not: [{ term: { mongo_id: documentId } }]
+                    }
+                }
+            }
+        });
+
+        // Hydrate from MongoDB
+        const results = await this._hydrateFromMongoDB(similarQuery.body.hits.hits);
+
+        // Include similarity scores
+        const scoreMap = new Map(
+            similarQuery.body.hits.hits.map(h => [h._source.mongo_id, h._score])
+        );
+
+        return {
+            source: { id: documentId, title: source.title, subject_areas: source.subject_area },
+            similar: results.map(r => ({
+                ...r,
+                similarity_score: scoreMap.get(r._id.toString())
+            }))
+        };
+    }
+
+    /**
+     * Get co-authors for a specific author (Phase 2 - after reindexing)
+     */
+    async getCoAuthors(authorId) {
+        const result = await this.opensearch.search({
+            index: this.indexName,
+            body: {
+                size: 0,
+                query: {
+                    nested: {
+                        path: 'authors',
+                        query: { term: { 'authors.author_id': authorId } }
+                    }
+                },
+                aggs: {
+                    author_papers: {
+                        nested: { path: 'authors' },
+                        aggs: {
+                            coauthors: {
+                                terms: {
+                                    field: 'authors.author_id',
+                                    size: 50,
+                                    exclude: authorId
+                                },
+                                aggs: {
+                                    author_info: {
+                                        top_hits: {
+                                            size: 1,
+                                            _source: ['authors.author_name', 'authors.author_affiliation']
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    total_papers: { value_count: { field: 'mongo_id' } }
+                }
+            }
+        });
+
+        const coauthors = result.body.aggregations?.author_papers?.coauthors?.buckets || [];
+
+        return {
+            author_id: authorId,
+            total_papers: result.body.aggregations?.total_papers?.value || 0,
+            collaborators: coauthors.map(c => ({
+                author_id: c.key,
+                collaboration_count: c.doc_count,
+                name: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_name,
+                affiliation: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_affiliation
+            }))
+        };
+    }
+
+    /**
      * Get single document by ID
      */
     async getDocument(id) {
         const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
 
-        // Try as MongoDB ObjectId first
         let doc = null;
 
         if (id.match(/^[0-9a-fA-F]{24}$/)) {
             doc = await ResearchDocument.findById(id).lean();
         }
 
-        // Try as OpenSearch ID
         if (!doc) {
             doc = await ResearchDocument.findOne({ open_search_id: id }).lean();
         }

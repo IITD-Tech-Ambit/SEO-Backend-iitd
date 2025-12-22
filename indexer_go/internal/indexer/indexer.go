@@ -333,24 +333,57 @@ func (idx *Indexer) Run(ctx context.Context, limit int, reindexAll bool) error {
 				atomic.AddInt64(&stats.batchesInIndex, 1)
 				atomic.AddInt64(&stats.docsInIndex, int64(len(batch.docs)))
 
-				// Build OpenSearch documents
+				// Build OpenSearch documents with enhanced author data
 				osDocs := make([]opensearch.OSDocument, len(batch.docs))
 				for i, doc := range batch.docs {
+					// Flat author names for backward compatibility
 					authorNames := make([]string, len(doc.Authors))
+					// All name variants combined
+					allVariants := make([]string, 0)
+					// Nested author structure
+					osAuthors := make([]opensearch.OSAuthor, len(doc.Authors))
+
 					for j, a := range doc.Authors {
 						authorNames[j] = a.AuthorName
+
+						// Collect all name variants
+						if len(a.AuthorAvailableNames) > 0 {
+							allVariants = append(allVariants, a.AuthorAvailableNames...)
+						}
+
+						// Parse author position
+						position := 0
+						if a.AuthorPosition != "" {
+							fmt.Sscanf(a.AuthorPosition, "%d", &position)
+						}
+
+						// Build nested author
+						osAuthors[j] = opensearch.OSAuthor{
+							AuthorID:           a.AuthorID,
+							AuthorName:         a.AuthorName,
+							AuthorNameVariants: a.AuthorAvailableNames,
+							AuthorPosition:     position,
+							AuthorAffiliation:  a.AuthorAffiliation,
+							AuthorEmail:        a.AuthorEmail,
+							HasMatchedProfile:  a.MatchedProfile != nil,
+						}
 					}
+
 					osDocs[i] = opensearch.OSDocument{
-						MongoID:         doc.ID.Hex(),
-						Title:           doc.Title,
-						Abstract:        doc.Abstract,
-						AuthorNames:     authorNames,
-						PublicationYear: doc.PublicationYear,
-						FieldAssociated: doc.FieldAssociated,
-						DocumentType:    doc.DocumentType,
-						SubjectArea:     doc.SubjectArea,
-						CitationCount:   doc.CitationCount,
-						Embedding:       batch.embeddings[i],
+						MongoID:            doc.ID.Hex(),
+						Title:              doc.Title,
+						Abstract:           doc.Abstract,
+						Authors:            osAuthors,
+						AuthorNames:        authorNames,
+						AuthorNameVariants: allVariants,
+						PublicationYear:    doc.PublicationYear,
+						FieldAssociated:    doc.FieldAssociated,
+						DocumentType:       doc.DocumentType,
+						SubjectArea:        doc.SubjectArea,
+						SubjectAreaCount:   len(doc.SubjectArea),
+						CitationCount:      doc.CitationCount,
+						ReferenceCount:     doc.ReferenceCount,
+						Embedding:          batch.embeddings[i],
 					}
 				}
 
@@ -426,4 +459,41 @@ func (idx *Indexer) Run(ctx context.Context, limit int, reindexAll bool) error {
 // CreateIndex creates the OpenSearch index
 func (idx *Indexer) CreateIndex(ctx context.Context) error {
 	return idx.openSearch.CreateIndex(ctx)
+}
+
+// DeleteIndex deletes the OpenSearch index (for reindexing)
+func (idx *Indexer) DeleteIndex(ctx context.Context) error {
+	return idx.openSearch.DeleteIndex(ctx)
+}
+
+// ClearMongoIDs clears all OpenSearch IDs in MongoDB (for full reindex)
+func (idx *Indexer) ClearMongoIDs(ctx context.Context) error {
+	return idx.mongoDB.ClearOpenSearchIDs(ctx)
+}
+
+// ReindexFull performs a complete reindex: delete index, create new, clear MongoDB IDs, reindex all
+func (idx *Indexer) ReindexFull(ctx context.Context) error {
+	log.Println("🔄 Starting full reindex...")
+
+	// Step 1: Delete existing index
+	log.Println("  Step 1/4: Deleting existing OpenSearch index...")
+	if err := idx.DeleteIndex(ctx); err != nil {
+		log.Printf("  Warning: Delete index failed (may not exist): %v", err)
+	}
+
+	// Step 2: Create new index with enhanced mapping
+	log.Println("  Step 2/4: Creating new index with enhanced mapping...")
+	if err := idx.CreateIndex(ctx); err != nil {
+		return fmt.Errorf("create index: %w", err)
+	}
+
+	// Step 3: Clear MongoDB OpenSearch IDs
+	log.Println("  Step 3/4: Clearing MongoDB open_search_id fields...")
+	if err := idx.ClearMongoIDs(ctx); err != nil {
+		return fmt.Errorf("clear mongo ids: %w", err)
+	}
+
+	// Step 4: Run full reindexing
+	log.Println("  Step 4/4: Reindexing all documents...")
+	return idx.Run(ctx, 0, true) // limit=0 (all), reindexAll=true
 }

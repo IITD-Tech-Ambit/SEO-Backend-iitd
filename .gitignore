@@ -37,8 +37,11 @@ build/
 *.dylib
 *.test
 *.out
+
 # Go binary (no extension on Unix)
 indexer_go/indexer
+indexer_go/bin
+
 
 # Python
 *.so

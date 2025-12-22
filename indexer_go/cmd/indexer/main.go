@@ -15,7 +15,8 @@ import (
 func main() {
 	// Parse command line flags
 	limit := flag.Int("limit", 0, "Limit number of documents to index (0 = all)")
-	reindexAll := flag.Bool("reindex-all", false, "Reindex all documents")
+	reindexAll := flag.Bool("reindex-all", false, "Reindex all documents (keeps existing index)")
+	reindexFull := flag.Bool("reindex-full", false, "Full reindex: delete index, create new with enhanced mapping, reindex all docs")
 	createIndex := flag.Bool("create-index", false, "Create the OpenSearch index if it doesn't exist")
 	workers := flag.Int("workers", 0, "Number of parallel workers (0 = use config default)")
 	flag.Parse()
@@ -27,7 +28,7 @@ func main() {
 	}
 
 	log.Println("═══════════════════════════════════════════════════════")
-	log.Println("  Research Document Indexer (Go)")
+	log.Println("  Research Document Indexer (Go) - Enhanced")
 	log.Println("═══════════════════════════════════════════════════════")
 	log.Printf("  Index:    %s", cfg.OpenSearchIndex)
 	log.Printf("  Workers:  %d", cfg.NumWorkers)
@@ -53,6 +54,15 @@ func main() {
 		log.Println("\nReceived shutdown signal, cancelling...")
 		cancel()
 	}()
+
+	// Full reindex mode: delete, create, clear, reindex
+	if *reindexFull {
+		log.Println("🔄 Full reindex mode: Will delete existing index and recreate with enhanced mapping")
+		if err := idx.ReindexFull(ctx); err != nil {
+			log.Fatalf("Full reindex failed: %v", err)
+		}
+		return
+	}
 
 	// Create index if requested
 	if *createIndex {

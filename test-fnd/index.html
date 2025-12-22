@@ -797,6 +797,7 @@
 
             <!-- Collapsible Filters Panel -->
             <div class="filters-panel" id="filtersPanel">
+                <!-- Row 1: Basic Filters -->
                 <div class="filters-row">
                     <div class="filter-group">
                         <span class="filter-label">Year From</span>
@@ -818,6 +819,8 @@
                         <span class="filter-label">Sort By</span>
                         <select class="filter-select" id="sortBy">
                             <option value="relevance">Relevance</option>
+                            <option value="impact">Impact (Citations + Recency)</option>
+                            <option value="normalized">Balanced Hybrid</option>
                             <option value="date">Date</option>
                             <option value="citations">Citations</option>
                         </select>
@@ -826,7 +829,32 @@
                     <button class="clear-filters-btn" onclick="clearFilters()">Clear</button>
                 </div>
 
-                <div class="filter-group">
+                <!-- Row 2: Nested Author Filters -->
+                <div class="filters-row" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border);">
+                    <div class="filter-group">
+                        <span class="filter-label">👤 Author ID (Scopus)</span>
+                        <input type="text" class="filter-input" id="authorId" placeholder="e.g. 35576136800" style="min-width: 140px;">
+                    </div>
+                    <div class="filter-group">
+                        <span class="filter-label">🏢 Affiliation</span>
+                        <input type="text" class="filter-input" id="affiliation" placeholder="e.g. IIT Delhi" style="min-width: 180px;">
+                    </div>
+                    <div class="filter-group">
+                        <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0;">
+                            <input type="checkbox" id="firstAuthorOnly" style="width: 16px; height: 16px;">
+                            <span style="font-size: 0.85rem; color: var(--text-secondary);">First Author Only</span>
+                        </label>
+                    </div>
+                    <div class="filter-group">
+                        <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0;">
+                            <input type="checkbox" id="interdisciplinary" style="width: 16px; height: 16px;">
+                            <span style="font-size: 0.85rem; color: var(--text-secondary);">Interdisciplinary (3+ fields)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Row 3: Search In Chips -->
+                <div class="filter-group" style="margin-top: 0.75rem;">
                     <span class="filter-label">Search In (N-gram enabled for partial matching)</span>
                     <div class="search-in-group">
                         <div class="chip active" data-field="title" onclick="toggleChip(this)">📝 Title</div>
@@ -850,8 +878,8 @@
 
     <script>
         // ========== Configuration ==========
-        const API_URL = 'https://ais710.tufesports.me/api/v1';
-        // const API_URL = 'http://localhost:3000/api/v1';
+        // const API_URL = 'https://ais710.tufesports.me/api/v1';
+        const API_URL = 'http://localhost:3000/api/v1';
 
         // ========== State ==========
         let currentPage = 1;
@@ -890,13 +918,24 @@
             const perPage = document.getElementById('perPage').value;
             const sort = document.getElementById('sortBy').value;
             const searchIn = getSearchInFields();
+            
+            // New nested filters
+            const authorId = document.getElementById('authorId').value.trim();
+            const affiliation = document.getElementById('affiliation').value.trim();
+            const firstAuthorOnly = document.getElementById('firstAuthorOnly').checked;
+            const interdisciplinary = document.getElementById('interdisciplinary').checked;
 
             appliedFilters = {
                 yearFrom: yearFrom || null,
                 yearTo: yearTo || null,
                 perPage: parseInt(perPage),
                 sort,
-                searchIn
+                searchIn,
+                // Nested author filters
+                authorId: authorId || null,
+                affiliation: affiliation || null,
+                firstAuthorOnly,
+                interdisciplinary
             };
 
             updateActiveFiltersDisplay();
@@ -912,6 +951,12 @@
             document.getElementById('yearTo').value = '';
             document.getElementById('perPage').value = '20';
             document.getElementById('sortBy').value = 'relevance';
+            
+            // Clear nested filters
+            document.getElementById('authorId').value = '';
+            document.getElementById('affiliation').value = '';
+            document.getElementById('firstAuthorOnly').checked = false;
+            document.getElementById('interdisciplinary').checked = false;
             
             // Reset chips to default (title + abstract)
             document.querySelectorAll('.chip').forEach(chip => {
@@ -946,6 +991,19 @@
             if (appliedFilters.searchIn && appliedFilters.searchIn.length > 0 && appliedFilters.searchIn.length < 5) {
                 html += `<div class="active-filter-tag">Fields: ${appliedFilters.searchIn.join(', ')} <span class="remove" onclick="removeFilter('searchIn')">×</span></div>`;
             }
+            // New nested filters display
+            if (appliedFilters.authorId) {
+                html += `<div class="active-filter-tag">👤 Author: ${appliedFilters.authorId} <span class="remove" onclick="removeFilter('authorId')">×</span></div>`;
+            }
+            if (appliedFilters.affiliation) {
+                html += `<div class="active-filter-tag">🏢 ${appliedFilters.affiliation} <span class="remove" onclick="removeFilter('affiliation')">×</span></div>`;
+            }
+            if (appliedFilters.firstAuthorOnly) {
+                html += `<div class="active-filter-tag">1st Author Only <span class="remove" onclick="removeFilter('firstAuthorOnly')">×</span></div>`;
+            }
+            if (appliedFilters.interdisciplinary) {
+                html += `<div class="active-filter-tag">Interdisciplinary <span class="remove" onclick="removeFilter('interdisciplinary')">×</span></div>`;
+            }
 
             container.innerHTML = html;
         }
@@ -969,6 +1027,18 @@
                     }
                 });
                 appliedFilters.searchIn = ['title', 'abstract'];
+            } else if (filterName === 'authorId') {
+                document.getElementById('authorId').value = '';
+                appliedFilters.authorId = null;
+            } else if (filterName === 'affiliation') {
+                document.getElementById('affiliation').value = '';
+                appliedFilters.affiliation = null;
+            } else if (filterName === 'firstAuthorOnly') {
+                document.getElementById('firstAuthorOnly').checked = false;
+                appliedFilters.firstAuthorOnly = false;
+            } else if (filterName === 'interdisciplinary') {
+                document.getElementById('interdisciplinary').checked = false;
+                appliedFilters.interdisciplinary = false;
             }
             
             updateActiveFiltersDisplay();
@@ -1012,10 +1082,27 @@
                 filters: {}
             };
 
+            // Year filters
             if (appliedFilters.yearFrom) payload.filters.year_from = parseInt(appliedFilters.yearFrom);
             if (appliedFilters.yearTo) payload.filters.year_to = parseInt(appliedFilters.yearTo);
+            
+            // Search-in fields
             if (searchIn.length > 0 && searchIn.length < 5) {
                 payload.search_in = searchIn;
+            }
+            
+            // Nested author filters
+            if (appliedFilters.authorId) {
+                payload.filters.author_id = appliedFilters.authorId;
+            }
+            if (appliedFilters.affiliation) {
+                payload.filters.affiliation = appliedFilters.affiliation;
+            }
+            if (appliedFilters.firstAuthorOnly) {
+                payload.filters.first_author_only = true;
+            }
+            if (appliedFilters.interdisciplinary) {
+                payload.filters.interdisciplinary = true;
             }
 
             try {
@@ -1097,10 +1184,13 @@
                                 // Handle both object format and string format
                                 const name = author.author_name || author.name || author;
                                 const affiliation = author.author_affiliation || author.affiliation;
+                                const authorId = author.author_id || '';
+                                const tooltipText = affiliation ? escapeHtml(affiliation) : (authorId ? `ID: ${authorId}` : '');
                                 return `
-                                    <div class="author-badge">
+                                    <div class="author-badge" 
+                                         ${authorId ? `onclick="filterByAuthor('${authorId}')" title="Click to filter by this author"` : ''}>
                                         ${escapeHtml(name)}
-                                        ${affiliation ? `<div class="author-tooltip">${escapeHtml(affiliation)}</div>` : ''}
+                                        ${tooltipText ? `<div class="author-tooltip">${tooltipText}</div>` : ''}
                                     </div>
                                 `;
                             }).join('')}
@@ -1149,6 +1239,27 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // Filter by author when clicking on author badge
+        function filterByAuthor(authorId) {
+            if (!authorId) return;
+            
+            // Set the author ID filter
+            document.getElementById('authorId').value = authorId;
+            appliedFilters.authorId = authorId;
+            
+            // Open filters panel to show the active filter
+            if (!filtersOpen) {
+                toggleFilters();
+            }
+            
+            updateActiveFiltersDisplay();
+            
+            // Re-search with the author filter
+            if (lastQuery) {
+                search(1);
+            }
         }
     </script>
 </body>

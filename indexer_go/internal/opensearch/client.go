@@ -21,18 +21,33 @@ type Client struct {
 	cfg    *config.Config
 }
 
+// OSAuthor represents a nested author document in OpenSearch
+type OSAuthor struct {
+	AuthorID           string   `json:"author_id"`
+	AuthorName         string   `json:"author_name"`
+	AuthorNameVariants []string `json:"author_name_variants"`
+	AuthorPosition     int      `json:"author_position"`
+	AuthorAffiliation  string   `json:"author_affiliation"`
+	AuthorEmail        string   `json:"author_email"`
+	HasMatchedProfile  bool     `json:"has_matched_profile"`
+}
+
 // OSDocument represents a document to be indexed in OpenSearch
 type OSDocument struct {
-	MongoID         string    `json:"mongo_id"`
-	Title           string    `json:"title"`
-	Abstract        string    `json:"abstract"`
-	AuthorNames     []string  `json:"author_names"`
-	PublicationYear int       `json:"publication_year"`
-	FieldAssociated string    `json:"field_associated"`
-	DocumentType    string    `json:"document_type"`
-	SubjectArea     []string  `json:"subject_area"`
-	CitationCount   int       `json:"citation_count"`
-	Embedding       []float32 `json:"embedding"`
+	MongoID            string     `json:"mongo_id"`
+	Title              string     `json:"title"`
+	Abstract           string     `json:"abstract"`
+	Authors            []OSAuthor `json:"authors"`
+	AuthorNames        []string   `json:"author_names"`         // Flat list for backward compatibility
+	AuthorNameVariants []string   `json:"author_name_variants"` // All name variants
+	PublicationYear    int        `json:"publication_year"`
+	FieldAssociated    string     `json:"field_associated"`
+	DocumentType       string     `json:"document_type"`
+	SubjectArea        []string   `json:"subject_area"`
+	SubjectAreaCount   int        `json:"subject_area_count"`
+	CitationCount      int        `json:"citation_count"`
+	ReferenceCount     int        `json:"reference_count"`
+	Embedding          []float32  `json:"embedding"`
 }
 
 // NewClient creates a new OpenSearch client
@@ -135,7 +150,12 @@ func (c *Client) BulkIndex(ctx context.Context, docs []OSDocument) (map[string]s
 	return idMap, nil
 }
 
-// CreateIndex creates the OpenSearch index with proper mappings
+// CreateIndex creates the OpenSearch index with enhanced mappings
+// Features:
+// - Custom BM25 parameters (k1=1.8, b=0.6) tuned for academic text
+// - Shingle analyzer for phrase matching
+// - Nested author mapping with name variants
+// - Subject area count for interdisciplinary filtering
 func (c *Client) CreateIndex(ctx context.Context) error {
 	// Check if index exists
 	res, err := c.client.Indices.Exists([]string{c.cfg.OpenSearchIndex})
@@ -153,10 +173,18 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 		"settings": {
 			"index": {
 				"knn": true,
-				"knn.algo_param.ef_search": 256,
+				"knn.algo_param.ef_search": 300,
 				"number_of_shards": 3,
 				"number_of_replicas": 1,
-				"max_ngram_diff": 2
+				"max_ngram_diff": 2,
+				"max_shingle_diff": 2
+			},
+			"similarity": {
+				"custom_bm25": {
+					"type": "BM25",
+					"k1": 1.8,
+					"b": 0.6
+				}
 			},
 			"analysis": {
 				"filter": {
@@ -164,6 +192,12 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 						"type": "ngram",
 						"min_gram": 2,
 						"max_gram": 4
+					},
+					"shingle_filter": {
+						"type": "shingle",
+						"min_shingle_size": 2,
+						"max_shingle_size": 3,
+						"output_unigrams": true
 					}
 				},
 				"analyzer": {
@@ -171,6 +205,11 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 						"type": "custom",
 						"tokenizer": "standard",
 						"filter": ["lowercase", "ngram_filter"]
+					},
+					"shingle_analyzer": {
+						"type": "custom",
+						"tokenizer": "standard",
+						"filter": ["lowercase", "shingle_filter"]
 					}
 				}
 			}
@@ -184,15 +223,73 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 				"title": {
 					"type": "text",
 					"analyzer": "english",
+					"similarity": "custom_bm25",
 					"fields": {
-						"exact": {"type": "keyword"}
+						"exact": {"type": "keyword"},
+						"shingles": {
+							"type": "text",
+							"analyzer": "shingle_analyzer"
+						}
 					}
 				},
 				"abstract": {
 					"type": "text",
-					"analyzer": "english"
+					"analyzer": "english",
+					"similarity": "custom_bm25",
+					"fields": {
+						"shingles": {
+							"type": "text",
+							"analyzer": "shingle_analyzer"
+						}
+					}
+				},
+				"authors": {
+					"type": "nested",
+					"properties": {
+						"author_id": {"type": "keyword"},
+						"author_name": {
+							"type": "text",
+							"analyzer": "standard",
+							"fields": {
+								"keyword": {"type": "keyword"},
+								"ngram": {
+									"type": "text",
+									"analyzer": "ngram_analyzer"
+								}
+							}
+						},
+						"author_name_variants": {
+							"type": "text",
+							"analyzer": "standard",
+							"fields": {
+								"keyword": {"type": "keyword"},
+								"ngram": {
+									"type": "text",
+									"analyzer": "ngram_analyzer"
+								}
+							}
+						},
+						"author_position": {"type": "integer"},
+						"author_affiliation": {
+							"type": "text",
+							"fields": {"keyword": {"type": "keyword"}}
+						},
+						"author_email": {"type": "keyword"},
+						"has_matched_profile": {"type": "boolean"}
+					}
 				},
 				"author_names": {
+					"type": "text",
+					"analyzer": "standard",
+					"fields": {
+						"keyword": {"type": "keyword"},
+						"ngram": {
+							"type": "text",
+							"analyzer": "ngram_analyzer"
+						}
+					}
+				},
+				"author_name_variants": {
 					"type": "text",
 					"analyzer": "standard",
 					"fields": {
@@ -227,7 +324,9 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 						}
 					}
 				},
+				"subject_area_count": {"type": "integer"},
 				"citation_count": {"type": "integer"},
+				"reference_count": {"type": "integer"},
 				"embedding": {
 					"type": "knn_vector",
 					"dimension": 768,
@@ -260,7 +359,23 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 		return fmt.Errorf("create index error: %s", res.String())
 	}
 
-	fmt.Printf("Created index %s\n", c.cfg.OpenSearchIndex)
+	fmt.Printf("Created index %s with enhanced mapping\n", c.cfg.OpenSearchIndex)
+	return nil
+}
+
+// DeleteIndex deletes the OpenSearch index (for reindexing)
+func (c *Client) DeleteIndex(ctx context.Context) error {
+	res, err := c.client.Indices.Delete([]string{c.cfg.OpenSearchIndex})
+	if err != nil {
+		return fmt.Errorf("delete index: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.IsError() && res.StatusCode != 404 {
+		return fmt.Errorf("delete index error: %s", res.String())
+	}
+
+	fmt.Printf("Deleted index %s\n", c.cfg.OpenSearchIndex)
 	return nil
 }
 
