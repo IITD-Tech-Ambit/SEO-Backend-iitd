@@ -35,8 +35,8 @@ type Client struct {
 
 // NewClient creates a new embedding service client with connection pooling and rate limiting
 func NewClient(cfg *config.Config) *Client {
-	// Allow max 2 concurrent embedding requests to avoid overwhelming the service
-	maxConcurrent := 2
+	// Allow higher concurrency for TEI (was 2 for Python service)
+	maxConcurrent := 32
 
 	return &Client{
 		httpClient: &http.Client{
@@ -67,14 +67,7 @@ func (c *Client) GetEmbeddings(ctx context.Context, texts []string) ([][]float32
 		return nil, ctx.Err()
 	}
 
-	// Rate limiting: ensure minimum gap between requests
-	c.mu.Lock()
-	elapsed := time.Since(c.lastReq)
-	if elapsed < 100*time.Millisecond {
-		time.Sleep(100*time.Millisecond - elapsed)
-	}
-	c.lastReq = time.Now()
-	c.mu.Unlock()
+	// No artificial rate limiting needed for TEI
 
 	var lastErr error
 	for attempt := 0; attempt < c.cfg.MaxRetries; attempt++ {

@@ -39,6 +39,9 @@ type Config struct {
 	// Retry
 	MaxRetries int
 	RetryDelay int
+
+	// Cache (for two-phase indexing)
+	CacheDir string
 }
 
 // Load reads configuration from environment variables
@@ -50,7 +53,7 @@ func Load() *Config {
 		// MongoDB
 		MongoURI:          getEnv("MONGODB_URI", "mongodb://localhost:27017/research_db"),
 		MongoCollection:   getEnv("MONGODB_COLLECTION", "researchmetadatascopuses"),
-		MongoMaxPoolSize:  getEnvInt("MONGO_MAX_POOL_SIZE", 10), // Low for free tier (default 100 is too high)
+		MongoMaxPoolSize:  getEnvInt("MONGO_MAX_POOL_SIZE", 20), // Increased for higher concurrency
 		MongoFetchDelayMs: getEnvInt("MONGO_FETCH_DELAY_MS", 5), // Small delay between cursor reads
 		MongoBulkDelayMs:  getEnvInt("MONGO_BULK_DELAY_MS", 50), // Delay between bulk writes
 
@@ -66,16 +69,19 @@ func Load() *Config {
 		EmbeddingTimeout:    getEnvInt("EMBEDDING_TIMEOUT", 60), // Increased from 30s for slower services
 
 		// Batch sizes - smaller for free tier
-		MongoBatchSize:     getEnvInt("MONGO_BATCH_SIZE", 50), // Reduced from 100
-		EmbedBatchSize:     getEnvInt("EMBED_BATCH_SIZE", 32),
-		OpenSearchBulkSize: getEnvInt("OPENSEARCH_BULK_SIZE", 50), // Reduced from 100
+		MongoBatchSize:     getEnvInt("MONGO_BATCH_SIZE", 100),     // Increased from 50
+		EmbedBatchSize:     getEnvInt("EMBED_BATCH_SIZE", 128),     // Optimal for TEI
+		OpenSearchBulkSize: getEnvInt("OPENSEARCH_BULK_SIZE", 100), // Increased from 50
 
 		// Workers - fewer for free tier to reduce concurrent MongoDB load
-		NumWorkers: getEnvInt("NUM_WORKERS", 2), // Reduced from 4
+		NumWorkers: getEnvInt("NUM_WORKERS", 8), // Increased for TEI
 
 		// Retry
 		MaxRetries: getEnvInt("MAX_RETRIES", 3),
 		RetryDelay: getEnvInt("RETRY_DELAY", 5),
+
+		// Cache
+		CacheDir: getEnv("CACHE_DIR", ".cache"),
 	}
 }
 

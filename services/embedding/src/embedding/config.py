@@ -6,7 +6,7 @@ load_dotenv()
 # Model configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "allenai/specter2_base")
 MAX_LENGTH = int(os.getenv("MAX_LENGTH", "512"))
-MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "64"))
+MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "600"))
 
 # Server configuration
 HOST = os.getenv("HOST", "0.0.0.0")

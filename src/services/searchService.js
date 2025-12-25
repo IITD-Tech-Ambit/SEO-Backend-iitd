@@ -43,7 +43,13 @@ export default class SearchService {
             },
             phraseBoost: 2.5,
             citationFactor: 0.3,
-            recencyScale: 5
+            recencyScale: 5,
+            // Minimum score thresholds to filter low-confidence results
+            minScore: {
+                hybrid: 5.0,      // For BM25 + k-NN hybrid queries
+                impact: 5.0,      // For function_score impact queries  
+                normalized: 0.3   // For normalized 0-1 scale scores
+            }
         };
     }
 
@@ -146,10 +152,10 @@ export default class SearchService {
      * Boost rationale:
      * - title^4: Highest - query terms in title = strong match
      * - title.exact^5: Exact title match = very strong
-     * - abstract^1.5: Body text, good signal but verbose
      * - subject_area^3: Field matches = domain relevance
      * - author_names^2: Author search common use case
      * - field_associated^2.5: Department relevance
+     * Note: abstract removed - semantic search via embeddings handles this
      */
     _getSearchFields(searchIn = null) {
         const b = this.searchConfig.fieldBoosts;
@@ -313,7 +319,9 @@ export default class SearchService {
         return {
             size: perPage,
             from,
-            _source: ['mongo_id', 'title', 'author_names', 'publication_year', 'citation_count'],
+            track_total_hits: true,  // Get accurate total count
+            min_score: this.searchConfig.minScore.hybrid,  // Filter low-confidence results
+            _source: ['mongo_id'],
             query: {
                 bool: {
                     should: shouldClauses,
@@ -382,7 +390,9 @@ export default class SearchService {
         return {
             size: perPage,
             from,
-            _source: ['mongo_id', 'title', 'author_names', 'publication_year', 'citation_count'],
+            track_total_hits: true,  // Get accurate total count
+            min_score: this.searchConfig.minScore.impact,  // Filter low-confidence results
+            _source: ['mongo_id'],
             query: {
                 function_score: {
                     query: {
@@ -469,7 +479,9 @@ export default class SearchService {
         return {
             size: perPage,
             from,
-            _source: ['mongo_id', 'title', 'author_names', 'publication_year', 'citation_count'],
+            track_total_hits: true,  // Get accurate total count
+            min_score: this.searchConfig.minScore.normalized,  // Filter low-confidence results (0-1 scale)
+            _source: ['mongo_id'],
             query: {
                 script_score: {
                     query: {
@@ -606,6 +618,10 @@ export default class SearchService {
             };
         }
 
+        // Dynamic min_score: stricter for common queries, lenient for rare ones
+        const dynamicMinScore = bm25Matches > 1000 ? 8.0 :
+            bm25Matches > 100 ? 5.0 : 3.0;
+
         // Build query based on sort option
         let osQuery;
         if (sort === 'impact') {
@@ -615,6 +631,9 @@ export default class SearchService {
         } else {
             osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, search_in);
         }
+
+        // Apply dynamic min_score based on BM25 match count
+        osQuery.min_score = dynamicMinScore;
 
         const osResponse = await this.opensearch.search({
             index: this.indexName,

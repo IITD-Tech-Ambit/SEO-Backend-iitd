@@ -221,28 +221,28 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 					"doc_values": true
 				},
 				"title": {
-					"type": "text",
-					"analyzer": "english",
-					"similarity": "custom_bm25",
-					"fields": {
-						"exact": {"type": "keyword"},
-						"shingles": {
-							"type": "text",
-							"analyzer": "shingle_analyzer"
-						}
+				"type": "text",
+				"analyzer": "english",
+				"similarity": "custom_bm25",
+				"fields": {
+					"exact": {"type": "keyword"},
+					"shingles": {
+						"type": "text",
+						"analyzer": "shingle_analyzer"
 					}
-				},
-				"abstract": {
-					"type": "text",
-					"analyzer": "english",
-					"similarity": "custom_bm25",
-					"fields": {
-						"shingles": {
-							"type": "text",
-							"analyzer": "shingle_analyzer"
-						}
+				}
+			},
+			"abstract": {
+				"type": "text",
+				"analyzer": "english",
+				"similarity": "custom_bm25",
+				"fields": {
+					"shingles": {
+						"type": "text",
+						"analyzer": "shingle_analyzer"
 					}
-				},
+				}
+			},
 				"authors": {
 					"type": "nested",
 					"properties": {
