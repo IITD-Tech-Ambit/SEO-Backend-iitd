@@ -96,9 +96,9 @@ Batch indexer tracks indexed documents. Supports full reindex or incremental upd
 │   Client     │────▶│  Fastify API │────▶│    Redis     │
 │   Request    │     │   Gateway    │◀────│    Cache     │
 └──────────────┘     └──────┬───────┘     └──────────────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
+                            │
+              ┌────────────-┼────────────┐
+              ▼             ▼            ▼
        ┌──────────┐  ┌──────────┐  ┌──────────┐
        │Embedding │  │OpenSearch│  │ MongoDB  │
        │ Service  │  │  Cluster │  │ Hydration│
