@@ -112,6 +112,26 @@ export const searchResponseSchema = {
                 }
             }
         },
+        related_faculty: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    _id: { type: 'string' },
+                    name: { type: 'string' },
+                    email: { type: 'string' },
+                    department: { 
+                        type: 'object',
+                        properties: {
+                            _id: { type: 'string' },
+                            name: { type: 'string' }
+                        },
+                        nullable: true
+                    },
+                    paperCount: { type: 'integer' }
+                }
+            }
+        },
         facets: {
             type: 'object',
             properties: {

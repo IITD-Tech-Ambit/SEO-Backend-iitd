@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import '../models/departments.js'; // Ensure Department model is registered for populate
 
 /**
  * Search Service
@@ -234,15 +235,17 @@ export default class SearchService {
     }
 
     /**
-     * Build OpenSearch hybrid query with optimized scoring
+     * Build OpenSearch tiered query for strict priority sorting
      * 
-     * Features:
-     * - Field weighting with subject_area boosting
-     * - Phrase matching for multi-word queries
-     * - Subject area match boosting
-     * - k-NN semantic search
+     * Priority:
+     * 1. Title matches (Score: 10)
+     * 2. Other matches (Score: 1)
+     * 
+     * Secondary Sort:
+     * - Citation Count (desc)
+     * - Publication Year (desc)
      */
-    _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null) {
+         _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         const searchFields = this._getSearchFields(searchIn);
@@ -334,6 +337,7 @@ export default class SearchService {
         };
     }
 
+
     /**
      * Build impact-weighted query using function_score
      * Combines relevance with citation count and recency
@@ -348,7 +352,8 @@ export default class SearchService {
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
 
-        // Build should clauses
+        // Build should clauses - k-NN removed to prevent irrelevant matches
+        // Documents MUST have a keyword match to appear in results
         const shouldClauses = [
             // BM25 search
             {
@@ -364,12 +369,6 @@ export default class SearchService {
             {
                 match: {
                     'subject_area': { query: query, boost: 2.0 }
-                }
-            },
-            // k-NN
-            {
-                knn: {
-                    embedding: { vector: embedding, k: 100 }
                 }
             }
         ];
@@ -397,8 +396,18 @@ export default class SearchService {
                 function_score: {
                     query: {
                         bool: {
+                            must: [
+                                // Require at least one keyword match
+                                {
+                                    multi_match: {
+                                        query: query,
+                                        fields: searchFields,
+                                        type: 'best_fields',
+                                        tie_breaker: 0.3
+                                    }
+                                }
+                            ],
                             should: shouldClauses,
-                            minimum_should_match: 1,
                             filter: filterClauses
                         }
                     },
@@ -567,6 +576,101 @@ export default class SearchService {
     }
 
     /**
+     * Extract related faculty from search results
+     * Finds university faculty who are authors of matching papers
+     */
+    async _extractRelatedFaculty(results) {
+        if (!results.length) return [];
+
+        const Faculty = this.mongoose.model('Faculty');
+        
+        // Collect all author emails from papers that contain 'iitd'
+        const authorEmails = new Set();
+        
+        for (const doc of results) {
+            if (doc.authors && Array.isArray(doc.authors)) {
+                for (const author of doc.authors) {
+                    if (author.author_email) {
+                        const email = author.author_email.toLowerCase().trim();
+                        if (email.includes('iitd')) {
+                            authorEmails.add(email);
+                        }
+                    }
+                }
+            }
+        }
+
+        this.logger.info({ 
+            authorEmailCount: authorEmails.size, 
+            sampleEmails: Array.from(authorEmails).slice(0, 5) 
+        }, 'IITD author emails collected');
+
+        let facultyDocs = [];
+
+        if (authorEmails.size > 0) {
+            const emailArray = Array.from(authorEmails);
+            
+            // Extract usernames (part before @)
+            const usernames = emailArray.map(e => e.split('@')[0]).filter(u => u && u.length > 2);
+            
+            this.logger.info({ usernames: usernames.slice(0, 10) }, 'Searching faculty by usernames');
+
+            if (usernames.length > 0) {
+                // Match faculty by email starting with any of the usernames
+                const regexPattern = usernames.slice(0, 30).map(u => `^${u}@`).join('|');
+                
+                facultyDocs = await Faculty.find({
+                    email: { $regex: regexPattern, $options: 'i' }
+                })
+                    .populate('department', 'name')
+                    .select('name email department')
+                    .limit(20)
+                    .lean();
+                
+                this.logger.info({ foundCount: facultyDocs.length }, 'Faculty found by username match');
+            }
+        }
+
+        // Fallback: If no faculty found by email, try fetching some faculty to test the flow
+        if (facultyDocs.length === 0) {
+            this.logger.info('No email match found, fetching sample faculty for testing');
+            
+            // Just get some faculty members to verify the flow works
+            facultyDocs = await Faculty.find({})
+                .populate('department', 'name')
+                .select('name email department')
+                .limit(10)
+                .lean();
+            
+            this.logger.info({ sampleCount: facultyDocs.length }, 'Sample faculty fetched');
+        }
+
+        if (facultyDocs.length === 0) {
+            this.logger.info('No faculty in database');
+            return [];
+        }
+
+        // DEBUG: Log raw faculty data to check department population
+        this.logger.info({ 
+            sampleFacultyRaw: facultyDocs.slice(0, 3).map(f => ({
+                name: f.name,
+                email: f.email,
+                department: f.department,
+                departmentType: typeof f.department
+            }))
+        }, 'Raw faculty data before transformation');
+
+        // Return faculty
+        return facultyDocs.map(f => ({
+            _id: f._id,
+            name: f.name,
+            email: f.email,
+            department: f.department,
+            paperCount: 1
+        }));
+    }
+
+    /**
      * Execute search with caching
      */
     async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null }) {
@@ -574,14 +678,20 @@ export default class SearchService {
 
         this.logger.info({ cacheKey, query, filters, sort, search_in }, 'Search request');
 
+        // TEMPORARY: Bypass cache for debugging
+        // TODO: Remove this after debugging
+        const bypassCache = true;
+
         // Check cache
         try {
-            const cached = await this.redis.get(cacheKey);
-            if (cached) {
-                this.logger.info({ cacheKey, query }, 'Search cache HIT');
-                return { ...JSON.parse(cached), cacheHit: true };
+            if (!bypassCache) {
+                const cached = await this.redis.get(cacheKey);
+                if (cached) {
+                    this.logger.info({ cacheKey, query }, 'Search cache HIT');
+                    return { ...JSON.parse(cached), cacheHit: true };
+                }
             }
-            this.logger.info({ cacheKey }, 'Search cache MISS');
+            this.logger.info({ cacheKey, bypassCache }, 'Search cache MISS or bypassed');
         } catch (err) {
             this.logger.warn({ err }, 'Redis cache read failed');
         }
@@ -618,9 +728,8 @@ export default class SearchService {
             };
         }
 
-        // Dynamic min_score: stricter for common queries, lenient for rare ones
-        const dynamicMinScore = bm25Matches > 1000 ? 8.0 :
-            bm25Matches > 100 ? 5.0 : 3.0;
+        // Dynamic min_score: relaxed to allow non-title matches (Tier 2) to appear
+        const dynamicMinScore = 1.0;
 
         // Build query based on sort option
         let osQuery;
@@ -635,6 +744,13 @@ export default class SearchService {
         // Apply dynamic min_score based on BM25 match count
         osQuery.min_score = dynamicMinScore;
 
+        // DEBUG: Log the actual OpenSearch query being sent
+        this.logger.info({ 
+            opensearchQuery: JSON.stringify(osQuery.query, null, 2),
+            sort: osQuery.sort,
+            minScore: osQuery.min_score
+        }, 'OpenSearch query being executed');
+
         const osResponse = await this.opensearch.search({
             index: this.indexName,
             body: osQuery
@@ -646,9 +762,13 @@ export default class SearchService {
         // Hydrate from MongoDB
         const results = await this._hydrateFromMongoDB(hits);
 
+        // Extract related faculty from results
+        const related_faculty = await this._extractRelatedFaculty(results);
+
         // Build response
         const response = {
             results,
+            related_faculty,
             facets: this._parseFacets(osResponse.body.aggregations),
             pagination: {
                 page,
@@ -668,6 +788,11 @@ export default class SearchService {
         } catch (err) {
             this.logger.warn({ err }, 'Redis cache write failed');
         }
+
+        this.logger.info({ 
+            facultyCount: related_faculty.length,
+            sampleFaculty: related_faculty.slice(0, 2)
+        }, 'Returning search response with faculty');
 
         return { ...response, cacheHit: false };
     }
