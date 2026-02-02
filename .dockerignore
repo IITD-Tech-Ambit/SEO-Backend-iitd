@@ -12,6 +12,7 @@ __pycache__/
 # Git
 .git/
 .gitignore
+.github/
 
 # IDE
 .idea/
@@ -48,3 +49,9 @@ LICENSE
 tests/
 *.test.js
 *.spec.js
+
+# Other services (not needed for search-api)
+services/
+indexer_go/
+test-fnd/
+docs/
