@@ -127,15 +127,7 @@ async function start() {
             host: config.host
         });
 
-        fastify.log.info(`
-╔════════════════════════════════════════════════════════════╗
-║  Research Search API Started                               ║
-║  ───────────────────────────────────────────────────────── ║
-║  Server:     http://${config.host}:${config.port}          ║
-║  API Base:   http://${config.host}:${config.port}/api/v1   ║
-║  Health:     http://${config.host}:${config.port}/health   ║
-╚════════════════════════════════════════════════════════════╝
-    `);
+        fastify.log.info(`Search API running on http://${config.host}:${config.port}`);
 
     } catch (error) {
         fastify.log.error(error);
