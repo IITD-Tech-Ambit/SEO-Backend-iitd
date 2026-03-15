@@ -1,64 +1,80 @@
-# Dependencies
+# ==================== DEPENDENCIES ====================
+# Node.js
 node_modules/
+.npm
+.yarn-integrity
+.pnpm-debug.log*
+
+# Python
 venv/
 .venv/
-.cache/
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+.Python
+pip-selfcheck.json
 
-# Environment files (contain secrets)
+# ==================== ENVIRONMENT FILES ====================
 .env
 .env.local
 .env.*.local
+.env.docker
+services/embedding/.env.docker
 
-# OS files
+# ==================== LOGS ====================
+logs/
+*.log
+npm-debug.log*
+
+# ==================== BUILD / OUTPUT ====================
+dist/
+build/
+coverage/
+.nyc_output/
+htmlcov/
+.coverage
+
+# ==================== OS FILES ====================
 .DS_Store
+._*
 Thumbs.db
 
-# IDE
+# ==================== IDE / EDITOR ====================
 .idea/
 .vscode/
 *.swp
 *.swo
+*.sublime-project
+*.sublime-workspace
 
-# Logs
-*.log
-npm-debug.log*
-
-# Build outputs
-dist/
-build/
-
-# Go
+# ==================== GO BINARIES ====================
 *.exe
 *.exe~
 *.dll
 *.dylib
 *.test
 *.out
-
-# Go binary (no extension on Unix)
 indexer_go/indexer
-indexer_go/bin
+indexer_go/bin/
 
-
-# Python
+# ==================== PYTHON / ML MODELS ====================
 *.so
-.Python
-pip-selfcheck.json
-
-# Torch/ML model cache (large files)
 *.pt
 *.pth
 *.bin
 !requirements*.txt
-
-# Jupyter
 .ipynb_checkpoints/
+.cache/
 
-# Coverage
-coverage/
-.coverage
-htmlcov/
+# ==================== DOCKER ====================
+# Local Docker volume data
+mongodb_data/
+redis_data/
+opensearch_data/
+embedding_cache/
+
+# ==================== MISC ====================
+*.tgz
+.eslintcache
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

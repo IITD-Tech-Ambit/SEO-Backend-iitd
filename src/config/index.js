@@ -1,7 +1,7 @@
 // Environment Configuration
 export default {
     // Server
-    port: parseInt(process.env.PORT || '3000'),
+    port: parseInt(process.env.PORT || '3001'),
     host: process.env.HOST || '0.0.0.0',
 
     // MongoDB
@@ -16,29 +16,29 @@ export default {
 
     // OpenSearch
     opensearch: {
-        node: process.env.OPENSEARCH_NODE || 'https://localhost:9200',
-        auth: {
-            username: process.env.OPENSEARCH_USER || 'admin',
-            password: process.env.OPENSEARCH_PASSWORD || 'admin'
-        },
+        node: process.env.OPENSEARCH_NODE || 'http://localhost:9200',
+        auth: process.env.OPENSEARCH_USER ? {
+            username: process.env.OPENSEARCH_USER,
+            password: process.env.OPENSEARCH_PASSWORD || ''
+        } : undefined,
         ssl: {
-            rejectUnauthorized: false // For self-signed certs in dev
+            rejectUnauthorized: false
         },
-        indexName: 'research_documents'
+        indexName: process.env.OPENSEARCH_INDEX || 'research_documents'
     },
 
     // Redis
     redis: {
         url: process.env.REDIS_URL || 'redis://localhost:6379',
         ttl: {
-            searchResults: 300,    // 5 minutes
-            queryEmbedding: 86400  // 24 hours
+            searchResults: 300,
+            queryEmbedding: 86400
         }
     },
 
     // Embedding Service
     embeddingService: {
-        url: process.env.EMBEDDING_SERVICE_URL || 'http://localhost:8001',
+        url: process.env.EMBEDDING_SERVICE_URL || 'http://localhost:8000',
         timeout: 10000
     },
 
