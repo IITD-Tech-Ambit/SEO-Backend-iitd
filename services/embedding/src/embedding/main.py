@@ -20,8 +20,9 @@ from transformers import AutoTokenizer, AutoModel
 
 from . import config
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging based on environment
+log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
+logging.basicConfig(level=log_level, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -173,7 +174,8 @@ async def embed(request: EmbedRequest):
     
     took_ms = (time.time() - start_time) * 1000
     
-    logger.info(f"Generated {len(embeddings_list)} embeddings in {took_ms:.1f}ms")
+    if config.LOG_LEVEL == "DEBUG":
+        logger.debug(f"Generated {len(embeddings_list)} embeddings in {took_ms:.1f}ms")
     
     return EmbedResponse(
         embeddings=embeddings_list,
