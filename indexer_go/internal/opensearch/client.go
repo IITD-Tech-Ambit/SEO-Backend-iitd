@@ -176,7 +176,7 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 				"knn.algo_param.ef_search": 300,
 				"number_of_shards": 3,
 				"number_of_replicas": 1,
-				"max_ngram_diff": 2,
+				"max_ngram_diff": 8,
 				"max_shingle_diff": 2
 			},
 			"similarity": {
@@ -193,6 +193,11 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 						"min_gram": 2,
 						"max_gram": 4
 					},
+					"edge_ngram_filter": {
+						"type": "edge_ngram",
+						"min_gram": 2,
+						"max_gram": 10
+					},
 					"shingle_filter": {
 						"type": "shingle",
 						"min_shingle_size": 2,
@@ -205,6 +210,11 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 						"type": "custom",
 						"tokenizer": "standard",
 						"filter": ["lowercase", "ngram_filter"]
+					},
+					"edge_ngram_analyzer": {
+						"type": "custom",
+						"tokenizer": "standard",
+						"filter": ["lowercase", "edge_ngram_filter"]
 					},
 					"shingle_analyzer": {
 						"type": "custom",
@@ -226,6 +236,15 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 				"similarity": "custom_bm25",
 				"fields": {
 					"exact": {"type": "keyword"},
+					"standard": {
+						"type": "text",
+						"analyzer": "standard"
+					},
+					"autocomplete": {
+						"type": "text",
+						"analyzer": "edge_ngram_analyzer",
+						"search_analyzer": "standard"
+					},
 					"shingles": {
 						"type": "text",
 						"analyzer": "shingle_analyzer"
@@ -237,6 +256,10 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 				"analyzer": "english",
 				"similarity": "custom_bm25",
 				"fields": {
+					"standard": {
+						"type": "text",
+						"analyzer": "standard"
+					},
 					"shingles": {
 						"type": "text",
 						"analyzer": "shingle_analyzer"
@@ -286,6 +309,11 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 						"ngram": {
 							"type": "text",
 							"analyzer": "ngram_analyzer"
+						},
+						"autocomplete": {
+							"type": "text",
+							"analyzer": "edge_ngram_analyzer",
+							"search_analyzer": "standard"
 						}
 					}
 				},
@@ -332,7 +360,7 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 					"dimension": 768,
 					"method": {
 						"name": "hnsw",
-						"space_type": "cosinesimil",
+						"space_type": "innerproduct",
 						"engine": "faiss",
 						"parameters": {
 							"ef_construction": 512,

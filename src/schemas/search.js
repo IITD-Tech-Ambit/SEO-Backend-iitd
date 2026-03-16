@@ -157,6 +157,19 @@ export const searchResponseSchema = {
                 took_ms: { type: 'number' },
                 cache_hit: { type: 'boolean' }
             }
+        },
+        suggestions: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Did-you-mean spelling suggestions'
+        },
+        fuzzy_fallback: {
+            type: 'boolean',
+            description: 'True if results came from fuzzy fallback search'
+        },
+        message: {
+            type: 'string',
+            description: 'Optional message about the search results'
         }
     }
 };
@@ -196,11 +209,141 @@ export const coauthorsParamsSchema = {
     }
 };
 
+export const authorScopedSearchRequestSchema = {
+    type: 'object',
+    required: ['query', 'author_id'],
+    properties: {
+        query: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 500,
+            description: 'Search query string'
+        },
+        author_id: {
+            type: 'string',
+            minLength: 1,
+            description: 'Scopus author ID'
+        },
+        page: {
+            type: 'integer',
+            minimum: 1,
+            default: 1
+        },
+        per_page: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 100,
+            default: 20
+        }
+    },
+    additionalProperties: false
+};
+
+export const authorScopedSearchResponseSchema = {
+    type: 'object',
+    properties: {
+        results: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    _id: { type: 'string' },
+                    title: { type: 'string' },
+                    abstract: { type: 'string' },
+                    authors: { type: 'array' },
+                    publication_year: { type: 'integer' },
+                    document_type: { type: 'string' },
+                    field_associated: { type: 'string' },
+                    subject_area: { type: 'array' },
+                    citation_count: { type: 'integer' },
+                    link: { type: 'string' },
+                    similarity_score: { type: 'number' }
+                }
+            }
+        },
+        author: {
+            type: 'object',
+            properties: {
+                name: { type: 'string' },
+                author_id: { type: 'string' },
+                total_papers: { type: 'integer' }
+            }
+        },
+        pagination: {
+            type: 'object',
+            properties: {
+                page: { type: 'integer' },
+                per_page: { type: 'integer' },
+                total: { type: 'integer' },
+                total_pages: { type: 'integer' }
+            }
+        },
+        meta: {
+            type: 'object',
+            properties: {
+                took_ms: { type: 'number' },
+                cache_hit: { type: 'boolean' }
+            }
+        }
+    }
+};
+
 export const errorResponseSchema = {
     type: 'object',
     properties: {
         error: { type: 'string' },
         message: { type: 'string' },
         statusCode: { type: 'integer' }
+    }
+};
+
+export const facultyForQueryRequestSchema = {
+    type: 'object',
+    required: ['query'],
+    properties: {
+        query: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 500,
+            description: 'Search query to find related faculty'
+        }
+    },
+    additionalProperties: false
+};
+
+export const facultyForQueryResponseSchema = {
+    type: 'object',
+    properties: {
+        departments: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                    faculty: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                name: { type: 'string' },
+                                author_id: { type: 'string' },
+                                paper_count: { type: 'integer' },
+                                relevance_score: { type: 'number' }
+                            }
+                        }
+                    },
+                    total_paper_count: { type: 'integer' }
+                }
+            }
+        },
+        total_faculty: { type: 'integer' },
+        total_matching_papers: { type: 'integer' },
+        meta: {
+            type: 'object',
+            properties: {
+                took_ms: { type: 'number' },
+                cache_hit: { type: 'boolean' }
+            }
+        }
     }
 };

@@ -100,3 +100,80 @@ export async function searchHealth(request, reply) {
             timestamp: new Date().toISOString()
         });
 }
+
+/**
+ * Author-scoped search: semantic similarity within one author's papers
+ */
+export async function authorScopedSearch(request, reply) {
+    const startTime = Date.now();
+    const { query, author_id, page, per_page } = request.body;
+    const searchService = request.server.searchService;
+
+    try {
+        const result = await searchService.authorScopedSearch({
+            query,
+            author_id,
+            page,
+            per_page
+        });
+
+        const tookMs = Date.now() - startTime;
+
+        return {
+            ...result,
+            meta: {
+                took_ms: tookMs,
+                cache_hit: result.cacheHit
+            }
+        };
+
+    } catch (error) {
+        request.log.error({ error, query, author_id }, 'Author-scoped search failed');
+
+        if (error.message.includes('Embedding service')) {
+            return reply.status(503).send({
+                error: 'Service Unavailable',
+                message: 'Embedding service is not responding',
+                statusCode: 503
+            });
+        }
+
+        return reply.status(500).send({
+            error: 'Internal Server Error',
+            message: 'Author-scoped search failed unexpectedly',
+            statusCode: 500
+        });
+    }
+}
+
+/**
+ * Get all faculty for a query (aggregation, no documents fetched)
+ */
+export async function getAllFacultyForQuery(request, reply) {
+    const startTime = Date.now();
+    const { query } = request.query;
+    const searchService = request.server.searchService;
+
+    try {
+        const result = await searchService.getAllFacultyForQuery(query);
+
+        const tookMs = Date.now() - startTime;
+
+        return {
+            ...result,
+            meta: {
+                took_ms: tookMs,
+                cache_hit: result.cacheHit
+            }
+        };
+
+    } catch (error) {
+        request.log.error({ error, query }, 'Faculty-for-query failed');
+
+        return reply.status(500).send({
+            error: 'Internal Server Error',
+            message: 'Faculty lookup failed unexpectedly',
+            statusCode: 500
+        });
+    }
+}

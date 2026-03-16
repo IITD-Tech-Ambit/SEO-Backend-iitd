@@ -47,9 +47,9 @@ export default class SearchService {
             recencyScale: 5,
             // Minimum score thresholds to filter low-confidence results
             minScore: {
-                hybrid: 5.0,      // For BM25 + k-NN hybrid queries
-                impact: 5.0,      // For function_score impact queries  
-                normalized: 0.3   // For normalized 0-1 scale scores
+                hybrid: 0.5,      // For BM25 + k-NN hybrid queries
+                impact: 0.5,      // For function_score impact queries  
+                normalized: 0.15  // For normalized 0-1 scale scores
             }
         };
     }
@@ -93,7 +93,14 @@ export default class SearchService {
         }
 
         if (filters?.field_associated) {
-            mustFilters.push({ term: { 'field_associated.keyword': filters.field_associated } });
+            mustFilters.push({
+                match: {
+                    field_associated: {
+                        query: filters.field_associated,
+                        fuzziness: 'AUTO'
+                    }
+                }
+            });
         }
 
         if (filters?.document_type) {
@@ -162,14 +169,20 @@ export default class SearchService {
         const b = this.searchConfig.fieldBoosts;
 
         // Default comprehensive search with optimized weights
+        // Includes .standard sub-fields for un-stemmed fuzzy matching
+        // and .autocomplete sub-fields for prefix/partial matching
         const defaultFields = [
             `title^${b.title}`,
             `title.exact^${b.titleExact}`,
+            `title.standard^${b.title * 0.8}`,
+            `title.autocomplete^${b.title * 0.5}`,
             `abstract^${b.abstract}`,
+            `abstract.standard^${b.abstract * 0.8}`,
             `subject_area^${b.subjectArea}`,
             `subject_area.ngram^${b.subjectAreaNgram}`,
             `author_names^${b.authorName}`,
             `author_names.ngram^${b.authorNameNgram}`,
+            `author_names.autocomplete^${b.authorName * 0.5}`,
             `field_associated^${b.fieldAssociated}`,
             `field_associated.ngram^${b.fieldAssociatedNgram}`
         ];
@@ -180,11 +193,20 @@ export default class SearchService {
 
         // Field-specific search with optimized boosts
         const fieldMapping = {
-            title: [`title^${b.title}`, `title.exact^${b.titleExact}`],
-            abstract: [`abstract^${b.abstract * 1.5}`],
+            title: [
+                `title^${b.title}`,
+                `title.exact^${b.titleExact}`,
+                `title.standard^${b.title * 0.8}`,
+                `title.autocomplete^${b.title * 0.5}`
+            ],
+            abstract: [
+                `abstract^${b.abstract * 1.5}`,
+                `abstract.standard^${b.abstract}`
+            ],
             author: [
                 `author_names^${b.authorName * 1.5}`,
                 `author_names.ngram^${b.authorNameNgram}`,
+                `author_names.autocomplete^${b.authorName * 0.5}`,
                 `author_name_variants^${b.authorVariants}`,
                 `author_name_variants.ngram^${b.authorVariantsNgram}`
             ],
@@ -254,23 +276,16 @@ export default class SearchService {
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
 
-        // Build should clauses
-        const shouldClauses = [];
+        // Determine minimum_should_match for multi-word convergence
+        // More words = stricter matching = converging result counts
+        const minShouldMatch = isMultiWord ? '75%' : '1';
 
-        // Primary BM25 search with optimized fields
-        shouldClauses.push({
-            multi_match: {
-                query: query,
-                fields: searchFields,
-                type: 'best_fields',
-                tie_breaker: 0.3,
-                fuzziness: 'AUTO'
-            }
-        });
+        // Build BOOST-only should clauses (ranking, not matching)
+        const boostClauses = [];
 
         // Phrase boost for multi-word queries
         if (isMultiWord) {
-            shouldClauses.push({
+            boostClauses.push({
                 multi_match: {
                     query: query,
                     fields: ['title^5', 'abstract^2'],
@@ -282,7 +297,7 @@ export default class SearchService {
         }
 
         // Subject area match boost
-        shouldClauses.push({
+        boostClauses.push({
             match: {
                 'subject_area': {
                     query: query,
@@ -292,7 +307,7 @@ export default class SearchService {
         });
 
         // Field associated match boost
-        shouldClauses.push({
+        boostClauses.push({
             match: {
                 'field_associated': {
                     query: query,
@@ -301,8 +316,8 @@ export default class SearchService {
             }
         });
 
-        // k-NN vector search
-        shouldClauses.push({
+        // k-NN vector search as BOOST ONLY (improves ranking, doesn't expand result set)
+        boostClauses.push({
             knn: {
                 embedding: {
                     vector: embedding,
@@ -327,8 +342,21 @@ export default class SearchService {
             _source: ['mongo_id'],
             query: {
                 bool: {
-                    should: shouldClauses,
-                    minimum_should_match: 1,
+                    // MUST: BM25 keyword match required (controls result set size)
+                    must: [
+                        {
+                            multi_match: {
+                                query: query,
+                                fields: searchFields,
+                                type: 'best_fields',
+                                tie_breaker: 0.3,
+                                fuzziness: 'AUTO',
+                                minimum_should_match: minShouldMatch
+                            }
+                        }
+                    ],
+                    // SHOULD: Boost clauses improve ranking but don't expand results
+                    should: boostClauses,
                     filter: filterClauses
                 }
             },
@@ -351,20 +379,10 @@ export default class SearchService {
         // Detect multi-word query
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
+        const minShouldMatch = isMultiWord ? '75%' : '1';
 
-        // Build should clauses - k-NN removed to prevent irrelevant matches
-        // Documents MUST have a keyword match to appear in results
-        const shouldClauses = [
-            // BM25 search
-            {
-                multi_match: {
-                    query: query,
-                    fields: searchFields,
-                    type: 'best_fields',
-                    tie_breaker: 0.3,
-                    fuzziness: 'AUTO'
-                }
-            },
+        // Build boost-only should clauses
+        const boostClauses = [
             // Subject area boost
             {
                 match: {
@@ -375,7 +393,7 @@ export default class SearchService {
 
         // Add phrase boost
         if (isMultiWord) {
-            shouldClauses.push({
+            boostClauses.push({
                 multi_match: {
                     query: query,
                     fields: ['title^5', 'abstract^2'],
@@ -397,17 +415,19 @@ export default class SearchService {
                     query: {
                         bool: {
                             must: [
-                                // Require at least one keyword match
+                                // Require keyword match with multi-word convergence
                                 {
                                     multi_match: {
                                         query: query,
                                         fields: searchFields,
                                         type: 'best_fields',
-                                        tie_breaker: 0.3
+                                        tie_breaker: 0.3,
+                                        fuzziness: 'AUTO',
+                                        minimum_should_match: minShouldMatch
                                     }
                                 }
                             ],
-                            should: shouldClauses,
+                            should: boostClauses,
                             filter: filterClauses
                         }
                     },
@@ -455,17 +475,22 @@ export default class SearchService {
         // Detect multi-word query
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
+        const minShouldMatch = isMultiWord ? '75%' : '1';
 
-        // Build should clauses for BM25 component
-        const bm25Clauses = [
-            {
-                multi_match: {
-                    query: query,
-                    fields: searchFields,
-                    type: 'best_fields',
-                    tie_breaker: 0.3
-                }
-            },
+        // BM25 must clause with convergence
+        const bm25Must = {
+            multi_match: {
+                query: query,
+                fields: searchFields,
+                type: 'best_fields',
+                tie_breaker: 0.3,
+                fuzziness: 'AUTO',
+                minimum_should_match: minShouldMatch
+            }
+        };
+
+        // Boost-only clauses
+        const boostClauses = [
             {
                 match: {
                     'subject_area': { query: query, boost: 2.0 }
@@ -474,7 +499,7 @@ export default class SearchService {
         ];
 
         if (isMultiWord) {
-            bm25Clauses.push({
+            boostClauses.push({
                 multi_match: {
                     query: query,
                     fields: ['title^5', 'abstract^2'],
@@ -495,9 +520,9 @@ export default class SearchService {
                 script_score: {
                     query: {
                         bool: {
-                            should: bm25Clauses,
-                            filter: filterClauses,
-                            minimum_should_match: 1
+                            must: [bm25Must],
+                            should: boostClauses,
+                            filter: filterClauses
                         }
                     },
                     script: {
@@ -699,13 +724,31 @@ export default class SearchService {
         // Generate query embedding
         const embedding = await this.embeddingService.embedQuery(query);
 
-        // Pre-check: Run BM25-only query to verify query has keyword matches
+        // Pre-check: Run BM25 query WITH fuzziness to catch near-matches (typos)
         const bm25CheckQuery = {
             size: 0,
             query: {
-                multi_match: {
-                    query: query,
-                    fields: ['title', 'abstract', 'author_names', 'subject_area']
+                bool: {
+                    should: [
+                        {
+                            multi_match: {
+                                query: query,
+                                fields: ['title', 'abstract', 'author_names', 'subject_area'],
+                                fuzziness: 'AUTO'
+                            }
+                        },
+                        {
+                            multi_match: {
+                                query: query,
+                                fields: [
+                                    'author_names.ngram',
+                                    'subject_area.ngram',
+                                    'field_associated.ngram'
+                                ]
+                            }
+                        }
+                    ],
+                    minimum_should_match: 1
                 }
             }
         };
@@ -717,19 +760,14 @@ export default class SearchService {
 
         const bm25Matches = bm25CheckResponse.body.hits.total.value;
 
-        // If no BM25 matches, return empty results
+        // If no BM25 matches even with fuzziness, try fuzzy fallback
         if (bm25Matches === 0) {
-            return {
-                results: [],
-                facets: {},
-                pagination: { page, per_page, total: 0, total_pages: 0 },
-                message: 'No relevant results found for your query',
-                cacheHit: false
-            };
+            this.logger.info({ query }, 'No BM25 matches even with fuzziness, attempting fuzzy fallback');
+            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in);
         }
 
-        // Dynamic min_score: relaxed to allow non-title matches (Tier 2) to appear
-        const dynamicMinScore = 1.0;
+        // Dynamic min_score: relaxed to allow fuzzy/typo matches
+        const dynamicMinScore = 0.5;
 
         // Build query based on sort option
         let osQuery;
@@ -741,7 +779,7 @@ export default class SearchService {
             osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, search_in);
         }
 
-        // Apply dynamic min_score based on BM25 match count
+        // Apply dynamic min_score
         osQuery.min_score = dynamicMinScore;
 
         // DEBUG: Log the actual OpenSearch query being sent
@@ -765,10 +803,17 @@ export default class SearchService {
         // Extract related faculty from results
         const related_faculty = await this._extractRelatedFaculty(results);
 
+        // Generate "did you mean?" suggestions for low-result queries
+        let suggestions = [];
+        if (total < 3) {
+            suggestions = await this._getSuggestions(query);
+        }
+
         // Build response
         const response = {
             results,
             related_faculty,
+            suggestions,
             facets: this._parseFacets(osResponse.body.aggregations),
             pagination: {
                 page,
@@ -777,6 +822,12 @@ export default class SearchService {
                 total_pages: Math.ceil(total / per_page)
             }
         };
+
+        // If primary search returned 0 results, try fuzzy fallback
+        if (total === 0) {
+            this.logger.info({ query }, 'Primary search returned 0 results, attempting fuzzy fallback');
+            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in);
+        }
 
         // Cache results
         try {
@@ -795,6 +846,174 @@ export default class SearchService {
         }, 'Returning search response with faculty');
 
         return { ...response, cacheHit: false };
+    }
+
+    /**
+     * Fuzzy fallback search — used when primary search/pre-check returns 0 results
+     * Runs with higher fuzziness tolerance and no min_score to catch typos
+     */
+    async _fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in) {
+        const from = (page - 1) * per_page;
+        const searchFields = this._getSearchFields(search_in);
+        const filterClauses = this._buildFilters(filters);
+
+        const fallbackQuery = {
+            size: per_page,
+            from,
+            track_total_hits: true,
+            _source: ['mongo_id'],
+            query: {
+                bool: {
+                    must: [
+                        {
+                            multi_match: {
+                                query: query,
+                                fields: searchFields,
+                                type: 'best_fields',
+                                tie_breaker: 0.3,
+                                fuzziness: 2  // Higher fuzziness for fallback
+                            }
+                        }
+                    ],
+                    should: [
+                        {
+                            knn: {
+                                embedding: {
+                                    vector: embedding,
+                                    k: 50
+                                }
+                            }
+                        }
+                    ],
+                    filter: filterClauses
+                }
+            },
+            aggs: this._getAggregations()
+        };
+
+        try {
+            const osResponse = await this.opensearch.search({
+                index: this.indexName,
+                body: fallbackQuery
+            });
+
+            const hits = osResponse.body.hits.hits;
+            const total = osResponse.body.hits.total.value;
+            const results = await this._hydrateFromMongoDB(hits);
+            const suggestions = await this._getSuggestions(query);
+
+            return {
+                results,
+                related_faculty: [],
+                suggestions,
+                fuzzy_fallback: true,
+                facets: this._parseFacets(osResponse.body.aggregations),
+                pagination: {
+                    page,
+                    per_page,
+                    total,
+                    total_pages: Math.ceil(total / per_page)
+                },
+                message: total > 0
+                    ? 'Showing approximate matches for your query'
+                    : 'No results found. Try different keywords.',
+                cacheHit: false
+            };
+        } catch (err) {
+            this.logger.error({ err, query }, 'Fuzzy fallback search failed');
+            return {
+                results: [],
+                facets: {},
+                suggestions: [],
+                pagination: { page, per_page, total: 0, total_pages: 0 },
+                message: 'No relevant results found for your query',
+                cacheHit: false
+            };
+        }
+    }
+
+    /**
+     * Get "Did you mean?" suggestions using OpenSearch term suggest
+     */
+    async _getSuggestions(query) {
+        try {
+            const suggestQuery = {
+                size: 0,
+                suggest: {
+                    title_suggest: {
+                        text: query,
+                        term: {
+                            field: 'title',
+                            suggest_mode: 'popular',
+                            sort: 'frequency',
+                            size: 3,
+                            max_edits: 2,
+                            prefix_length: 1,
+                            min_word_length: 3
+                        }
+                    },
+                    author_suggest: {
+                        text: query,
+                        term: {
+                            field: 'author_names',
+                            suggest_mode: 'popular',
+                            sort: 'frequency',
+                            size: 3,
+                            max_edits: 2,
+                            prefix_length: 1,
+                            min_word_length: 3
+                        }
+                    }
+                }
+            };
+
+            const suggestResponse = await this.opensearch.search({
+                index: this.indexName,
+                body: suggestQuery
+            });
+
+            const suggestions = new Set();
+            const suggestData = suggestResponse.body.suggest;
+
+            // Collect title suggestions
+            if (suggestData?.title_suggest) {
+                for (const entry of suggestData.title_suggest) {
+                    for (const option of entry.options) {
+                        suggestions.add(option.text);
+                    }
+                }
+            }
+
+            // Collect author suggestions
+            if (suggestData?.author_suggest) {
+                for (const entry of suggestData.author_suggest) {
+                    for (const option of entry.options) {
+                        suggestions.add(option.text);
+                    }
+                }
+            }
+
+            // Build corrected query from best suggestions
+            if (suggestions.size > 0) {
+                const words = query.trim().split(/\s+/);
+                const correctedWords = words.map(word => {
+                    const titleSuggest = suggestData?.title_suggest?.find(s => s.text === word);
+                    if (titleSuggest?.options?.length > 0) {
+                        return titleSuggest.options[0].text;
+                    }
+                    return word;
+                });
+                const correctedQuery = correctedWords.join(' ');
+                if (correctedQuery !== query) {
+                    return [correctedQuery, ...Array.from(suggestions).slice(0, 4)];
+                }
+            }
+
+            return Array.from(suggestions).slice(0, 5);
+        } catch (err) {
+            this.logger.warn({ err }, 'Suggestion query failed');
+            return [];
+        }
     }
 
     /**
@@ -851,6 +1070,188 @@ export default class SearchService {
                 similarity_score: scoreMap.get(r._id.toString())
             }))
         };
+    }
+
+    /**
+     * Author-scoped search: find an author's papers most relevant to a query.
+     * 
+     * Phase 1: Fetch all paper IDs for the author from MongoDB (indexed).
+     * Phase 2: Run cosine similarity between query embedding and those papers in OpenSearch.
+     * Phase 3: Hydrate results from MongoDB.
+     *
+     * @param {Object} params
+     * @param {string} params.query - The search query text
+     * @param {string} params.author_id - Scopus author ID
+     * @param {number} [params.page=1]
+     * @param {number} [params.per_page=20]
+     */
+    async authorScopedSearch({ query, author_id, page = 1, per_page = 20 }) {
+        // Cache key
+        const queryHash = crypto.createHash('sha256')
+            .update(JSON.stringify({ query, author_id, page, per_page }))
+            .digest('hex').slice(0, 16);
+        const cacheKey = `author_scope:${queryHash}`;
+
+        // Check cache
+        try {
+            const cached = await this.redis.get(cacheKey);
+            if (cached) {
+                this.logger.info({ cacheKey, author_id, query }, 'Author-scoped search cache HIT');
+                return { ...JSON.parse(cached), cacheHit: true };
+            }
+        } catch (err) {
+            this.logger.warn({ err }, 'Redis cache read failed for author-scoped search');
+        }
+
+        // Phase 1: Get author's paper OpenSearch IDs from MongoDB
+        let osIds, authorName;
+        try {
+            const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
+            const authorDocs = await ResearchDocument.find(
+                { 'authors.author_id': author_id },
+                { open_search_id: 1, _id: 0 }
+            ).lean();
+
+            osIds = authorDocs
+                .map(d => d.open_search_id)
+                .filter(Boolean);
+
+            this.logger.info({
+                author_id,
+                totalPapers: osIds.length,
+                sampleIds: osIds.slice(0, 3)
+            }, 'Author-scoped search: Phase 1 - fetched paper IDs from MongoDB');
+
+            if (osIds.length === 0) {
+                return {
+                    results: [],
+                    author: { author_id, name: 'Unknown', total_papers: 0 },
+                    pagination: { page, per_page, total: 0, total_pages: 0 },
+                    cacheHit: false
+                };
+            }
+
+            // Get the author's name from the first document
+            const authorNameDoc = await ResearchDocument.findOne(
+                { 'authors.author_id': author_id },
+                { 'authors.$': 1 }
+            ).lean();
+            authorName = authorNameDoc?.authors?.[0]?.author_name || 'Unknown';
+        } catch (err) {
+            this.logger.error({ err, author_id }, 'Author-scoped search: Phase 1 FAILED (MongoDB)');
+            throw err;
+        }
+
+        // Phase 2: Semantic similarity search restricted to author's papers
+        let hits, total;
+        try {
+            const embedding = await this.embeddingService.embedQuery(query);
+            const from = (page - 1) * per_page;
+
+            const osQuery = {
+                size: per_page,
+                from,
+                track_total_hits: true,
+                _source: ['mongo_id'],
+                query: {
+                    script_score: {
+                        query: {
+                            bool: {
+                                filter: [
+                                    { ids: { values: osIds } }
+                                ]
+                            }
+                        },
+                        script: {
+                            lang: 'knn',
+                            source: 'knn_score',
+                            params: {
+                                field: 'embedding',
+                                query_value: embedding,
+                                space_type: 'cosinesimil'
+                            }
+                        }
+                    }
+                }
+            };
+
+            this.logger.info({
+                author_id,
+                query,
+                osIdsCount: osIds.length,
+                embeddingLength: embedding.length
+            }, 'Author-scoped search: Phase 2 - querying OpenSearch');
+
+            const osResponse = await this.opensearch.search({
+                index: this.indexName,
+                body: osQuery
+            });
+
+            hits = osResponse.body.hits.hits;
+            total = osResponse.body.hits.total.value;
+
+            this.logger.info({
+                hitsCount: hits.length,
+                total
+            }, 'Author-scoped search: Phase 2 - OpenSearch results');
+        } catch (err) {
+            this.logger.error({ err, author_id, query }, 'Author-scoped search: Phase 2 FAILED (OpenSearch)');
+            throw err;
+        }
+
+        // Phase 3: Hydrate from MongoDB
+        let scoredResults;
+        try {
+            const results = await this._hydrateFromMongoDB(hits);
+
+            // Attach similarity scores to results
+            const scoreMap = new Map(
+                hits.map(h => [h._source.mongo_id, h._score])
+            );
+            scoredResults = results.map(r => ({
+                ...r,
+                similarity_score: scoreMap.get(r._id.toString())
+            }));
+        } catch (err) {
+            this.logger.error({ err, author_id }, 'Author-scoped search: Phase 3 FAILED (Hydration)');
+            throw err;
+        }
+
+        const response = {
+            results: scoredResults,
+            author: {
+                name: authorName,
+                author_id,
+                total_papers: osIds.length
+            },
+            pagination: {
+                page,
+                per_page,
+                total,
+                total_pages: Math.ceil(total / per_page)
+            }
+        };
+
+        // Cache results
+        try {
+            await this.redis.setex(
+                cacheKey,
+                this.redisTTL.searchResults,
+                JSON.stringify(response)
+            );
+        } catch (err) {
+            this.logger.warn({ err }, 'Redis cache write failed for author-scoped search');
+        }
+
+        this.logger.info({
+            author_id,
+            authorName,
+            query,
+            totalPapers: osIds.length,
+            matchedResults: total
+        }, 'Author-scoped search complete');
+
+        return { ...response, cacheHit: false };
     }
 
     /**
@@ -924,5 +1325,280 @@ export default class SearchService {
         }
 
         return doc;
+    }
+
+    /**
+     * Get all IITD faculty for a query across the entire result set.
+     * Uses OpenSearch nested aggregation (size: 0, no docs fetched).
+     *
+     * Returns faculty grouped by department, sorted by relevance.
+     */
+    async getAllFacultyForQuery(query) {
+        // Cache key
+        const queryHash = crypto.createHash('sha256')
+            .update(JSON.stringify({ query, type: 'faculty_for_query' }))
+            .digest('hex').slice(0, 16);
+        const cacheKey = `faculty_query:${queryHash}`;
+
+        // Check cache
+        try {
+            const cached = await this.redis.get(cacheKey);
+            if (cached) {
+                this.logger.info({ cacheKey, query }, 'Faculty-for-query cache HIT');
+                return { ...JSON.parse(cached), cacheHit: true };
+            }
+        } catch (err) {
+            this.logger.warn({ err }, 'Redis cache read failed for faculty-for-query');
+        }
+
+        // Build a lightweight BM25 query (no embedding needed) with size: 0
+        const searchFields = this._getSearchFields(null);
+        const words = query.trim().split(/\s+/);
+        const isMultiWord = words.length >= 2;
+        const minShouldMatch = isMultiWord ? '75%' : '1';
+
+        const osQuery = {
+            size: 0,
+            track_total_hits: true,
+            query: {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    fuzziness: 'AUTO',
+                    minimum_should_match: minShouldMatch
+                }
+            },
+            aggs: {
+                faculty_authors: {
+                    nested: { path: 'authors' },
+                    aggs: {
+                        matched_only: {
+                            filter: { term: { 'authors.has_matched_profile': true } },
+                            aggs: {
+                                by_author_id: {
+                                    terms: {
+                                        field: 'authors.author_id',
+                                        size: 20
+                                    },
+                                    aggs: {
+                                        author_name: {
+                                            terms: {
+                                                field: 'authors.author_name.keyword',
+                                                size: 1
+                                            }
+                                        },
+                                        // Pop back to parent doc to get relevance scores
+                                        parent_docs: {
+                                            reverse_nested: {},
+                                            aggs: {
+                                                max_relevance: {
+                                                    max: {
+                                                        script: '_score'
+                                                    }
+                                                },
+                                                avg_relevance: {
+                                                    avg: {
+                                                        script: '_score'
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        this.logger.info({ query }, 'Faculty-for-query: querying OpenSearch aggregation');
+
+        const osResponse = await this.opensearch.search({
+            index: this.indexName,
+            body: osQuery
+        });
+
+        const totalDocs = osResponse.body.hits.total.value;
+        const authorBuckets = osResponse.body.aggregations
+            ?.faculty_authors
+            ?.matched_only
+            ?.by_author_id
+            ?.buckets || [];
+
+        this.logger.info({
+            query,
+            totalDocs,
+            uniqueAuthors: authorBuckets.length
+        }, 'Faculty-for-query: aggregation results');
+
+        if (authorBuckets.length === 0) {
+            const emptyResult = {
+                departments: [],
+                total_faculty: 0,
+                total_matching_papers: totalDocs,
+                cacheHit: false
+            };
+            return emptyResult;
+        }
+
+        // Extract author info from aggregation (with relevance scores)
+        const authorInfos = authorBuckets.map(bucket => {
+            const maxRel = bucket.parent_docs?.max_relevance?.value || 0;
+            const avgRel = bucket.parent_docs?.avg_relevance?.value || 0;
+            const paperCount = bucket.doc_count;
+            // Hybrid score: 60% best-paper-match + 30% consistency + 10% volume (log-dampened)
+            const authorScore = 0.6 * maxRel + 0.3 * avgRel + 0.1 * Math.log2(1 + paperCount);
+            return {
+                author_id: bucket.key,
+                author_name: bucket.author_name?.buckets?.[0]?.key || 'Unknown',
+                paper_count: paperCount,
+                max_relevance: maxRel,
+                avg_relevance: avgRel,
+                author_score: authorScore
+            };
+        });
+
+        // Use matched_profile to look up Faculty + Department
+        // Step 1: Find matched_profile ObjectIds for each author_id from MongoDB
+        const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
+        const authorIds = authorInfos.map(a => a.author_id);
+
+        const profilePipeline = [
+            { $match: { 'authors.author_id': { $in: authorIds } } },
+            { $unwind: '$authors' },
+            { $match: {
+                'authors.author_id': { $in: authorIds },
+                'authors.matched_profile': { $ne: null }
+            }},
+            { $group: {
+                _id: '$authors.author_id',
+                matched_profile: { $first: '$authors.matched_profile' }
+            }}
+        ];
+
+        const profileResults = await ResearchDocument.aggregate(profilePipeline);
+        const authorToProfileMap = new Map(
+            profileResults.map(r => [r._id, r.matched_profile])
+        );
+
+        this.logger.info({
+            totalAuthors: authorIds.length,
+            matchedProfiles: profileResults.length
+        }, 'Faculty-for-query: matched_profile lookup');
+
+        // Step 2: Look up Faculty with department using matched_profile ObjectIds
+        const profileIds = [...new Set(profileResults.map(r => r.matched_profile))];
+        const Faculty = this.mongoose.model('Faculty');
+
+        let facultyDocs = [];
+        if (profileIds.length > 0) {
+            facultyDocs = await Faculty.find({ _id: { $in: profileIds } })
+                .populate('department', 'name')
+                .select('name department')
+                .lean();
+        }
+
+        const facultyByProfileId = new Map(
+            facultyDocs.map(f => [f._id.toString(), f])
+        );
+
+        // Build department-grouped response with RELEVANCE ordering
+        // Only include authors that have a matched_profile (real IITD faculty)
+        // DEDUP: Multiple Scopus author_ids can map to the same Faculty _id
+        //        (e.g., "Bhim Singh" with two Scopus profiles → 1793 + 265 papers)
+        //        We merge them: sum paper_count, keep best author_score
+        const facultyDedup = new Map(); // profileId -> merged faculty info
+
+        for (const author of authorInfos) {
+            const profileId = authorToProfileMap.get(author.author_id);
+            if (!profileId) continue;
+
+            const faculty = facultyByProfileId.get(profileId.toString());
+            if (!faculty || !faculty.name) continue;
+
+            const key = profileId.toString();
+            if (facultyDedup.has(key)) {
+                const existing = facultyDedup.get(key);
+                existing.paper_count += author.paper_count;
+                existing.author_score = Math.max(existing.author_score, author.author_score);
+            } else {
+                facultyDedup.set(key, {
+                    name: faculty.name,
+                    author_id: author.author_id, // Keep first author_id for click handling
+                    paper_count: author.paper_count,
+                    author_score: author.author_score,
+                    deptName: faculty?.department?.name || 'Other'
+                });
+            }
+        }
+
+        const deptMap = new Map(); // dept_name -> { name, faculty[], facultyScores[] }
+        let includedCount = 0;
+
+        for (const [, merged] of facultyDedup) {
+            const deptName = merged.deptName;
+
+            if (!deptMap.has(deptName)) {
+                deptMap.set(deptName, { name: deptName, faculty: [], facultyScores: [], totalPaperCount: 0 });
+            }
+
+            const dept = deptMap.get(deptName);
+            dept.faculty.push({
+                name: merged.name,
+                author_id: merged.author_id,
+                paper_count: merged.paper_count,
+                relevance_score: Math.round(merged.author_score * 100) / 100
+            });
+            dept.facultyScores.push(merged.author_score);
+            dept.totalPaperCount += merged.paper_count;
+            includedCount++;
+        }
+
+        // Score departments by average of their top-3 faculty scores
+        // This prevents large departments with many low-relevance faculty from winning
+        // Small bonus for having more relevant faculty: × (1 + 0.1 × log2(count))
+        const departments = Array.from(deptMap.values())
+            .map(dept => {
+                // Sort faculty scores descending, take top 3
+                const topScores = dept.facultyScores.sort((a, b) => b - a).slice(0, 3);
+                const avgTopScore = topScores.reduce((s, v) => s + v, 0) / topScores.length;
+                const deptScore = avgTopScore * (1 + 0.1 * Math.log2(dept.facultyScores.length));
+                return {
+                    name: dept.name,
+                    faculty: dept.faculty.sort((a, b) => b.relevance_score - a.relevance_score),
+                    total_paper_count: dept.totalPaperCount,
+                    _deptScore: deptScore
+                };
+            })
+            .sort((a, b) => {
+                if (a.name === 'Other') return 1;
+                if (b.name === 'Other') return -1;
+                return b._deptScore - a._deptScore;
+            })
+            .map(({ _deptScore, ...dept }) => dept); // Strip internal scoring field
+
+        const response = {
+            departments,
+            total_faculty: includedCount,
+            total_matching_papers: totalDocs
+        };
+
+        // Cache for 10 minutes (this is a heavy query)
+        try {
+            await this.redis.setex(cacheKey, 600, JSON.stringify(response));
+        } catch (err) {
+            this.logger.warn({ err }, 'Redis cache write failed for faculty-for-query');
+        }
+
+        this.logger.info({
+            query,
+            totalFaculty: authorInfos.length,
+            totalDepts: departments.length
+        }, 'Faculty-for-query complete');
+
+        return { ...response, cacheHit: false };
     }
 }
