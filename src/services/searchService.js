@@ -257,6 +257,95 @@ export default class SearchService {
     }
 
     /**
+     * Build BM25-only query (Basic mode) — no embeddings, no ML
+     * STRICT keyword matching: no fuzziness on the primary match.
+     * Uses cross_fields + operator:and for precise multi-word matching.
+     * Fuzziness is reserved for the fallback path only.
+     * Supports refine_within for search-on-search narrowing
+     */
+    _buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null) {
+        const from = (page - 1) * perPage;
+        const filterClauses = this._buildFilters(filters);
+        const searchFields = this._getSearchFields(searchIn);
+
+        const words = query.trim().split(/\s+/);
+        const isMultiWord = words.length >= 2;
+
+        // Primary MUST clause: strict BM25 keyword match — NO fuzziness
+        // Uses cross_fields so "carbon nanofibre" matches even if "carbon" is in title
+        // and "nanofibre" is in abstract. operator:and ensures ALL terms must appear.
+        const mustClauses = [
+            {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'cross_fields',
+                    operator: 'and'
+                }
+            }
+        ];
+
+        // If refining within a prior query, add the original query as another MUST
+        if (refineWithin) {
+            mustClauses.push({
+                multi_match: {
+                    query: refineWithin,
+                    fields: searchFields,
+                    type: 'cross_fields',
+                    operator: 'and'
+                }
+            });
+        }
+
+        // SHOULD (boost-only): phrase match + subject area + field
+        const boostClauses = [];
+
+        if (isMultiWord) {
+            boostClauses.push({
+                multi_match: {
+                    query: query,
+                    fields: ['title^5', 'abstract^2'],
+                    type: 'phrase',
+                    slop: 2,
+                    boost: this.searchConfig.phraseBoost
+                }
+            });
+        }
+
+        boostClauses.push({
+            match: { 'subject_area': { query: query, boost: 2.0 } }
+        });
+
+        boostClauses.push({
+            match: { 'field_associated': { query: query, boost: 1.5 } }
+        });
+
+        // Sort clause
+        let sortClause = ['_score'];
+        if (sort === 'date') {
+            sortClause = [{ publication_year: 'desc' }, '_score'];
+        } else if (sort === 'citations') {
+            sortClause = [{ citation_count: 'desc' }, '_score'];
+        }
+
+        return {
+            size: perPage,
+            from,
+            track_total_hits: true,
+            _source: ['mongo_id'],
+            query: {
+                bool: {
+                    must: mustClauses,
+                    should: boostClauses,
+                    filter: filterClauses
+                }
+            },
+            sort: sortClause,
+            aggs: this._getAggregations()
+        };
+    }
+
+    /**
      * Build OpenSearch tiered query for strict priority sorting
      * 
      * Priority:
@@ -697,14 +786,19 @@ export default class SearchService {
 
     /**
      * Execute search with caching
+     * Supports mode='basic' (BM25-only) and mode='advanced' (hybrid BM25+kNN)
+     * Supports refine_within for search-on-search narrowing
      */
-    async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null }) {
-        const cacheKey = this._getCacheKey(query, filters, sort, page, per_page, search_in);
+    async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null }) {
+        // Include mode and refine_within in cache key
+        const cachePayload = JSON.stringify({
+            query, filters, sort, page, per_page, search_in, mode, refine_within
+        });
+        const cacheKey = `search:${crypto.createHash('sha256').update(cachePayload).digest('hex').slice(0, 16)}`;
 
-        this.logger.info({ cacheKey, query, filters, sort, search_in }, 'Search request');
+        this.logger.info({ cacheKey, query, filters, sort, search_in, mode, refine_within }, 'Search request');
 
         // TEMPORARY: Bypass cache for debugging
-        // TODO: Remove this after debugging
         const bypassCache = true;
 
         // Check cache
@@ -721,44 +815,63 @@ export default class SearchService {
             this.logger.warn({ err }, 'Redis cache read failed');
         }
 
+        // ── BASIC MODE: Pure BM25, no embeddings ──
+        if (mode === 'basic') {
+            this.logger.info({ query, mode }, 'Running BASIC (BM25-only) search');
+
+            const osQuery = this._buildBasicQuery(query, filters, page, per_page, sort, search_in, refine_within);
+            // No min_score for basic: operator:'and' ensures all terms must match, no need for score threshold
+
+            this.logger.info({ mode: 'basic', refine_within: !!refine_within }, 'Basic query built');
+
+            let osResponse = await this.opensearch.search({
+                index: this.indexName,
+                body: osQuery
+            });
+
+            let hits = osResponse.body.hits.hits;
+            let total = osResponse.body.hits.total.value;
+
+            // If exact matching gives zero results, try the fuzzy fallback
+            if (total === 0) {
+                this.logger.info({ query }, 'Basic exact search returned 0 results, attempting fuzzy fallback');
+                return await this._basicFuzzyFallback(query, filters, sort, page, per_page, search_in, refine_within);
+            }
+            const results = await this._hydrateFromMongoDB(hits);
+            const related_faculty = await this._extractRelatedFaculty(results);
+
+            let suggestions = [];
+            if (total < 3) {
+                suggestions = await this._getSuggestions(query);
+            }
+
+            const response = {
+                results,
+                related_faculty,
+                suggestions,
+                facets: this._parseFacets(osResponse.body.aggregations),
+                pagination: { page, per_page, total, total_pages: Math.ceil(total / per_page) },
+                mode: 'basic'
+            };
+
+            // Cache
+            try {
+                await this.redis.setex(cacheKey, this.redisTTL.searchResults, JSON.stringify(response));
+            } catch (err) {
+                this.logger.warn({ err }, 'Redis cache write failed');
+            }
+
+            return { ...response, cacheHit: false };
+        }
+
+        // ── ADVANCED MODE: Hybrid BM25 + k-NN ──
+        this.logger.info({ query, mode }, 'Running ADVANCED (hybrid) search');
+
         // Generate query embedding
         const embedding = await this.embeddingService.embedQuery(query);
 
         // Pre-check: Run BM25 query WITH fuzziness to catch near-matches (typos)
-        const bm25CheckQuery = {
-            size: 0,
-            query: {
-                bool: {
-                    should: [
-                        {
-                            multi_match: {
-                                query: query,
-                                fields: ['title', 'abstract', 'author_names', 'subject_area'],
-                                fuzziness: 'AUTO'
-                            }
-                        },
-                        {
-                            multi_match: {
-                                query: query,
-                                fields: [
-                                    'author_names.ngram',
-                                    'subject_area.ngram',
-                                    'field_associated.ngram'
-                                ]
-                            }
-                        }
-                    ],
-                    minimum_should_match: 1
-                }
-            }
-        };
-
-        const bm25CheckResponse = await this.opensearch.search({
-            index: this.indexName,
-            body: bm25CheckQuery
-        });
-
-        const bm25Matches = bm25CheckResponse.body.hits.total.value;
+        const bm25Matches = await this._bm25PreCheck(query);
 
         // If no BM25 matches even with fuzziness, try fuzzy fallback
         if (bm25Matches === 0) {
@@ -766,7 +879,7 @@ export default class SearchService {
             return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in);
         }
 
-        // Dynamic min_score: relaxed to allow fuzzy/typo matches
+        // Dynamic min_score
         const dynamicMinScore = 0.5;
 
         // Build query based on sort option
@@ -779,14 +892,49 @@ export default class SearchService {
             osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, search_in);
         }
 
+        // If refining within a prior query, add the original query as an additional BM25 MUST clause
+        if (refine_within) {
+            const searchFields = this._getSearchFields(search_in);
+            const refineWords = refine_within.trim().split(/\s+/);
+            const refineMinMatch = refineWords.length >= 2 ? '75%' : '1';
+
+            // Inject the original query into the bool.must array
+            if (osQuery.query?.bool?.must) {
+                osQuery.query.bool.must.push({
+                    multi_match: {
+                        query: refine_within,
+                        fields: searchFields,
+                        type: 'best_fields',
+                        tie_breaker: 0.3,
+                        fuzziness: 'AUTO',
+                        minimum_should_match: refineMinMatch
+                    }
+                });
+            } else if (osQuery.query?.function_score?.query?.bool?.must) {
+                // For impact/normalized queries that use function_score wrapper
+                osQuery.query.function_score.query.bool.must.push({
+                    multi_match: {
+                        query: refine_within,
+                        fields: searchFields,
+                        type: 'best_fields',
+                        tie_breaker: 0.3,
+                        fuzziness: 'AUTO',
+                        minimum_should_match: refineMinMatch
+                    }
+                });
+            }
+            this.logger.info({ refine_within }, 'Added refine_within constraint to advanced query');
+        }
+
         // Apply dynamic min_score
         osQuery.min_score = dynamicMinScore;
 
-        // DEBUG: Log the actual OpenSearch query being sent
         this.logger.info({ 
             opensearchQuery: JSON.stringify(osQuery.query, null, 2),
             sort: osQuery.sort,
-            minScore: osQuery.min_score
+            minScore: osQuery.min_score,
+            mode: 'advanced',
+            refine_within: !!refine_within
         }, 'OpenSearch query being executed');
 
         const osResponse = await this.opensearch.search({
@@ -820,7 +968,8 @@ export default class SearchService {
                 per_page,
                 total,
                 total_pages: Math.ceil(total / per_page)
-            }
+            },
+            mode: 'advanced'
         };
 
         // If primary search returned 0 results, try fuzzy fallback
@@ -846,6 +995,134 @@ export default class SearchService {
         }, 'Returning search response with faculty');
 
         return { ...response, cacheHit: false };
+    }
+
+    /**
+     * BM25 pre-check: count how many documents match with fuzziness
+     * Used to decide whether to attempt a fuzzy fallback
+     */
+    async _bm25PreCheck(query) {
+        const bm25CheckQuery = {
+            size: 0,
+            query: {
+                bool: {
+                    should: [
+                        {
+                            multi_match: {
+                                query: query,
+                                fields: ['title', 'abstract', 'author_names', 'subject_area'],
+                                fuzziness: 'AUTO'
+                            }
+                        },
+                        {
+                            multi_match: {
+                                query: query,
+                                fields: [
+                                    'author_names.ngram',
+                                    'subject_area.ngram',
+                                    'field_associated.ngram'
+                                ]
+                            }
+                        }
+                    ],
+                    minimum_should_match: 1
+                }
+            }
+        };
+
+        const response = await this.opensearch.search({
+            index: this.indexName,
+            body: bm25CheckQuery
+        });
+
+        return response.body.hits.total.value;
+    }
+
+    /**
+     * Basic mode fuzzy fallback — BM25-only with high fuzziness, no embeddings
+     */
+    async _basicFuzzyFallback(query, filters, sort, page, per_page, search_in, refine_within) {
+        const from = (page - 1) * per_page;
+        const searchFields = this._getSearchFields(search_in);
+        const filterClauses = this._buildFilters(filters);
+
+        const words = query.trim().split(/\s+/);
+        const isMultiWord = words.length >= 2;
+        const minShouldMatch = isMultiWord ? '75%' : '1';
+
+        const mustClauses = [
+            {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'cross_fields',
+                    operator: 'and',
+                    fuzziness: 2
+                }
+            }
+        ];
+
+        // Add refine_within constraint if present
+        if (refine_within) {
+            mustClauses.push({
+                multi_match: {
+                    query: refine_within,
+                    fields: searchFields,
+                    type: 'cross_fields',
+                    operator: 'and',
+                    fuzziness: 2
+                }
+            });
+        }
+
+        const fallbackQuery = {
+            size: per_page,
+            from,
+            track_total_hits: true,
+            _source: ['mongo_id'],
+            query: {
+                bool: {
+                    must: mustClauses,
+                    filter: filterClauses
+                }
+            },
+            aggs: this._getAggregations()
+        };
+
+        try {
+            const osResponse = await this.opensearch.search({
+                index: this.indexName,
+                body: fallbackQuery
+            });
+
+            const hits = osResponse.body.hits.hits;
+            const total = osResponse.body.hits.total.value;
+            const results = await this._hydrateFromMongoDB(hits);
+            const related_faculty = await this._extractRelatedFaculty(results);
+
+            return {
+                results,
+                related_faculty,
+                suggestions: [],
+                facets: this._parseFacets(osResponse.body.aggregations),
+                pagination: { page, per_page, total, total_pages: Math.ceil(total / per_page) },
+                mode: 'basic',
+                fuzzy_fallback: true,
+                cacheHit: false
+            };
+        } catch (err) {
+            this.logger.error({ err, query }, 'Basic fuzzy fallback search failed');
+            return {
+                results: [],
+                related_faculty: [],
+                suggestions: [],
+                facets: {},
+                pagination: { page, per_page, total: 0, total_pages: 0 },
+                mode: 'basic',
+                fuzzy_fallback: true,
+                cacheHit: false
+            };
+        }
     }
 
     /**
@@ -1380,7 +1657,7 @@ export default class SearchService {
                                 by_author_id: {
                                     terms: {
                                         field: 'authors.author_id',
-                                        size: 20
+                                        size: 200
                                     },
                                     aggs: {
                                         author_name: {

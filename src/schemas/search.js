@@ -86,6 +86,17 @@ export const searchRequestSchema = {
             },
             default: ['title', 'abstract', 'author'],
             description: 'Fields to search in. Default: hybrid (title, abstract, author). Use specific fields for targeted search.'
+        },
+        mode: {
+            type: 'string',
+            enum: ['basic', 'advanced'],
+            default: 'advanced',
+            description: 'basic = BM25 keyword only (no ML). advanced = hybrid BM25 + semantic.'
+        },
+        refine_within: {
+            type: 'string',
+            maxLength: 500,
+            description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
         }
     },
     additionalProperties: false
