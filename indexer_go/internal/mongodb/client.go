@@ -105,7 +105,13 @@ func (c *Client) Close(ctx context.Context) error {
 func (c *Client) CountDocumentsToIndex(ctx context.Context, reindexAll bool) (int64, error) {
 	filter := bson.M{}
 	if !reindexAll {
-		filter["open_search_id"] = bson.M{"$in": []interface{}{nil, ""}}
+		filter["open_search_id"] = bson.M{
+			"$in": []interface{}{
+				nil, 
+				"", 
+				primitive.Regex{Pattern: "^pending_", Options: ""},
+			},
+		}
 	}
 	return c.collection.CountDocuments(ctx, filter)
 }
@@ -115,7 +121,13 @@ func (c *Client) CountDocumentsToIndex(ctx context.Context, reindexAll bool) (in
 func (c *Client) StreamDocuments(ctx context.Context, reindexAll bool, limit int) (<-chan Document, error) {
 	filter := bson.M{}
 	if !reindexAll {
-		filter["open_search_id"] = bson.M{"$in": []interface{}{nil, ""}}
+		filter["open_search_id"] = bson.M{
+			"$in": []interface{}{
+				nil, 
+				"", 
+				primitive.Regex{Pattern: "^pending_", Options: ""},
+			},
+		}
 	}
 
 	opts := options.Find().
@@ -152,12 +164,24 @@ func (c *Client) StreamDocuments(ctx context.Context, reindexAll bool, limit int
 	return docChan, nil
 }
 
-// ClearOpenSearchIDs clears all open_search_id fields (for full reindex)
+// ClearOpenSearchIDs resets the open_search_id fields (for full reindex)
+// To avoid violating the unique index on open_search_id, we set it to a unique
+// placeholder value "pending_<mongo_id>" using an aggregation pipeline update.
 func (c *Client) ClearOpenSearchIDs(ctx context.Context) error {
+	pipeline := []bson.M{
+		{
+			"$set": bson.M{
+				"open_search_id": bson.M{
+					"$concat": []interface{}{"pending_", bson.M{"$toString": "$_id"}},
+				},
+			},
+		},
+	}
+	
 	_, err := c.collection.UpdateMany(
 		ctx,
 		bson.M{},
-		bson.M{"$set": bson.M{"open_search_id": ""}},
+		pipeline,
 	)
 	return err
 }
