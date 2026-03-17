@@ -317,6 +317,12 @@ export const facultyForQueryRequestSchema = {
             minLength: 1,
             maxLength: 500,
             description: 'Search query to find related faculty'
+        },
+        mode: {
+            type: 'string',
+            enum: ['basic', 'advanced'],
+            default: 'advanced',
+            description: 'Search mode to apply keyword strictness'
         }
     },
     additionalProperties: false

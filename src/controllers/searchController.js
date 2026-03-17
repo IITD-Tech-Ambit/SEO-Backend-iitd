@@ -153,11 +153,11 @@ export async function authorScopedSearch(request, reply) {
  */
 export async function getAllFacultyForQuery(request, reply) {
     const startTime = Date.now();
-    const { query } = request.query;
+    const { query, mode } = request.query;
     const searchService = request.server.searchService;
 
     try {
-        const result = await searchService.getAllFacultyForQuery(query);
+        const result = await searchService.getAllFacultyForQuery(query, mode);
 
         const tookMs = Date.now() - startTime;
 

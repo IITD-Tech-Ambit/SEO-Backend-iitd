@@ -6,7 +6,7 @@
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
-    "dev": "node --watch src/app.js",
+    "dev": "nodemon src/app.js",
     "test": "node --test tests/"
   },
   "dependencies": {
@@ -21,7 +21,8 @@
     "pino-pretty": "^10.3.1"
   },
   "devDependencies": {
-    "@types/node": "^20.10.5"
+    "@types/node": "^20.10.5",
+    "nodemon": "^3.1.14"
   },
   "engines": {
     "node": ">=18.0.0"
