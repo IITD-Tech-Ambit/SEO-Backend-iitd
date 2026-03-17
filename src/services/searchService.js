@@ -266,7 +266,10 @@ export default class SearchService {
     _buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
-        const searchFields = this._getSearchFields(searchIn);
+        
+        // Remove ngram and autocomplete fields to enforce exact word matching
+        const searchFields = this._getSearchFields(searchIn)
+            .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
 
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
