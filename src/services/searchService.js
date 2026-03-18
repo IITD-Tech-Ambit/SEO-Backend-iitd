@@ -1338,10 +1338,10 @@ export default class SearchService {
      * @param {number} [params.page=1]
      * @param {number} [params.per_page=20]
      */
-    async authorScopedSearch({ query, author_id, page = 1, per_page = 20 }) {
+    async authorScopedSearch({ query, author_id, page = 1, per_page = 20, mode = 'advanced' }) {
         // Cache key
         const queryHash = crypto.createHash('sha256')
-            .update(JSON.stringify({ query, author_id, page, per_page }))
+            .update(JSON.stringify({ query, author_id, page, per_page, mode }))
             .digest('hex').slice(0, 16);
         const cacheKey = `author_scope:${queryHash}`;
 
@@ -1349,7 +1349,7 @@ export default class SearchService {
         try {
             const cached = await this.redis.get(cacheKey);
             if (cached) {
-                this.logger.info({ cacheKey, author_id, query }, 'Author-scoped search cache HIT');
+                this.logger.info({ cacheKey, author_id, query, mode }, 'Author-scoped search cache HIT');
                 return { ...JSON.parse(cached), cacheHit: true };
             }
         } catch (err) {
@@ -1401,11 +1401,33 @@ export default class SearchService {
             const embedding = await this.embeddingService.embedQuery(query);
             const from = (page - 1) * per_page;
 
+            const isBasic = mode === 'basic';
+            let searchFields = this._getSearchFields(null);
+            let multiMatchConfig = {};
+
+            if (isBasic) {
+                searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+                multiMatchConfig = {
+                    type: 'cross_fields',
+                    operator: 'and'
+                };
+            } else {
+                searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+                const words = query.trim().split(/\s+/);
+                const isMultiWord = words.length >= 2;
+                const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
+                multiMatchConfig = {
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    fuzziness: 'AUTO',
+                    minimum_should_match: minShouldMatch
+                };
+            }
+
             const osQuery = {
                 size: per_page,
                 from,
                 track_total_hits: true,
-                min_score: 0.65, // Filter out irrelevant papers
                 _source: ['mongo_id'],
                 query: {
                     script_score: {
@@ -1413,6 +1435,15 @@ export default class SearchService {
                             bool: {
                                 filter: [
                                     { ids: { values: osIds } }
+                                ],
+                                must: [
+                                    {
+                                        multi_match: {
+                                            query: query,
+                                            fields: searchFields,
+                                            ...multiMatchConfig
+                                        }
+                                    }
                                 ]
                             }
                         },

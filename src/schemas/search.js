@@ -245,6 +245,11 @@ export const authorScopedSearchRequestSchema = {
             minimum: 1,
             maximum: 100,
             default: 20
+        },
+        mode: {
+            type: 'string',
+            enum: ['basic', 'advanced'],
+            default: 'advanced'
         }
     },
     additionalProperties: false
