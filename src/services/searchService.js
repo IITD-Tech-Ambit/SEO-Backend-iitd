@@ -362,15 +362,17 @@ export default class SearchService {
          _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
-        const searchFields = this._getSearchFields(searchIn);
+        // For advanced search fuzzy matching, n-gram fields generate too much noise. Filter them out.
+        const searchFields = this._getSearchFields(searchIn)
+            .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
 
         // Detect multi-word query for phrase boosting
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
 
         // Determine minimum_should_match for multi-word convergence
-        // More words = stricter matching = converging result counts
-        const minShouldMatch = isMultiWord ? '75%' : '1';
+        // For 2 words, require both (100%). For 3+ words, require 75%.
+        const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
 
         // Build BOOST-only should clauses (ranking, not matching)
         const boostClauses = [];
@@ -747,35 +749,6 @@ export default class SearchService {
                 this.logger.info({ foundCount: facultyDocs.length }, 'Faculty found by username match');
             }
         }
-
-        // Fallback: If no faculty found by email, try fetching some faculty to test the flow
-        if (facultyDocs.length === 0) {
-            this.logger.info('No email match found, fetching sample faculty for testing');
-            
-            // Just get some faculty members to verify the flow works
-            facultyDocs = await Faculty.find({})
-                .populate('department', 'name')
-                .select('name email department')
-                .limit(10)
-                .lean();
-            
-            this.logger.info({ sampleCount: facultyDocs.length }, 'Sample faculty fetched');
-        }
-
-        if (facultyDocs.length === 0) {
-            this.logger.info('No faculty in database');
-            return [];
-        }
-
-        // DEBUG: Log raw faculty data to check department population
-        this.logger.info({ 
-            sampleFacultyRaw: facultyDocs.slice(0, 3).map(f => ({
-                name: f.name,
-                email: f.email,
-                department: f.department,
-                departmentType: typeof f.department
-            }))
-        }, 'Raw faculty data before transformation');
 
         // Return faculty
         return facultyDocs.map(f => ({
@@ -1365,10 +1338,10 @@ export default class SearchService {
      * @param {number} [params.page=1]
      * @param {number} [params.per_page=20]
      */
-    async authorScopedSearch({ query, author_id, page = 1, per_page = 20 }) {
+    async authorScopedSearch({ query, author_id, page = 1, per_page = 20, mode = 'advanced', refine_within = null }) {
         // Cache key
         const queryHash = crypto.createHash('sha256')
-            .update(JSON.stringify({ query, author_id, page, per_page }))
+            .update(JSON.stringify({ query, author_id, page, per_page, mode, refine_within }))
             .digest('hex').slice(0, 16);
         const cacheKey = `author_scope:${queryHash}`;
 
@@ -1376,7 +1349,7 @@ export default class SearchService {
         try {
             const cached = await this.redis.get(cacheKey);
             if (cached) {
-                this.logger.info({ cacheKey, author_id, query }, 'Author-scoped search cache HIT');
+                this.logger.info({ cacheKey, author_id, query, mode }, 'Author-scoped search cache HIT');
                 return { ...JSON.parse(cached), cacheHit: true };
             }
         } catch (err) {
@@ -1428,32 +1401,143 @@ export default class SearchService {
             const embedding = await this.embeddingService.embedQuery(query);
             const from = (page - 1) * per_page;
 
-            const osQuery = {
-                size: per_page,
-                from,
-                track_total_hits: true,
-                _source: ['mongo_id'],
-                query: {
-                    script_score: {
-                        query: {
-                            bool: {
-                                filter: [
-                                    { ids: { values: osIds } }
-                                ]
-                            }
-                        },
-                        script: {
-                            lang: 'knn',
-                            source: 'knn_score',
-                            params: {
-                                field: 'embedding',
-                                query_value: embedding,
-                                space_type: 'cosinesimil'
+            const isBasic = mode === 'basic';
+            let searchFields = this._getSearchFields(null);
+            let osQuery;
+
+            if (isBasic) {
+                searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+                const multiMatchConfig = {
+                    type: 'cross_fields',
+                    operator: 'and'
+                };
+                osQuery = {
+                    size: per_page,
+                    from,
+                    track_total_hits: true,
+                    _source: ['mongo_id'],
+                    query: {
+                        script_score: {
+                            query: {
+                                bool: {
+                                    filter: [
+                                        { ids: { values: osIds } }
+                                    ],
+                                    must: [
+                                        {
+                                            multi_match: {
+                                                query: query,
+                                                fields: searchFields,
+                                                ...multiMatchConfig
+                                            }
+                                        },
+                                        ...(refine_within ? [{
+                                            multi_match: {
+                                                query: refine_within,
+                                                fields: searchFields,
+                                                ...multiMatchConfig
+                                            }
+                                        }] : [])
+                                    ]
+                                }
+                            },
+                            script: {
+                                lang: 'knn',
+                                source: 'knn_score',
+                                params: {
+                                    field: 'embedding',
+                                    query_value: embedding,
+                                    space_type: 'cosinesimil'
+                                }
                             }
                         }
                     }
+                };
+            } else {
+                searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+                const words = query.trim().split(/\s+/);
+                const isMultiWord = words.length >= 2;
+                const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
+                
+                const boostClauses = [];
+
+                if (isMultiWord) {
+                    boostClauses.push({
+                        multi_match: {
+                            query: query,
+                            fields: ['title^5', 'abstract^2'],
+                            type: 'phrase',
+                            slop: 2,
+                            boost: this.searchConfig.phraseBoost
+                        }
+                    });
                 }
-            };
+
+                boostClauses.push({
+                    match: {
+                        'subject_area': {
+                            query: query,
+                            boost: 2.0
+                        }
+                    }
+                });
+
+                boostClauses.push({
+                    match: {
+                        'field_associated': {
+                            query: query,
+                            boost: 1.5
+                        }
+                    }
+                });
+
+                boostClauses.push({
+                    knn: {
+                        embedding: {
+                            vector: embedding,
+                            k: 100
+                        }
+                    }
+                });
+
+                osQuery = {
+                    size: per_page,
+                    from,
+                    track_total_hits: true,
+                    min_score: this.searchConfig.minScore.hybrid,
+                    _source: ['mongo_id'],
+                    query: {
+                        bool: {
+                            filter: [
+                                { ids: { values: osIds } }
+                            ],
+                            must: [
+                                {
+                                    multi_match: {
+                                        query: query,
+                                        fields: searchFields,
+                                        type: 'best_fields',
+                                        tie_breaker: 0.3,
+                                        fuzziness: 'AUTO',
+                                        minimum_should_match: minShouldMatch
+                                    }
+                                },
+                                ...(refine_within ? [{
+                                    multi_match: {
+                                        query: refine_within,
+                                        fields: searchFields,
+                                        type: 'best_fields',
+                                        tie_breaker: 0.3,
+                                        fuzziness: 'AUTO',
+                                        minimum_should_match: refine_within.trim().split(/\s+/).length >= 2 ? '75%' : '1'
+                                    }
+                                }] : [])
+                            ],
+                            should: boostClauses
+                        }
+                    }
+                };
+            }
 
             this.logger.info({
                 author_id,
@@ -1613,10 +1697,10 @@ export default class SearchService {
      *
      * Returns faculty grouped by department, sorted by relevance.
      */
-    async getAllFacultyForQuery(query) {
+    async getAllFacultyForQuery(query, mode = 'advanced') {
         // Cache key
         const queryHash = crypto.createHash('sha256')
-            .update(JSON.stringify({ query, type: 'faculty_for_query' }))
+            .update(JSON.stringify({ query, type: 'faculty_for_query', mode }))
             .digest('hex').slice(0, 16);
         const cacheKey = `faculty_query:${queryHash}`;
 
@@ -1624,30 +1708,51 @@ export default class SearchService {
         try {
             const cached = await this.redis.get(cacheKey);
             if (cached) {
-                this.logger.info({ cacheKey, query }, 'Faculty-for-query cache HIT');
+                this.logger.info({ cacheKey, query, mode }, 'Faculty-for-query cache HIT');
                 return { ...JSON.parse(cached), cacheHit: true };
             }
         } catch (err) {
             this.logger.warn({ err }, 'Redis cache read failed for faculty-for-query');
         }
 
-        // Build a lightweight BM25 query (no embedding needed) with size: 0
-        const searchFields = this._getSearchFields(null);
-        const words = query.trim().split(/\s+/);
-        const isMultiWord = words.length >= 2;
-        const minShouldMatch = isMultiWord ? '75%' : '1';
+        // Build BM25 query with size: 0
+        const isBasic = mode === 'basic';
+        let searchFields = this._getSearchFields(null);
+        let multiMatchConfig = {};
+
+        if (isBasic) {
+            // Strict exact-matching fields
+            searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+            multiMatchConfig = {
+                type: 'cross_fields',
+                operator: 'and'
+            };
+        } else {
+            // Fuzzy, backwards-compatible "advanced" search.
+            // Filter n-grams to prevent 35k result explosions
+            searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+            const words = query.trim().split(/\s+/);
+            const isMultiWord = words.length >= 2;
+            // For 2 words, require both (100%). For 3+ words, require 75%.
+            const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
+            
+            multiMatchConfig = {
+                type: 'best_fields',
+                tie_breaker: 0.3,
+                fuzziness: 'AUTO',
+                minimum_should_match: minShouldMatch
+            };
+        }
 
         const osQuery = {
             size: 0,
             track_total_hits: true,
+            min_score: this.searchConfig.minScore.impact, // Drop noisy fuzzy papers from the aggregation pool
             query: {
                 multi_match: {
                     query: query,
                     fields: searchFields,
-                    type: 'best_fields',
-                    tie_breaker: 0.3,
-                    fuzziness: 'AUTO',
-                    minimum_should_match: minShouldMatch
+                    ...multiMatchConfig
                 }
             },
             aggs: {
@@ -1725,7 +1830,7 @@ export default class SearchService {
         }
 
         // Extract author info from aggregation (with relevance scores)
-        const authorInfos = authorBuckets.map(bucket => {
+        let authorInfos = authorBuckets.map(bucket => {
             const maxRel = bucket.parent_docs?.max_relevance?.value || 0;
             const avgRel = bucket.parent_docs?.avg_relevance?.value || 0;
             const paperCount = bucket.doc_count;
@@ -1740,6 +1845,22 @@ export default class SearchService {
                 author_score: authorScore
             };
         });
+
+        // Apply dynamic relevance thresholding logic
+        if (authorInfos.length > 0) {
+            const maxAuthorScore = Math.max(...authorInfos.map(a => a.author_score));
+            const scoreThreshold = maxAuthorScore * 0.25; // Keep authors with at least 25% of the top profile's score
+            
+            const initialCount = authorInfos.length;
+            authorInfos = authorInfos.filter(a => a.author_score >= scoreThreshold);
+            
+            this.logger.info({
+                maxAuthorScore,
+                scoreThreshold,
+                keptAuthors: authorInfos.length,
+                droppedAuthors: initialCount - authorInfos.length
+            }, 'Faculty-for-query: applied dynamic relevance threshold');
+        }
 
         // Use matched_profile to look up Faculty + Department
         // Step 1: Find matched_profile ObjectIds for each author_id from MongoDB
