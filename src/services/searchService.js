@@ -1403,62 +1403,124 @@ export default class SearchService {
 
             const isBasic = mode === 'basic';
             let searchFields = this._getSearchFields(null);
-            let multiMatchConfig = {};
+            let osQuery;
 
             if (isBasic) {
                 searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
-                multiMatchConfig = {
+                const multiMatchConfig = {
                     type: 'cross_fields',
                     operator: 'and'
+                };
+                osQuery = {
+                    size: per_page,
+                    from,
+                    track_total_hits: true,
+                    _source: ['mongo_id'],
+                    query: {
+                        script_score: {
+                            query: {
+                                bool: {
+                                    filter: [
+                                        { ids: { values: osIds } }
+                                    ],
+                                    must: [
+                                        {
+                                            multi_match: {
+                                                query: query,
+                                                fields: searchFields,
+                                                ...multiMatchConfig
+                                            }
+                                        }
+                                    ]
+                                }
+                            },
+                            script: {
+                                lang: 'knn',
+                                source: 'knn_score',
+                                params: {
+                                    field: 'embedding',
+                                    query_value: embedding,
+                                    space_type: 'cosinesimil'
+                                }
+                            }
+                        }
+                    }
                 };
             } else {
                 searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
                 const words = query.trim().split(/\s+/);
                 const isMultiWord = words.length >= 2;
                 const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
-                multiMatchConfig = {
-                    type: 'best_fields',
-                    tie_breaker: 0.3,
-                    fuzziness: 'AUTO',
-                    minimum_should_match: minShouldMatch
-                };
-            }
+                
+                const boostClauses = [];
 
-            const osQuery = {
-                size: per_page,
-                from,
-                track_total_hits: true,
-                _source: ['mongo_id'],
-                query: {
-                    script_score: {
-                        query: {
-                            bool: {
-                                filter: [
-                                    { ids: { values: osIds } }
-                                ],
-                                must: [
-                                    {
-                                        multi_match: {
-                                            query: query,
-                                            fields: searchFields,
-                                            ...multiMatchConfig
-                                        }
-                                    }
-                                ]
-                            }
-                        },
-                        script: {
-                            lang: 'knn',
-                            source: 'knn_score',
-                            params: {
-                                field: 'embedding',
-                                query_value: embedding,
-                                space_type: 'cosinesimil'
-                            }
+                if (isMultiWord) {
+                    boostClauses.push({
+                        multi_match: {
+                            query: query,
+                            fields: ['title^5', 'abstract^2'],
+                            type: 'phrase',
+                            slop: 2,
+                            boost: this.searchConfig.phraseBoost
+                        }
+                    });
+                }
+
+                boostClauses.push({
+                    match: {
+                        'subject_area': {
+                            query: query,
+                            boost: 2.0
                         }
                     }
-                }
-            };
+                });
+
+                boostClauses.push({
+                    match: {
+                        'field_associated': {
+                            query: query,
+                            boost: 1.5
+                        }
+                    }
+                });
+
+                boostClauses.push({
+                    knn: {
+                        embedding: {
+                            vector: embedding,
+                            k: 100
+                        }
+                    }
+                });
+
+                osQuery = {
+                    size: per_page,
+                    from,
+                    track_total_hits: true,
+                    min_score: this.searchConfig.minScore.hybrid,
+                    _source: ['mongo_id'],
+                    query: {
+                        bool: {
+                            filter: [
+                                { ids: { values: osIds } }
+                            ],
+                            must: [
+                                {
+                                    multi_match: {
+                                        query: query,
+                                        fields: searchFields,
+                                        type: 'best_fields',
+                                        tie_breaker: 0.3,
+                                        fuzziness: 'AUTO',
+                                        minimum_should_match: minShouldMatch
+                                    }
+                                }
+                            ],
+                            should: boostClauses
+                        }
+                    }
+                };
+            }
 
             this.logger.info({
                 author_id,
