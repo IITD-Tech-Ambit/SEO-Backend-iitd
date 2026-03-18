@@ -1338,10 +1338,10 @@ export default class SearchService {
      * @param {number} [params.page=1]
      * @param {number} [params.per_page=20]
      */
-    async authorScopedSearch({ query, author_id, page = 1, per_page = 20, mode = 'advanced' }) {
+    async authorScopedSearch({ query, author_id, page = 1, per_page = 20, mode = 'advanced', refine_within = null }) {
         // Cache key
         const queryHash = crypto.createHash('sha256')
-            .update(JSON.stringify({ query, author_id, page, per_page, mode }))
+            .update(JSON.stringify({ query, author_id, page, per_page, mode, refine_within }))
             .digest('hex').slice(0, 16);
         const cacheKey = `author_scope:${queryHash}`;
 
@@ -1430,7 +1430,14 @@ export default class SearchService {
                                                 fields: searchFields,
                                                 ...multiMatchConfig
                                             }
-                                        }
+                                        },
+                                        ...(refine_within ? [{
+                                            multi_match: {
+                                                query: refine_within,
+                                                fields: searchFields,
+                                                ...multiMatchConfig
+                                            }
+                                        }] : [])
                                     ]
                                 }
                             },
@@ -1514,7 +1521,17 @@ export default class SearchService {
                                         fuzziness: 'AUTO',
                                         minimum_should_match: minShouldMatch
                                     }
-                                }
+                                },
+                                ...(refine_within ? [{
+                                    multi_match: {
+                                        query: refine_within,
+                                        fields: searchFields,
+                                        type: 'best_fields',
+                                        tie_breaker: 0.3,
+                                        fuzziness: 'AUTO',
+                                        minimum_should_match: refine_within.trim().split(/\s+/).length >= 2 ? '75%' : '1'
+                                    }
+                                }] : [])
                             ],
                             should: boostClauses
                         }

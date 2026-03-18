@@ -108,7 +108,7 @@ export async function searchHealth(request, reply) {
  */
 export async function authorScopedSearch(request, reply) {
     const startTime = Date.now();
-    const { query, author_id, page, per_page, mode } = request.body;
+    const { query, author_id, page, per_page, mode, refine_within } = request.body;
     const searchService = request.server.searchService;
 
     try {
@@ -117,7 +117,8 @@ export async function authorScopedSearch(request, reply) {
             author_id,
             page,
             per_page,
-            mode
+            mode,
+            refine_within
         });
 
         const tookMs = Date.now() - startTime;

@@ -250,6 +250,11 @@ export const authorScopedSearchRequestSchema = {
             type: 'string',
             enum: ['basic', 'advanced'],
             default: 'advanced'
+        },
+        refine_within: {
+            type: 'string',
+            maxLength: 500,
+            description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
         }
     },
     additionalProperties: false
