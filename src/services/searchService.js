@@ -1405,6 +1405,7 @@ export default class SearchService {
                 size: per_page,
                 from,
                 track_total_hits: true,
+                min_score: 0.65, // Filter out irrelevant papers
                 _source: ['mongo_id'],
                 query: {
                     script_score: {
