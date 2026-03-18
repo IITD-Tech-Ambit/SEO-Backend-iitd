@@ -1668,6 +1668,7 @@ export default class SearchService {
         const osQuery = {
             size: 0,
             track_total_hits: true,
+            min_score: this.searchConfig.minScore.impact, // Drop noisy fuzzy papers from the aggregation pool
             query: {
                 multi_match: {
                     query: query,
@@ -1750,7 +1751,7 @@ export default class SearchService {
         }
 
         // Extract author info from aggregation (with relevance scores)
-        const authorInfos = authorBuckets.map(bucket => {
+        let authorInfos = authorBuckets.map(bucket => {
             const maxRel = bucket.parent_docs?.max_relevance?.value || 0;
             const avgRel = bucket.parent_docs?.avg_relevance?.value || 0;
             const paperCount = bucket.doc_count;
@@ -1765,6 +1766,22 @@ export default class SearchService {
                 author_score: authorScore
             };
         });
+
+        // Apply dynamic relevance thresholding logic
+        if (authorInfos.length > 0) {
+            const maxAuthorScore = Math.max(...authorInfos.map(a => a.author_score));
+            const scoreThreshold = maxAuthorScore * 0.25; // Keep authors with at least 25% of the top profile's score
+            
+            const initialCount = authorInfos.length;
+            authorInfos = authorInfos.filter(a => a.author_score >= scoreThreshold);
+            
+            this.logger.info({
+                maxAuthorScore,
+                scoreThreshold,
+                keptAuthors: authorInfos.length,
+                droppedAuthors: initialCount - authorInfos.length
+            }, 'Faculty-for-query: applied dynamic relevance threshold');
+        }
 
         // Use matched_profile to look up Faculty + Department
         // Step 1: Find matched_profile ObjectIds for each author_id from MongoDB
