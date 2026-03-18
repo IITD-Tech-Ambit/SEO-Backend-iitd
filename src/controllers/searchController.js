@@ -108,7 +108,7 @@ export async function searchHealth(request, reply) {
  */
 export async function authorScopedSearch(request, reply) {
     const startTime = Date.now();
-    const { query, author_id, page, per_page } = request.body;
+    const { query, author_id, page, per_page, mode, refine_within } = request.body;
     const searchService = request.server.searchService;
 
     try {
@@ -116,7 +116,9 @@ export async function authorScopedSearch(request, reply) {
             query,
             author_id,
             page,
-            per_page
+            per_page,
+            mode,
+            refine_within
         });
 
         const tookMs = Date.now() - startTime;
@@ -153,11 +155,11 @@ export async function authorScopedSearch(request, reply) {
  */
 export async function getAllFacultyForQuery(request, reply) {
     const startTime = Date.now();
-    const { query } = request.query;
+    const { query, mode } = request.query;
     const searchService = request.server.searchService;
 
     try {
-        const result = await searchService.getAllFacultyForQuery(query);
+        const result = await searchService.getAllFacultyForQuery(query, mode);
 
         const tookMs = Date.now() - startTime;
 

@@ -1,0 +1,10 @@
+{
+  "watch": ["src"],
+  "ext": "js,json",
+  "ignore": [
+    "node_modules",
+    "services/embedding/venv",
+    "services/indexer/venv"
+  ],
+  "exec": "node src/app.js"
+}

@@ -245,6 +245,16 @@ export const authorScopedSearchRequestSchema = {
             minimum: 1,
             maximum: 100,
             default: 20
+        },
+        mode: {
+            type: 'string',
+            enum: ['basic', 'advanced'],
+            default: 'advanced'
+        },
+        refine_within: {
+            type: 'string',
+            maxLength: 500,
+            description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
         }
     },
     additionalProperties: false
@@ -317,6 +327,12 @@ export const facultyForQueryRequestSchema = {
             minLength: 1,
             maxLength: 500,
             description: 'Search query to find related faculty'
+        },
+        mode: {
+            type: 'string',
+            enum: ['basic', 'advanced'],
+            default: 'advanced',
+            description: 'Search mode to apply keyword strictness'
         }
     },
     additionalProperties: false
