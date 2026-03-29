@@ -14,8 +14,6 @@ const facultySchema = new mongoose.Schema({
     },
     qualification_id:{
         type:String,
-        required:true,
-        unique:true
     },
     //Personal Info...
     title:{
@@ -33,7 +31,6 @@ const facultySchema = new mongoose.Schema({
     email:{
         type:String,
         required:true,
-        unique:true
     },
     gender:{
         type:String,
