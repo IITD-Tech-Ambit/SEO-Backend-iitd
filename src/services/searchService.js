@@ -126,14 +126,7 @@ export default class SearchService {
             });
         }
 
-        if (filters?.affiliation) {
-            mustFilters.push({
-                nested: {
-                    path: 'authors',
-                    query: { match: { 'authors.author_affiliation': filters.affiliation } }
-                }
-            });
-        }
+        // author_affiliation removed from schema — affiliation filter disabled
 
         if (filters?.first_author_only === true) {
             mustFilters.push({
@@ -696,67 +689,49 @@ export default class SearchService {
 
     /**
      * Extract related faculty from search results
-     * Finds university faculty who are authors of matching papers
+     * Finds university faculty linked to matching papers via expert_id
      */
     async _extractRelatedFaculty(results) {
         if (!results.length) return [];
 
         const Faculty = this.mongoose.model('Faculty');
-        
-        // Collect all author emails from papers that contain 'iitd'
-        const authorEmails = new Set();
-        
+
+        // Collect unique expert_ids from results
+        const expertIds = new Set();
+        const expertPaperCount = new Map();
+
         for (const doc of results) {
-            if (doc.authors && Array.isArray(doc.authors)) {
-                for (const author of doc.authors) {
-                    if (author.author_email) {
-                        const email = author.author_email.toLowerCase().trim();
-                        if (email.includes('iitd')) {
-                            authorEmails.add(email);
-                        }
-                    }
-                }
+            if (doc.expert_id) {
+                expertIds.add(doc.expert_id);
+                expertPaperCount.set(doc.expert_id, (expertPaperCount.get(doc.expert_id) || 0) + 1);
             }
         }
 
-        this.logger.info({ 
-            authorEmailCount: authorEmails.size, 
-            sampleEmails: Array.from(authorEmails).slice(0, 5) 
-        }, 'IITD author emails collected');
+        this.logger.info({
+            uniqueExperts: expertIds.size
+        }, 'Expert IDs collected from results');
 
         let facultyDocs = [];
 
-        if (authorEmails.size > 0) {
-            const emailArray = Array.from(authorEmails);
-            
-            // Extract usernames (part before @)
-            const usernames = emailArray.map(e => e.split('@')[0]).filter(u => u && u.length > 2);
-            
-            this.logger.info({ usernames: usernames.slice(0, 10) }, 'Searching faculty by usernames');
+        if (expertIds.size > 0) {
+            facultyDocs = await Faculty.find({
+                expert_id: { $in: Array.from(expertIds) }
+            })
+                .populate('department', 'name')
+                .select('firstName lastName email expert_id department')
+                .limit(20)
+                .lean();
 
-            if (usernames.length > 0) {
-                // Match faculty by email starting with any of the usernames
-                const regexPattern = usernames.slice(0, 30).map(u => `^${u}@`).join('|');
-                
-                facultyDocs = await Faculty.find({
-                    email: { $regex: regexPattern, $options: 'i' }
-                })
-                    .populate('department', 'name')
-                    .select('name email department')
-                    .limit(20)
-                    .lean();
-                
-                this.logger.info({ foundCount: facultyDocs.length }, 'Faculty found by username match');
-            }
+            this.logger.info({ foundCount: facultyDocs.length }, 'Faculty found by expert_id match');
         }
 
         // Return faculty
         return facultyDocs.map(f => ({
             _id: f._id,
-            name: f.name,
+            name: `${f.firstName} ${f.lastName}`.trim(),
             email: f.email,
             department: f.department,
-            paperCount: 1
+            paperCount: expertPaperCount.get(f.expert_id) || 1
         }));
     }
 
@@ -1646,7 +1621,7 @@ export default class SearchService {
                                     author_info: {
                                         top_hits: {
                                             size: 1,
-                                            _source: ['authors.author_name', 'authors.author_affiliation']
+                                            _source: ['authors.author_name']
                                         }
                                     }
                                 }
@@ -1666,8 +1641,7 @@ export default class SearchService {
             collaborators: coauthors.map(c => ({
                 author_id: c.key,
                 collaboration_count: c.doc_count,
-                name: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_name,
-                affiliation: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_affiliation
+                name: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_name
             }))
         };
     }
@@ -1756,41 +1730,22 @@ export default class SearchService {
                 }
             },
             aggs: {
-                faculty_authors: {
-                    nested: { path: 'authors' },
+                // Filter to only documents with an expert_id (linked to IITD faculty)
+                with_expert: {
+                    filter: { exists: { field: 'expert_id' } },
                     aggs: {
-                        matched_only: {
-                            filter: { term: { 'authors.has_matched_profile': true } },
+                        // Group by expert_id to find relevant faculty
+                        by_expert: {
+                            terms: {
+                                field: 'expert_id',
+                                size: 200
+                            },
                             aggs: {
-                                by_author_id: {
-                                    terms: {
-                                        field: 'authors.author_id',
-                                        size: 200
-                                    },
-                                    aggs: {
-                                        author_name: {
-                                            terms: {
-                                                field: 'authors.author_name.keyword',
-                                                size: 1
-                                            }
-                                        },
-                                        // Pop back to parent doc to get relevance scores
-                                        parent_docs: {
-                                            reverse_nested: {},
-                                            aggs: {
-                                                max_relevance: {
-                                                    max: {
-                                                        script: '_score'
-                                                    }
-                                                },
-                                                avg_relevance: {
-                                                    avg: {
-                                                        script: '_score'
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                max_relevance: {
+                                    max: { script: '_score' }
+                                },
+                                avg_relevance: {
+                                    avg: { script: '_score' }
                                 }
                             }
                         }
@@ -1807,19 +1762,18 @@ export default class SearchService {
         });
 
         const totalDocs = osResponse.body.hits.total.value;
-        const authorBuckets = osResponse.body.aggregations
-            ?.faculty_authors
-            ?.matched_only
-            ?.by_author_id
+        const expertBuckets = osResponse.body.aggregations
+            ?.with_expert
+            ?.by_expert
             ?.buckets || [];
 
         this.logger.info({
             query,
             totalDocs,
-            uniqueAuthors: authorBuckets.length
+            uniqueExperts: expertBuckets.length
         }, 'Faculty-for-query: aggregation results');
 
-        if (authorBuckets.length === 0) {
+        if (expertBuckets.length === 0) {
             const emptyResult = {
                 departments: [],
                 total_faculty: 0,
@@ -1829,16 +1783,15 @@ export default class SearchService {
             return emptyResult;
         }
 
-        // Extract author info from aggregation (with relevance scores)
-        let authorInfos = authorBuckets.map(bucket => {
-            const maxRel = bucket.parent_docs?.max_relevance?.value || 0;
-            const avgRel = bucket.parent_docs?.avg_relevance?.value || 0;
+        // Extract expert info from aggregation (with relevance scores)
+        let authorInfos = expertBuckets.map(bucket => {
+            const maxRel = bucket.max_relevance?.value || 0;
+            const avgRel = bucket.avg_relevance?.value || 0;
             const paperCount = bucket.doc_count;
             // Hybrid score: 60% best-paper-match + 30% consistency + 10% volume (log-dampened)
             const authorScore = 0.6 * maxRel + 0.3 * avgRel + 0.1 * Math.log2(1 + paperCount);
             return {
-                author_id: bucket.key,
-                author_name: bucket.author_name?.buckets?.[0]?.key || 'Unknown',
+                expert_id: bucket.key,
                 paper_count: paperCount,
                 max_relevance: maxRel,
                 avg_relevance: avgRel,
@@ -1850,10 +1803,10 @@ export default class SearchService {
         if (authorInfos.length > 0) {
             const maxAuthorScore = Math.max(...authorInfos.map(a => a.author_score));
             const scoreThreshold = maxAuthorScore * 0.25; // Keep authors with at least 25% of the top profile's score
-            
+
             const initialCount = authorInfos.length;
             authorInfos = authorInfos.filter(a => a.author_score >= scoreThreshold);
-            
+
             this.logger.info({
                 maxAuthorScore,
                 scoreThreshold,
@@ -1862,73 +1815,45 @@ export default class SearchService {
             }, 'Faculty-for-query: applied dynamic relevance threshold');
         }
 
-        // Use matched_profile to look up Faculty + Department
-        // Step 1: Find matched_profile ObjectIds for each author_id from MongoDB
-        const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
-        const authorIds = authorInfos.map(a => a.author_id);
-
-        const profilePipeline = [
-            { $match: { 'authors.author_id': { $in: authorIds } } },
-            { $unwind: '$authors' },
-            { $match: {
-                'authors.author_id': { $in: authorIds },
-                'authors.matched_profile': { $ne: null }
-            }},
-            { $group: {
-                _id: '$authors.author_id',
-                matched_profile: { $first: '$authors.matched_profile' }
-            }}
-        ];
-
-        const profileResults = await ResearchDocument.aggregate(profilePipeline);
-        const authorToProfileMap = new Map(
-            profileResults.map(r => [r._id, r.matched_profile])
-        );
-
-        this.logger.info({
-            totalAuthors: authorIds.length,
-            matchedProfiles: profileResults.length
-        }, 'Faculty-for-query: matched_profile lookup');
-
-        // Step 2: Look up Faculty with department using matched_profile ObjectIds
-        const profileIds = [...new Set(profileResults.map(r => r.matched_profile))];
+        // Look up Faculty + Department using expert_ids directly from aggregation
+        const expertIds = authorInfos.map(a => a.expert_id);
         const Faculty = this.mongoose.model('Faculty');
 
         let facultyDocs = [];
-        if (profileIds.length > 0) {
-            facultyDocs = await Faculty.find({ _id: { $in: profileIds } })
+        if (expertIds.length > 0) {
+            facultyDocs = await Faculty.find({ expert_id: { $in: expertIds } })
                 .populate('department', 'name')
-                .select('name department')
+                .select('firstName lastName expert_id department')
                 .lean();
         }
 
-        const facultyByProfileId = new Map(
-            facultyDocs.map(f => [f._id.toString(), f])
+        const facultyByExpertId = new Map(
+            facultyDocs.map(f => [f.expert_id, f])
         );
 
+        this.logger.info({
+            totalExperts: expertIds.length,
+            matchedFaculty: facultyDocs.length
+        }, 'Faculty-for-query: expert_id lookup');
+
         // Build department-grouped response with RELEVANCE ordering
-        // Only include authors that have a matched_profile (real IITD faculty)
-        // DEDUP: Multiple Scopus author_ids can map to the same Faculty _id
-        //        (e.g., "Bhim Singh" with two Scopus profiles → 1793 + 265 papers)
-        //        We merge them: sum paper_count, keep best author_score
-        const facultyDedup = new Map(); // profileId -> merged faculty info
+        // Only include experts that match a real IITD faculty
+        const facultyDedup = new Map(); // expert_id -> merged faculty info
 
         for (const author of authorInfos) {
-            const profileId = authorToProfileMap.get(author.author_id);
-            if (!profileId) continue;
+            const faculty = facultyByExpertId.get(author.expert_id);
+            if (!faculty) continue;
 
-            const faculty = facultyByProfileId.get(profileId.toString());
-            if (!faculty || !faculty.name) continue;
-
-            const key = profileId.toString();
+            const facultyName = `${faculty.firstName} ${faculty.lastName}`.trim();
+            const key = author.expert_id;
             if (facultyDedup.has(key)) {
                 const existing = facultyDedup.get(key);
                 existing.paper_count += author.paper_count;
                 existing.author_score = Math.max(existing.author_score, author.author_score);
             } else {
                 facultyDedup.set(key, {
-                    name: faculty.name,
-                    author_id: author.author_id, // Keep first author_id for click handling
+                    name: facultyName,
+                    expert_id: author.expert_id,
                     paper_count: author.paper_count,
                     author_score: author.author_score,
                     deptName: faculty?.department?.name || 'Other'
@@ -1949,7 +1874,7 @@ export default class SearchService {
             const dept = deptMap.get(deptName);
             dept.faculty.push({
                 name: merged.name,
-                author_id: merged.author_id,
+                expert_id: merged.expert_id,
                 paper_count: merged.paper_count,
                 relevance_score: Math.round(merged.author_score * 100) / 100
             });

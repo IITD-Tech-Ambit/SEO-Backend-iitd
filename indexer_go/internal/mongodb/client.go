@@ -15,15 +15,10 @@ import (
 
 // Author represents an author in a research document
 type Author struct {
-	AuthorID             string              `bson:"author_id"`
-	AuthorEID            string              `bson:"author_eid"`
-	AuthorPosition       string              `bson:"author_position"`
-	AuthorName           string              `bson:"author_name"`
-	AuthorEmail          string              `bson:"author_email"`
-	AuthorAvailableNames []string            `bson:"author_avaialable_names"` // Note: MongoDB has typo in field name
-	AuthorOrcid          string              `bson:"author_orcid"`
-	AuthorAffiliation    string              `bson:"author_affiliation"`
-	MatchedProfile       *primitive.ObjectID `bson:"matched_profile"`
+	AuthorID             string   `bson:"author_id"`
+	AuthorPosition       string   `bson:"author_position"`
+	AuthorName           string   `bson:"author_name"`
+	AuthorAvailableNames []string `bson:"author_avaialable_names"` // Note: MongoDB has typo in field name
 }
 
 // Document represents a research document from MongoDB
@@ -35,6 +30,7 @@ type Document struct {
 	Title            string             `bson:"title"`
 	Abstract         string             `bson:"abstract"`
 	Authors          []Author           `bson:"authors"`
+	ExpertID         string             `bson:"expert_id"`
 	PublicationYear  int                `bson:"publication_year"`
 	FieldAssociated  string             `bson:"field_associated"`
 	DocumentType     string             `bson:"document_type"`

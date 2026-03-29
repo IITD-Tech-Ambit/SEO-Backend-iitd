@@ -330,10 +330,7 @@ func (idx *Indexer) Phase1FetchAndEmbed(ctx context.Context, limit int, reindexA
 							AuthorID:             a.AuthorID,
 							AuthorPosition:       a.AuthorPosition,
 							AuthorName:           a.AuthorName,
-							AuthorEmail:          a.AuthorEmail,
 							AuthorAvailableNames: a.AuthorAvailableNames,
-							AuthorAffiliation:    a.AuthorAffiliation,
-							HasMatchedProfile:    a.MatchedProfile != nil,
 						}
 					}
 					entries[i] = cache.CacheEntry{
@@ -342,6 +339,7 @@ func (idx *Indexer) Phase1FetchAndEmbed(ctx context.Context, limit int, reindexA
 						Title:           doc.Title,
 						Abstract:        doc.Abstract,
 						Authors:         authors,
+						ExpertID:        doc.ExpertID,
 						PublicationYear: doc.PublicationYear,
 						FieldAssociated: doc.FieldAssociated,
 						DocumentType:    doc.DocumentType,
@@ -486,9 +484,6 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 					AuthorName:         a.AuthorName,
 					AuthorNameVariants: a.AuthorAvailableNames,
 					AuthorPosition:     position,
-					AuthorAffiliation:  a.AuthorAffiliation,
-					AuthorEmail:        a.AuthorEmail,
-					HasMatchedProfile:  a.HasMatchedProfile,
 				}
 			}
 
@@ -499,6 +494,7 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 				Authors:            osAuthors,
 				AuthorNames:        authorNames,
 				AuthorNameVariants: allVariants,
+				ExpertID:           entry.ExpertID,
 				PublicationYear:    entry.PublicationYear,
 				FieldAssociated:    entry.FieldAssociated,
 				DocumentType:       entry.DocumentType,

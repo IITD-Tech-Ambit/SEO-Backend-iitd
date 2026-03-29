@@ -18,6 +18,7 @@ type CacheEntry struct {
 	Title           string
 	Abstract        string
 	Authors         []CachedAuthor
+	ExpertID        string
 	PublicationYear int
 	FieldAssociated string
 	DocumentType    string
@@ -33,10 +34,7 @@ type CachedAuthor struct {
 	AuthorID             string
 	AuthorPosition       string
 	AuthorName           string
-	AuthorEmail          string
 	AuthorAvailableNames []string
-	AuthorAffiliation    string
-	HasMatchedProfile    bool
 }
 
 // CacheMetadata stores information about the cache state

@@ -46,10 +46,6 @@ export const searchRequestSchema = {
                     type: 'string',
                     description: 'Filter by specific author ID'
                 },
-                affiliation: {
-                    type: 'string',
-                    description: 'Filter by author affiliation/institution'
-                },
                 first_author_only: {
                     type: 'boolean',
                     description: 'Only return first-author papers'
@@ -353,7 +349,7 @@ export const facultyForQueryResponseSchema = {
                             type: 'object',
                             properties: {
                                 name: { type: 'string' },
-                                author_id: { type: 'string' },
+                                expert_id: { type: 'string' },
                                 paper_count: { type: 'integer' },
                                 relevance_score: { type: 'number' }
                             }
