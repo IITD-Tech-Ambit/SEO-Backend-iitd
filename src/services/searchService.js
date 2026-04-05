@@ -730,6 +730,7 @@ export default class SearchService {
             _id: f._id,
             name: `${f.firstName} ${f.lastName}`.trim(),
             email: f.email,
+            expert_id: f.expert_id,
             department: f.department,
             paperCount: expertPaperCount.get(f.expert_id) || 1
         }));
@@ -1142,6 +1143,7 @@ export default class SearchService {
                     total,
                     total_pages: Math.ceil(total / per_page)
                 },
+                mode: 'advanced',
                 message: total > 0
                     ? 'Showing approximate matches for your query'
                     : 'No results found. Try different keywords.',
@@ -1151,9 +1153,12 @@ export default class SearchService {
             this.logger.error({ err, query }, 'Fuzzy fallback search failed');
             return {
                 results: [],
+                related_faculty: [],
                 facets: {},
                 suggestions: [],
+                fuzzy_fallback: true,
                 pagination: { page, per_page, total: 0, total_pages: 0 },
+                mode: 'advanced',
                 message: 'No relevant results found for your query',
                 cacheHit: false
             };
@@ -1332,13 +1337,26 @@ export default class SearchService {
         }
 
         // Phase 1: Get author's paper OpenSearch IDs from MongoDB
+        // The author_id may be an expert_id (from faculty sidebar) or a Scopus author_id.
+        // Try expert_id first (indexed, direct link), fall back to authors.author_id.
         let osIds, authorName;
         try {
             const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
-            const authorDocs = await ResearchDocument.find(
-                { 'authors.author_id': author_id },
+            const Faculty = this.mongoose.model('Faculty');
+
+            // Try expert_id first (covers faculty sidebar clicks)
+            let authorDocs = await ResearchDocument.find(
+                { expert_id: author_id },
                 { open_search_id: 1, _id: 0 }
             ).lean();
+
+            // Fall back to Scopus author_id if expert_id matched nothing
+            if (authorDocs.length === 0) {
+                authorDocs = await ResearchDocument.find(
+                    { 'authors.author_id': author_id },
+                    { open_search_id: 1, _id: 0 }
+                ).lean();
+            }
 
             osIds = authorDocs
                 .map(d => d.open_search_id)
@@ -1359,12 +1377,17 @@ export default class SearchService {
                 };
             }
 
-            // Get the author's name from the first document
-            const authorNameDoc = await ResearchDocument.findOne(
-                { 'authors.author_id': author_id },
-                { 'authors.$': 1 }
-            ).lean();
-            authorName = authorNameDoc?.authors?.[0]?.author_name || 'Unknown';
+            // Get author name: try Faculty collection first (for expert_id), then from paper authors
+            const faculty = await Faculty.findOne({ expert_id: author_id }).lean();
+            if (faculty) {
+                authorName = `${faculty.firstName} ${faculty.lastName}`.trim();
+            } else {
+                const authorNameDoc = await ResearchDocument.findOne(
+                    { 'authors.author_id': author_id },
+                    { 'authors.$': 1 }
+                ).lean();
+                authorName = authorNameDoc?.authors?.[0]?.author_name || 'Unknown';
+            }
         } catch (err) {
             this.logger.error({ err, author_id }, 'Author-scoped search: Phase 1 FAILED (MongoDB)');
             throw err;
@@ -1874,7 +1897,7 @@ export default class SearchService {
             const dept = deptMap.get(deptName);
             dept.faculty.push({
                 name: merged.name,
-                expert_id: merged.expert_id,
+                author_id: merged.expert_id,
                 paper_count: merged.paper_count,
                 relevance_score: Math.round(merged.author_score * 100) / 100
             });

@@ -115,7 +115,12 @@ export const searchResponseSchema = {
                     field_associated: { type: 'string' },
                     subject_area: { type: 'array' },
                     citation_count: { type: 'integer' },
-                    link: { type: 'string' }
+                    reference_count: { type: 'integer' },
+                    expert_id: { type: 'string' },
+                    link: { type: 'string' },
+                    document_eid: { type: 'string' },
+                    document_scopus_id: { type: 'string' },
+                    open_search_id: { type: 'string' }
                 }
             }
         },
@@ -127,7 +132,8 @@ export const searchResponseSchema = {
                     _id: { type: 'string' },
                     name: { type: 'string' },
                     email: { type: 'string' },
-                    department: { 
+                    expert_id: { type: 'string' },
+                    department: {
                         type: 'object',
                         properties: {
                             _id: { type: 'string' },
@@ -173,6 +179,11 @@ export const searchResponseSchema = {
         fuzzy_fallback: {
             type: 'boolean',
             description: 'True if results came from fuzzy fallback search'
+        },
+        mode: {
+            type: 'string',
+            enum: ['basic', 'advanced'],
+            description: 'Search mode used: basic (BM25-only) or advanced (hybrid BM25 + semantic)'
         },
         message: {
             type: 'string',
@@ -273,7 +284,12 @@ export const authorScopedSearchResponseSchema = {
                     field_associated: { type: 'string' },
                     subject_area: { type: 'array' },
                     citation_count: { type: 'integer' },
+                    reference_count: { type: 'integer' },
+                    expert_id: { type: 'string' },
                     link: { type: 'string' },
+                    document_eid: { type: 'string' },
+                    document_scopus_id: { type: 'string' },
+                    open_search_id: { type: 'string' },
                     similarity_score: { type: 'number' }
                 }
             }
@@ -349,7 +365,7 @@ export const facultyForQueryResponseSchema = {
                             type: 'object',
                             properties: {
                                 name: { type: 'string' },
-                                expert_id: { type: 'string' },
+                                author_id: { type: 'string' },
                                 paper_count: { type: 'integer' },
                                 relevance_score: { type: 'number' }
                             }
