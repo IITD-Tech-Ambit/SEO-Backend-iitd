@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -468,6 +469,7 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 			authorNames := make([]string, len(entry.Authors))
 			allVariants := make([]string, 0)
 
+			authorIDs := make([]string, 0, len(entry.Authors))
 			for k, a := range entry.Authors {
 				authorNames[k] = a.AuthorName
 				if len(a.AuthorAvailableNames) > 0 {
@@ -485,6 +487,9 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 					AuthorNameVariants: a.AuthorAvailableNames,
 					AuthorPosition:     position,
 				}
+				if id := strings.TrimSpace(a.AuthorID); id != "" {
+					authorIDs = append(authorIDs, id)
+				}
 			}
 
 			osDocs[j] = opensearch.OSDocument{
@@ -494,6 +499,7 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 				Authors:            osAuthors,
 				AuthorNames:        authorNames,
 				AuthorNameVariants: allVariants,
+				AuthorIDs:          authorIDs,
 				ExpertID:           entry.ExpertID,
 				PublicationYear:    entry.PublicationYear,
 				FieldAssociated:    entry.FieldAssociated,

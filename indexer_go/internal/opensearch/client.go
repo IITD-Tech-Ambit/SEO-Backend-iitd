@@ -37,7 +37,9 @@ type OSDocument struct {
 	Authors            []OSAuthor `json:"authors"`
 	AuthorNames        []string   `json:"author_names"`         // Flat list for backward compatibility
 	AuthorNameVariants []string   `json:"author_name_variants"` // All name variants
-	ExpertID           string     `json:"expert_id"`
+	// AuthorIDs: flat Scopus author IDs for terms aggregations (faculty-for-query). Mirrors Python indexer.
+	AuthorIDs []string `json:"author_ids"`
+	ExpertID  string   `json:"expert_id"`
 	PublicationYear    int        `json:"publication_year"`
 	FieldAssociated    string     `json:"field_associated"`
 	DocumentType       string     `json:"document_type"`
@@ -319,6 +321,9 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 							"analyzer": "ngram_analyzer"
 						}
 					}
+				},
+				"author_ids": {
+					"type": "keyword"
 				},
 				"expert_id": {"type": "keyword"},
 				"publication_year": {"type": "integer"},

@@ -80,8 +80,7 @@ export const searchRequestSchema = {
                 type: 'string',
                 enum: ['title', 'abstract', 'author', 'subject_area', 'field']
             },
-            default: ['title', 'abstract', 'author'],
-            description: 'Fields to search in. Default: hybrid (title, abstract, author). Use specific fields for targeted search.'
+            description: 'When omitted or empty, search all default fields. When set, each query term must match at least one selected field (AND across terms).'
         },
         mode: {
             type: 'string',
@@ -261,6 +260,14 @@ export const authorScopedSearchRequestSchema = {
             type: 'string',
             maxLength: 500,
             description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
+        },
+        search_in: {
+            type: 'array',
+            items: {
+                type: 'string',
+                enum: ['title', 'abstract', 'author', 'subject_area', 'field']
+            },
+            description: 'Same as POST /search. When set, constrains BM25 (and refine_within) to those fields; basic = strict, advanced = fuzzy where applicable.'
         }
     },
     additionalProperties: false
