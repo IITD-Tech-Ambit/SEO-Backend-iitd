@@ -688,52 +688,50 @@ export default class SearchService {
     }
 
     /**
-     * Extract related faculty from search results
-     * Finds university faculty linked to matching papers via expert_id
+     * Extract related faculty from search results (Mongo-hydrated docs).
+     * Links via paper.authors[].author_id ∩ Faculty.scopus_id (no expert_id on papers).
      */
     async _extractRelatedFaculty(results) {
         if (!results.length) return [];
 
         const Faculty = this.mongoose.model('Faculty');
 
-        // Collect unique expert_ids from results
-        const expertIds = new Set();
-        const expertPaperCount = new Map();
-
+        const authorPaperCount = new Map();
         for (const doc of results) {
-            if (doc.expert_id) {
-                expertIds.add(doc.expert_id);
-                expertPaperCount.set(doc.expert_id, (expertPaperCount.get(doc.expert_id) || 0) + 1);
+            for (const a of doc.authors || []) {
+                const aid = a.author_id;
+                if (!aid) continue;
+                authorPaperCount.set(aid, (authorPaperCount.get(aid) || 0) + 1);
             }
         }
 
-        this.logger.info({
-            uniqueExperts: expertIds.size
-        }, 'Expert IDs collected from results');
+        const authorIds = Array.from(authorPaperCount.keys());
+        this.logger.info({ uniqueAuthorIds: authorIds.length }, 'Scopus author IDs collected from results');
 
-        let facultyDocs = [];
+        if (authorIds.length === 0) return [];
 
-        if (expertIds.size > 0) {
-            facultyDocs = await Faculty.find({
-                expert_id: { $in: Array.from(expertIds) }
-            })
-                .populate('department', 'name')
-                .select('firstName lastName email expert_id department')
-                .limit(20)
-                .lean();
+        const facultyDocs = await Faculty.find({ scopus_id: { $in: authorIds } })
+            .populate('department', 'name')
+            .select('firstName lastName email expert_id department scopus_id')
+            .limit(20)
+            .lean();
 
-            this.logger.info({ foundCount: facultyDocs.length }, 'Faculty found by expert_id match');
-        }
+        this.logger.info({ foundCount: facultyDocs.length }, 'Faculty found by scopus_id match');
 
-        // Return faculty
-        return facultyDocs.map(f => ({
-            _id: f._id,
-            name: `${f.firstName} ${f.lastName}`.trim(),
-            email: f.email,
-            expert_id: f.expert_id,
-            department: f.department,
-            paperCount: expertPaperCount.get(f.expert_id) || 1
-        }));
+        return facultyDocs.map(f => {
+            let paperCount = 0;
+            for (const sid of f.scopus_id || []) {
+                paperCount += authorPaperCount.get(String(sid)) || 0;
+            }
+            return {
+                _id: f._id,
+                name: `${f.firstName} ${f.lastName}`.trim(),
+                email: f.email,
+                expert_id: f.expert_id,
+                department: f.department,
+                paperCount: paperCount || 1
+            };
+        });
     }
 
     /**
@@ -1337,26 +1335,24 @@ export default class SearchService {
         }
 
         // Phase 1: Get author's paper OpenSearch IDs from MongoDB
-        // The author_id may be an expert_id (from faculty sidebar) or a Scopus author_id.
-        // Try expert_id first (indexed, direct link), fall back to authors.author_id.
+        // author_id may be Faculty.expert_id, a Scopus id in Faculty.scopus_id[], or raw authors.author_id.
         let osIds, authorName;
         try {
             const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
             const Faculty = this.mongoose.model('Faculty');
 
-            // Try expert_id first (covers faculty sidebar clicks)
-            let authorDocs = await ResearchDocument.find(
-                { expert_id: author_id },
+            const facultyMatch = await Faculty.findOne({
+                $or: [{ expert_id: author_id }, { scopus_id: author_id }]
+            }).lean();
+
+            const scopusAuthorIds = facultyMatch?.scopus_id?.length
+                ? facultyMatch.scopus_id.map(String)
+                : [author_id];
+
+            const authorDocs = await ResearchDocument.find(
+                { 'authors.author_id': { $in: scopusAuthorIds } },
                 { open_search_id: 1, _id: 0 }
             ).lean();
-
-            // Fall back to Scopus author_id if expert_id matched nothing
-            if (authorDocs.length === 0) {
-                authorDocs = await ResearchDocument.find(
-                    { 'authors.author_id': author_id },
-                    { open_search_id: 1, _id: 0 }
-                ).lean();
-            }
 
             osIds = authorDocs
                 .map(d => d.open_search_id)
@@ -1377,10 +1373,8 @@ export default class SearchService {
                 };
             }
 
-            // Get author name: try Faculty collection first (for expert_id), then from paper authors
-            const faculty = await Faculty.findOne({ expert_id: author_id }).lean();
-            if (faculty) {
-                authorName = `${faculty.firstName} ${faculty.lastName}`.trim();
+            if (facultyMatch) {
+                authorName = `${facultyMatch.firstName} ${facultyMatch.lastName}`.trim();
             } else {
                 const authorNameDoc = await ResearchDocument.findOne(
                     { 'authors.author_id': author_id },
@@ -1753,14 +1747,13 @@ export default class SearchService {
                 }
             },
             aggs: {
-                // Filter to only documents with an expert_id (linked to IITD faculty)
-                with_expert: {
-                    filter: { exists: { field: 'expert_id' } },
+                // Requires indexer field `author_ids` (Scopus author IDs). Reindex after schema change.
+                with_authors: {
+                    filter: { exists: { field: 'author_ids' } },
                     aggs: {
-                        // Group by expert_id to find relevant faculty
-                        by_expert: {
+                        by_scopus_author: {
                             terms: {
-                                field: 'expert_id',
+                                field: 'author_ids',
                                 size: 200
                             },
                             aggs: {
@@ -1786,14 +1779,14 @@ export default class SearchService {
 
         const totalDocs = osResponse.body.hits.total.value;
         const expertBuckets = osResponse.body.aggregations
-            ?.with_expert
-            ?.by_expert
+            ?.with_authors
+            ?.by_scopus_author
             ?.buckets || [];
 
         this.logger.info({
             query,
             totalDocs,
-            uniqueExperts: expertBuckets.length
+            uniqueScopusAuthors: expertBuckets.length
         }, 'Faculty-for-query: aggregation results');
 
         if (expertBuckets.length === 0) {
@@ -1806,15 +1799,14 @@ export default class SearchService {
             return emptyResult;
         }
 
-        // Extract expert info from aggregation (with relevance scores)
+        // Bucket key = Scopus author_id (matches Faculty.scopus_id elements)
         let authorInfos = expertBuckets.map(bucket => {
             const maxRel = bucket.max_relevance?.value || 0;
             const avgRel = bucket.avg_relevance?.value || 0;
             const paperCount = bucket.doc_count;
-            // Hybrid score: 60% best-paper-match + 30% consistency + 10% volume (log-dampened)
             const authorScore = 0.6 * maxRel + 0.3 * avgRel + 0.1 * Math.log2(1 + paperCount);
             return {
-                expert_id: bucket.key,
+                scopus_author_id: bucket.key,
                 paper_count: paperCount,
                 max_relevance: maxRel,
                 avg_relevance: avgRel,
@@ -1838,37 +1830,37 @@ export default class SearchService {
             }, 'Faculty-for-query: applied dynamic relevance threshold');
         }
 
-        // Look up Faculty + Department using expert_ids directly from aggregation
-        const expertIds = authorInfos.map(a => a.expert_id);
+        const scopusIds = authorInfos.map(a => a.scopus_author_id);
         const Faculty = this.mongoose.model('Faculty');
 
         let facultyDocs = [];
-        if (expertIds.length > 0) {
-            facultyDocs = await Faculty.find({ expert_id: { $in: expertIds } })
+        if (scopusIds.length > 0) {
+            facultyDocs = await Faculty.find({ scopus_id: { $in: scopusIds } })
                 .populate('department', 'name')
-                .select('firstName lastName expert_id department')
+                .select('firstName lastName expert_id department scopus_id')
                 .lean();
         }
 
-        const facultyByExpertId = new Map(
-            facultyDocs.map(f => [f.expert_id, f])
-        );
+        const facultyByScopusId = new Map();
+        for (const f of facultyDocs) {
+            for (const sid of f.scopus_id || []) {
+                facultyByScopusId.set(String(sid), f);
+            }
+        }
 
         this.logger.info({
-            totalExperts: expertIds.length,
+            totalBuckets: scopusIds.length,
             matchedFaculty: facultyDocs.length
-        }, 'Faculty-for-query: expert_id lookup');
+        }, 'Faculty-for-query: scopus_id lookup');
 
-        // Build department-grouped response with RELEVANCE ordering
-        // Only include experts that match a real IITD faculty
-        const facultyDedup = new Map(); // expert_id -> merged faculty info
+        const facultyDedup = new Map(); // faculty.expert_id -> merged faculty info
 
         for (const author of authorInfos) {
-            const faculty = facultyByExpertId.get(author.expert_id);
+            const faculty = facultyByScopusId.get(String(author.scopus_author_id));
             if (!faculty) continue;
 
             const facultyName = `${faculty.firstName} ${faculty.lastName}`.trim();
-            const key = author.expert_id;
+            const key = faculty.expert_id;
             if (facultyDedup.has(key)) {
                 const existing = facultyDedup.get(key);
                 existing.paper_count += author.paper_count;
@@ -1876,7 +1868,7 @@ export default class SearchService {
             } else {
                 facultyDedup.set(key, {
                     name: facultyName,
-                    expert_id: author.expert_id,
+                    expert_id: faculty.expert_id,
                     paper_count: author.paper_count,
                     author_score: author.author_score,
                     deptName: faculty?.department?.name || 'Other'

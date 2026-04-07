@@ -129,6 +129,11 @@ class BatchIndexer:
                     a.get("author_name", "") 
                     for a in doc.get("authors", [])
                 ],
+                "author_ids": [
+                    str(a.get("author_id", "")).strip()
+                    for a in doc.get("authors", [])
+                    if a.get("author_id")
+                ],
                 "publication_year": doc.get("publication_year"),
                 "field_associated": doc.get("field_associated"),
                 "document_type": doc.get("document_type"),
@@ -413,6 +418,9 @@ def create_index_if_not_exists(os_client: OpenSearch):
                 },
                 "citation_count": {
                     "type": "integer"
+                },
+                "author_ids": {
+                    "type": "keyword"
                 },
                 "embedding": {
                     "type": "knn_vector",
