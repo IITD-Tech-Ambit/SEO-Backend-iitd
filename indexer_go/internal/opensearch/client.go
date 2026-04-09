@@ -27,9 +27,6 @@ type OSAuthor struct {
 	AuthorName         string   `json:"author_name"`
 	AuthorNameVariants []string `json:"author_name_variants"`
 	AuthorPosition     int      `json:"author_position"`
-	AuthorAffiliation  string   `json:"author_affiliation"`
-	AuthorEmail        string   `json:"author_email"`
-	HasMatchedProfile  bool     `json:"has_matched_profile"`
 }
 
 // OSDocument represents a document to be indexed in OpenSearch
@@ -40,6 +37,9 @@ type OSDocument struct {
 	Authors            []OSAuthor `json:"authors"`
 	AuthorNames        []string   `json:"author_names"`         // Flat list for backward compatibility
 	AuthorNameVariants []string   `json:"author_name_variants"` // All name variants
+	// AuthorIDs: flat Scopus author IDs for terms aggregations (faculty-for-query). Mirrors Python indexer.
+	AuthorIDs []string `json:"author_ids"`
+	ExpertID  string   `json:"expert_id"`
 	PublicationYear    int        `json:"publication_year"`
 	FieldAssociated    string     `json:"field_associated"`
 	DocumentType       string     `json:"document_type"`
@@ -292,13 +292,7 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 								}
 							}
 						},
-						"author_position": {"type": "integer"},
-						"author_affiliation": {
-							"type": "text",
-							"fields": {"keyword": {"type": "keyword"}}
-						},
-						"author_email": {"type": "keyword"},
-						"has_matched_profile": {"type": "boolean"}
+						"author_position": {"type": "integer"}
 					}
 				},
 				"author_names": {
@@ -328,6 +322,10 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 						}
 					}
 				},
+				"author_ids": {
+					"type": "keyword"
+				},
+				"expert_id": {"type": "keyword"},
 				"publication_year": {"type": "integer"},
 				"field_associated": {
 					"type": "text",

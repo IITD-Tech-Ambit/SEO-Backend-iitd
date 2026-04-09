@@ -55,6 +55,17 @@ export default class SearchService {
     }
 
     /**
+     * Dedupe + sort search_in so cache keys match regardless of field order from the client.
+     */
+    _normalizeSearchIn(searchIn) {
+        if (!searchIn || !Array.isArray(searchIn) || searchIn.length === 0) return null;
+        const allowed = new Set(['title', 'abstract', 'author', 'subject_area', 'field']);
+        const unique = [...new Set(searchIn.filter((f) => allowed.has(f)))];
+        unique.sort();
+        return unique.length ? unique : null;
+    }
+
+    /**
      * Generate cache key for search results
      * Normalizes filters to ensure consistent caching
      */
@@ -126,14 +137,7 @@ export default class SearchService {
             });
         }
 
-        if (filters?.affiliation) {
-            mustFilters.push({
-                nested: {
-                    path: 'authors',
-                    query: { match: { 'authors.author_affiliation': filters.affiliation } }
-                }
-            });
-        }
+        // author_affiliation removed from schema — affiliation filter disabled
 
         if (filters?.first_author_only === true) {
             mustFilters.push({
@@ -256,6 +260,233 @@ export default class SearchService {
         };
     }
 
+    _escapeRegexForMongo(s) {
+        return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    /**
+     * Resolve IIT Delhi Faculty.scopus_id values from a free-text author query (MongoDB).
+     * Used when search_in is author-only so we match papers by canonical Scopus author id.
+     * @returns {Promise<string[]>}
+     */
+    async _resolveFacultyScopusIdsForAuthorQuery(query) {
+        const q = query.trim();
+        if (!q) return [];
+        const Faculty = this.mongoose.model('Faculty');
+        const esc = (s) => this._escapeRegexForMongo(s);
+        const tokens = q.split(/\s+/).filter(Boolean);
+
+        let candidates = [];
+
+        const pattern = `^${esc(q).replace(/\s+/g, '\\s+')}$`;
+        try {
+            candidates = await Faculty.find({
+                $expr: {
+                    $regexMatch: {
+                        input: { $trim: { input: { $concat: ['$firstName', ' ', '$lastName'] } } },
+                        regex: pattern,
+                        options: 'i'
+                    }
+                }
+            })
+                .select('scopus_id')
+                .limit(25)
+                .lean();
+        } catch (err) {
+            this.logger.warn({ err }, 'Faculty full-name regex lookup failed');
+        }
+
+        if (candidates.length === 0 && tokens.length >= 2) {
+            const first = tokens[0];
+            const last = tokens.slice(1).join(' ');
+            candidates = await Faculty.find({
+                firstName: new RegExp(`^${esc(first)}$`, 'i'),
+                lastName: new RegExp(`^${esc(last)}$`, 'i')
+            })
+                .select('scopus_id')
+                .limit(25)
+                .lean();
+        }
+
+        if (candidates.length === 0 && tokens.length >= 2) {
+            const last = tokens[tokens.length - 1];
+            const first = tokens.slice(0, -1).join(' ');
+            candidates = await Faculty.find({
+                firstName: new RegExp(`^${esc(first)}$`, 'i'),
+                lastName: new RegExp(`^${esc(last)}$`, 'i')
+            })
+                .select('scopus_id')
+                .limit(25)
+                .lean();
+        }
+
+        if (candidates.length === 0 && tokens.length === 1) {
+            const re = new RegExp(`^${esc(tokens[0])}$`, 'i');
+            candidates = await Faculty.find({
+                $or: [{ firstName: re }, { lastName: re }]
+            })
+                .select('scopus_id')
+                .limit(25)
+                .lean();
+        }
+
+        const ids = new Set();
+        for (const f of candidates) {
+            for (const sid of f.scopus_id || []) {
+                ids.add(String(sid));
+            }
+        }
+        return [...ids];
+    }
+
+    /**
+     * When search_in is set: constrains which fields the query may match.
+     * - Author-only: optional Mongo faculty Scopus ids → terms; else nested authors only (no flat author_names).
+     * - Mixed fields: each token must match at least one selected group (AND tokens, OR groups per token).
+     * @param {object} [matchOpts] - Pass `{ fuzziness: 'AUTO' }` for advanced primary queries, `{ fuzziness: 2 }` only for advanced fuzzy fallback. Omit fuzziness for basic (strict token match).
+     * @param {string[]|null} [facultyAuthorIds] - Author-only: restrict to these Scopus ids when resolved from Faculty.
+     */
+    _buildConstrainedSearchInClause(query, searchIn, matchOpts = {}, facultyAuthorIds = null) {
+        const terms = query.trim().split(/\s+/).filter((t) => t.length > 0);
+        if (!terms.length) {
+            return { match_all: {} };
+        }
+        const fuzz = matchOpts.fuzziness != null ? { fuzziness: matchOpts.fuzziness } : {};
+        const b = this.searchConfig.fieldBoosts;
+
+        // Author-only: Mongo-resolved Faculty.scopus_id → terms; else nested authors only (same row for all tokens). No flat author_names.
+        if (searchIn.length === 1 && searchIn[0] === 'author') {
+            if (facultyAuthorIds && facultyAuthorIds.length > 0) {
+                return {
+                    bool: {
+                        should: [
+                            { terms: { author_ids: facultyAuthorIds } },
+                            {
+                                nested: {
+                                    path: 'authors',
+                                    query: { terms: { 'authors.author_id': facultyAuthorIds } }
+                                }
+                            }
+                        ],
+                        minimum_should_match: 1
+                    }
+                };
+            }
+            return {
+                nested: {
+                    path: 'authors',
+                    score_mode: 'max',
+                    query: {
+                        bool: {
+                            must: terms.map((term) => ({
+                                bool: {
+                                    should: [
+                                        { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...fuzz } } },
+                                        { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...fuzz } } }
+                                    ],
+                                    minimum_should_match: 1
+                                }
+                            }))
+                        }
+                    }
+                }
+            };
+        }
+
+        const titleTerm = (term) => ({
+            bool: {
+                should: [
+                    { match: { title: { query: term, boost: b.title, ...fuzz } } },
+                    { match: { 'title.standard': { query: term, boost: b.title * 0.8, ...fuzz } } }
+                ],
+                minimum_should_match: 1
+            }
+        });
+
+        const abstractTerm = (term) => ({
+            bool: {
+                should: [
+                    { match: { abstract: { query: term, boost: b.abstract * 1.2, ...fuzz } } },
+                    { match: { 'abstract.standard': { query: term, boost: b.abstract, ...fuzz } } }
+                ],
+                minimum_should_match: 1
+            }
+        });
+
+        const authorTerm = (term) => ({
+            bool: {
+                should: [
+                    { match: { author_names: { query: term, boost: b.authorName * 1.5, ...fuzz } } },
+                    { match: { author_name_variants: { query: term, boost: b.authorVariants, ...fuzz } } },
+                    {
+                        nested: {
+                            path: 'authors',
+                            score_mode: 'max',
+                            query: {
+                                bool: {
+                                    should: [
+                                        { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...fuzz } } },
+                                        { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...fuzz } } }
+                                    ],
+                                    minimum_should_match: 1
+                                }
+                            }
+                        }
+                    }
+                ],
+                minimum_should_match: 1
+            }
+        });
+
+        const subjectTerm = (term) => ({
+            match: {
+                subject_area: { query: term, boost: b.subjectArea * 1.2, ...fuzz }
+            }
+        });
+
+        const fieldTerm = (term) => ({
+            match: {
+                field_associated: { query: term, boost: b.fieldAssociated * 1.2, ...fuzz }
+            }
+        });
+
+        const oneTermAcrossSelectedFields = (term) => {
+            const should = [];
+            if (searchIn.includes('title')) should.push(titleTerm(term));
+            if (searchIn.includes('abstract')) should.push(abstractTerm(term));
+            if (searchIn.includes('author')) should.push(authorTerm(term));
+            if (searchIn.includes('subject_area')) should.push(subjectTerm(term));
+            if (searchIn.includes('field')) should.push(fieldTerm(term));
+            return {
+                bool: {
+                    should,
+                    minimum_should_match: should.length ? 1 : 0
+                }
+            };
+        };
+
+        return {
+            bool: {
+                must: terms.map(oneTermAcrossSelectedFields)
+            }
+        };
+    }
+
+    /**
+     * Author-only + search-on-search: `anchorText` (refine_within) pins the person via Faculty / nested author;
+     * `queryNarrow` (current query box) matches title + abstract inside those papers.
+     */
+    _buildAuthorRefineNarrowMust(queryNarrow, anchorText, anchorFacultyIds, matchOpts = {}) {
+        return {
+            bool: {
+                must: [
+                    this._buildConstrainedSearchInClause(anchorText, ['author'], matchOpts, anchorFacultyIds),
+                    this._buildConstrainedSearchInClause(queryNarrow, ['title', 'abstract'], matchOpts)
+                ]
+            }
+        };
+    }
+
     /**
      * Build BM25-only query (Basic mode) — no embeddings, no ML
      * STRICT keyword matching: no fuzziness on the primary match.
@@ -263,7 +494,7 @@ export default class SearchService {
      * Fuzziness is reserved for the fallback path only.
      * Supports refine_within for search-on-search narrowing
      */
-    _buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null) {
+    _buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null, facultyAuthorIds = null, refineFacultyIds = null, authorRefineNarrow = false) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         
@@ -273,37 +504,49 @@ export default class SearchService {
 
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
+        const searchAllFields = !searchIn || searchIn.length === 0;
+        const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
 
-        // Primary MUST clause: strict BM25 keyword match — NO fuzziness
-        // Uses cross_fields so "carbon nanofibre" matches even if "carbon" is in title
-        // and "nanofibre" is in abstract. operator:and ensures ALL terms must appear.
-        const mustClauses = [
-            {
-                multi_match: {
-                    query: query,
-                    fields: searchFields,
-                    type: 'cross_fields',
-                    operator: 'and'
+        // Primary MUST: constrained per search_in (author: Mongo ids or nested), else legacy cross_fields
+        let mustClauses;
+        if (searchIn && searchIn.length > 0) {
+            if (authorRefineNarrow && authorOnly && refineWithin?.trim()) {
+                mustClauses = [this._buildAuthorRefineNarrowMust(query, refineWithin, facultyAuthorIds, {})];
+            } else {
+                mustClauses = [this._buildConstrainedSearchInClause(query, searchIn, {}, facultyAuthorIds)];
+                if (refineWithin) {
+                    mustClauses.push(this._buildConstrainedSearchInClause(refineWithin, searchIn, {}, refineFacultyIds));
                 }
             }
-        ];
-
-        // If refining within a prior query, add the original query as another MUST
-        if (refineWithin) {
-            mustClauses.push({
-                multi_match: {
-                    query: refineWithin,
-                    fields: searchFields,
-                    type: 'cross_fields',
-                    operator: 'and'
+        } else {
+            mustClauses = [
+                {
+                    multi_match: {
+                        query: query,
+                        fields: searchFields,
+                        type: 'cross_fields',
+                        operator: 'and'
+                    }
                 }
-            });
+            ];
+            if (refineWithin) {
+                mustClauses.push({
+                    multi_match: {
+                        query: refineWithin,
+                        fields: searchFields,
+                        type: 'cross_fields',
+                        operator: 'and'
+                    }
+                });
+            }
         }
 
-        // SHOULD (boost-only): phrase match + subject area + field
+        // SHOULD (boost-only): only touch fields included in search_in (or full search)
         const boostClauses = [];
 
-        if (isMultiWord) {
+        const phraseOnTitleAbstract = searchAllFields || searchIn.includes('title') || searchIn.includes('abstract')
+            || authorRefineNarrow;
+        if (isMultiWord && phraseOnTitleAbstract) {
             boostClauses.push({
                 multi_match: {
                     query: query,
@@ -315,13 +558,17 @@ export default class SearchService {
             });
         }
 
-        boostClauses.push({
-            match: { 'subject_area': { query: query, boost: 2.0 } }
-        });
+        if (searchAllFields || searchIn.includes('subject_area')) {
+            boostClauses.push({
+                match: { subject_area: { query: query, boost: 2.0 } }
+            });
+        }
 
-        boostClauses.push({
-            match: { 'field_associated': { query: query, boost: 1.5 } }
-        });
+        if (searchAllFields || searchIn.includes('field')) {
+            boostClauses.push({
+                match: { field_associated: { query: query, boost: 1.5 } }
+            });
+        }
 
         // Sort clause
         let sortClause = ['_score'];
@@ -359,26 +606,27 @@ export default class SearchService {
      * - Citation Count (desc)
      * - Publication Year (desc)
      */
-         _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null) {
+         _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         // For advanced search fuzzy matching, n-gram fields generate too much noise. Filter them out.
         const searchFields = this._getSearchFields(searchIn)
             .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
 
+        const searchAllFields = !searchIn || searchIn.length === 0;
+        const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
+
         // Detect multi-word query for phrase boosting
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
 
-        // Determine minimum_should_match for multi-word convergence
-        // For 2 words, require both (100%). For 3+ words, require 75%.
+        // Determine minimum_should_match for multi-word convergence (legacy full-index multi_match only)
         const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
 
         // Build BOOST-only should clauses (ranking, not matching)
         const boostClauses = [];
 
-        // Phrase boost for multi-word queries
-        if (isMultiWord) {
+        if (isMultiWord && (searchAllFields || searchIn.includes('title') || searchIn.includes('abstract') || (authorRefineNarrow && authorOnly))) {
             boostClauses.push({
                 multi_match: {
                     query: query,
@@ -390,25 +638,27 @@ export default class SearchService {
             });
         }
 
-        // Subject area match boost
-        boostClauses.push({
-            match: {
-                'subject_area': {
-                    query: query,
-                    boost: 2.0
+        if (searchAllFields || searchIn.includes('subject_area')) {
+            boostClauses.push({
+                match: {
+                    subject_area: {
+                        query: query,
+                        boost: 2.0
+                    }
                 }
-            }
-        });
+            });
+        }
 
-        // Field associated match boost
-        boostClauses.push({
-            match: {
-                'field_associated': {
-                    query: query,
-                    boost: 1.5
+        if (searchAllFields || searchIn.includes('field')) {
+            boostClauses.push({
+                match: {
+                    field_associated: {
+                        query: query,
+                        boost: 1.5
+                    }
                 }
-            }
-        });
+            });
+        }
 
         // k-NN vector search as BOOST ONLY (improves ranking, doesn't expand result set)
         boostClauses.push({
@@ -419,6 +669,24 @@ export default class SearchService {
                 }
             }
         });
+
+        let bm25Must;
+        if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
+            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' });
+        } else if (searchIn && searchIn.length > 0) {
+            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds);
+        } else {
+            bm25Must = {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    fuzziness: 'AUTO',
+                    minimum_should_match: minShouldMatch
+                }
+            };
+        }
 
         // Build sort clause
         let sortClause = ['_score'];
@@ -437,18 +705,7 @@ export default class SearchService {
             query: {
                 bool: {
                     // MUST: BM25 keyword match required (controls result set size)
-                    must: [
-                        {
-                            multi_match: {
-                                query: query,
-                                fields: searchFields,
-                                type: 'best_fields',
-                                tie_breaker: 0.3,
-                                fuzziness: 'AUTO',
-                                minimum_should_match: minShouldMatch
-                            }
-                        }
-                    ],
+                    must: [bm25Must],
                     // SHOULD: Boost clauses improve ranking but don't expand results
                     should: boostClauses,
                     filter: filterClauses
@@ -464,11 +721,13 @@ export default class SearchService {
      * Build impact-weighted query using function_score
      * Combines relevance with citation count and recency
      */
-    _buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null) {
+    _buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         const searchFields = this._getSearchFields(searchIn);
         const currentYear = new Date().getFullYear();
+        const searchAllFields = !searchIn || searchIn.length === 0;
+        const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
 
         // Detect multi-word query
         const words = query.trim().split(/\s+/);
@@ -476,17 +735,16 @@ export default class SearchService {
         const minShouldMatch = isMultiWord ? '75%' : '1';
 
         // Build boost-only should clauses
-        const boostClauses = [
-            // Subject area boost
-            {
+        const boostClauses = [];
+        if (searchAllFields || searchIn.includes('subject_area')) {
+            boostClauses.push({
                 match: {
-                    'subject_area': { query: query, boost: 2.0 }
+                    subject_area: { query: query, boost: 2.0 }
                 }
-            }
-        ];
+            });
+        }
 
-        // Add phrase boost
-        if (isMultiWord) {
+        if (isMultiWord && (searchAllFields || searchIn.includes('title') || searchIn.includes('abstract') || (authorRefineNarrow && authorOnly))) {
             boostClauses.push({
                 multi_match: {
                     query: query,
@@ -496,6 +754,24 @@ export default class SearchService {
                     boost: this.searchConfig.phraseBoost
                 }
             });
+        }
+
+        let bm25Must;
+        if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
+            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' });
+        } else if (searchIn && searchIn.length > 0) {
+            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds);
+        } else {
+            bm25Must = {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    fuzziness: 'AUTO',
+                    minimum_should_match: minShouldMatch
+                }
+            };
         }
 
         return {
@@ -508,19 +784,7 @@ export default class SearchService {
                 function_score: {
                     query: {
                         bool: {
-                            must: [
-                                // Require keyword match with multi-word convergence
-                                {
-                                    multi_match: {
-                                        query: query,
-                                        fields: searchFields,
-                                        type: 'best_fields',
-                                        tie_breaker: 0.3,
-                                        fuzziness: 'AUTO',
-                                        minimum_should_match: minShouldMatch
-                                    }
-                                }
-                            ],
+                            must: [bm25Must],
                             should: boostClauses,
                             filter: filterClauses
                         }
@@ -560,39 +824,48 @@ export default class SearchService {
      * Build normalized hybrid query using script_score
      * Normalizes BM25 and k-NN scores for fair combination
      */
-    _buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null) {
+    _buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         const searchFields = this._getSearchFields(searchIn);
         const weights = this.searchConfig.hybridWeights;
+        const searchAllFields = !searchIn || searchIn.length === 0;
+        const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
 
         // Detect multi-word query
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
         const minShouldMatch = isMultiWord ? '75%' : '1';
 
-        // BM25 must clause with convergence
-        const bm25Must = {
-            multi_match: {
-                query: query,
-                fields: searchFields,
-                type: 'best_fields',
-                tie_breaker: 0.3,
-                fuzziness: 'AUTO',
-                minimum_should_match: minShouldMatch
-            }
-        };
+        let bm25Must;
+        if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
+            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' });
+        } else if (searchIn && searchIn.length > 0) {
+            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds);
+        } else {
+            bm25Must = {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    fuzziness: 'AUTO',
+                    minimum_should_match: minShouldMatch
+                }
+            };
+        }
 
         // Boost-only clauses
-        const boostClauses = [
-            {
+        const boostClauses = [];
+        if (searchAllFields || searchIn.includes('subject_area')) {
+            boostClauses.push({
                 match: {
-                    'subject_area': { query: query, boost: 2.0 }
+                    subject_area: { query: query, boost: 2.0 }
                 }
-            }
-        ];
+            });
+        }
 
-        if (isMultiWord) {
+        if (isMultiWord && (searchAllFields || searchIn.includes('title') || searchIn.includes('abstract') || (authorRefineNarrow && authorOnly))) {
             boostClauses.push({
                 multi_match: {
                     query: query,
@@ -689,95 +962,179 @@ export default class SearchService {
         const docMap = new Map(docs.map(d => [d._id.toString(), d]));
 
         // Preserve OpenSearch ranking order
-        return mongoIds
+        const ordered = mongoIds
             .map(id => docMap.get(id))
             .filter(Boolean);
+        await this._filterAuthorsToFacultyRoster(ordered);
+        return ordered;
     }
 
     /**
-     * Extract related faculty from search results
-     * Finds university faculty who are authors of matching papers
+     * Keep only paper authors whose Scopus author_id appears on a Faculty record (IIT Delhi roster).
+     * Mutates each document in place.
+     */
+    async _filterAuthorsToFacultyRoster(results) {
+        if (!results?.length) return;
+
+        const scopusIds = new Set();
+        for (const doc of results) {
+            for (const a of doc.authors || []) {
+                if (a?.author_id != null && String(a.author_id).trim() !== '') {
+                    scopusIds.add(String(a.author_id).trim());
+                }
+            }
+        }
+        if (scopusIds.size === 0) return;
+
+        const Faculty = this.mongoose.model('Faculty');
+        const facultyDocs = await Faculty.find(
+            { scopus_id: { $in: [...scopusIds] } },
+            { scopus_id: 1 }
+        ).lean();
+
+        const allowed = new Set();
+        for (const f of facultyDocs) {
+            for (const sid of f.scopus_id || []) {
+                if (sid != null && String(sid).trim()) {
+                    allowed.add(String(sid).trim());
+                }
+            }
+        }
+
+        for (const doc of results) {
+            if (!doc.authors?.length) continue;
+            doc.authors = doc.authors.filter(
+                (a) => a.author_id != null && allowed.has(String(a.author_id).trim())
+            );
+        }
+    }
+
+    /**
+     * For basic search responses: replace paper author_name (Scopus string) with the canonical
+     * directory name from Faculty when authors.author_id matches Faculty.scopus_id.
+     */
+    async _applyFacultyDisplayNamesForBasicSearch(results) {
+        if (!results?.length) return;
+
+        const scopusIds = new Set();
+        for (const doc of results) {
+            for (const a of doc.authors || []) {
+                if (a?.author_id != null && String(a.author_id).trim() !== '') {
+                    scopusIds.add(String(a.author_id).trim());
+                }
+            }
+        }
+        if (scopusIds.size === 0) return;
+
+        const Faculty = this.mongoose.model('Faculty');
+        const facultyDocs = await Faculty.find({
+            scopus_id: { $in: [...scopusIds] }
+        })
+            .select('title firstName lastName scopus_id')
+            .lean();
+
+        const idToDisplayName = new Map();
+        for (const f of facultyDocs) {
+            const parts = [f.title, f.firstName, f.lastName].filter((p) => p && String(p).trim());
+            const name = parts.join(' ').replace(/\s+/g, ' ').trim();
+            if (!name) continue;
+            for (const sid of f.scopus_id || []) {
+                if (sid != null && String(sid).trim()) {
+                    idToDisplayName.set(String(sid).trim(), name);
+                }
+            }
+        }
+        if (idToDisplayName.size === 0) return;
+
+        for (const doc of results) {
+            if (!doc.authors?.length) continue;
+            for (const a of doc.authors) {
+                if (a.author_id == null) continue;
+                const key = String(a.author_id).trim();
+                const display = idToDisplayName.get(key);
+                if (display) {
+                    a.author_name = display;
+                }
+            }
+        }
+    }
+
+    /**
+     * Extract related faculty from search results (Mongo-hydrated docs).
+     * Links via paper.authors[].author_id ∩ Faculty.scopus_id (no expert_id on papers).
      */
     async _extractRelatedFaculty(results) {
         if (!results.length) return [];
 
         const Faculty = this.mongoose.model('Faculty');
-        
-        // Collect all author emails from papers that contain 'iitd'
-        const authorEmails = new Set();
-        
+
+        const authorPaperCount = new Map();
         for (const doc of results) {
-            if (doc.authors && Array.isArray(doc.authors)) {
-                for (const author of doc.authors) {
-                    if (author.author_email) {
-                        const email = author.author_email.toLowerCase().trim();
-                        if (email.includes('iitd')) {
-                            authorEmails.add(email);
-                        }
-                    }
-                }
+            for (const a of doc.authors || []) {
+                const aid = a.author_id;
+                if (!aid) continue;
+                authorPaperCount.set(aid, (authorPaperCount.get(aid) || 0) + 1);
             }
         }
 
-        this.logger.info({ 
-            authorEmailCount: authorEmails.size, 
-            sampleEmails: Array.from(authorEmails).slice(0, 5) 
-        }, 'IITD author emails collected');
+        const authorIds = Array.from(authorPaperCount.keys());
+        this.logger.info({ uniqueAuthorIds: authorIds.length }, 'Scopus author IDs collected from results');
 
-        let facultyDocs = [];
+        if (authorIds.length === 0) return [];
 
-        if (authorEmails.size > 0) {
-            const emailArray = Array.from(authorEmails);
-            
-            // Extract usernames (part before @)
-            const usernames = emailArray.map(e => e.split('@')[0]).filter(u => u && u.length > 2);
-            
-            this.logger.info({ usernames: usernames.slice(0, 10) }, 'Searching faculty by usernames');
+        const facultyDocs = await Faculty.find({ scopus_id: { $in: authorIds } })
+            .populate('department', 'name')
+            .select('firstName lastName email expert_id department scopus_id')
+            .limit(20)
+            .lean();
 
-            if (usernames.length > 0) {
-                // Match faculty by email starting with any of the usernames
-                const regexPattern = usernames.slice(0, 30).map(u => `^${u}@`).join('|');
-                
-                facultyDocs = await Faculty.find({
-                    email: { $regex: regexPattern, $options: 'i' }
-                })
-                    .populate('department', 'name')
-                    .select('name email department')
-                    .limit(20)
-                    .lean();
-                
-                this.logger.info({ foundCount: facultyDocs.length }, 'Faculty found by username match');
+        this.logger.info({ foundCount: facultyDocs.length }, 'Faculty found by scopus_id match');
+
+        return facultyDocs.map(f => {
+            let paperCount = 0;
+            for (const sid of f.scopus_id || []) {
+                paperCount += authorPaperCount.get(String(sid)) || 0;
             }
-        }
-
-        // Return faculty
-        return facultyDocs.map(f => ({
-            _id: f._id,
-            name: f.name,
-            email: f.email,
-            department: f.department,
-            paperCount: 1
-        }));
+            return {
+                _id: f._id,
+                name: `${f.firstName} ${f.lastName}`.trim(),
+                email: f.email,
+                expert_id: f.expert_id,
+                department: f.department,
+                paperCount: paperCount || 1
+            };
+        });
     }
 
     /**
-     * Execute search with caching
-     * Supports mode='basic' (BM25-only) and mode='advanced' (hybrid BM25+kNN)
-     * Supports refine_within for search-on-search narrowing
+     * Execute search with caching.
+     *
+     * Basic: strict BM25 only (no fuzziness, no embeddings, no fuzzy fallback). refine_within uses the same strict rules.
+     *   Results are hydrated from MongoDB; author display names can be resolved from Faculty (see _applyFacultyDisplayNamesForBasicSearch).
+     * Advanced: BM25 with fuzziness AUTO (+ optional search_in constraints with fuzz), hybrid kNN, BM25 pre-check with fuzz,
+     *   and a fuzzy fallback (fuzziness 2) if needed. refine_within clauses use the same fuzzy settings.
+     *
+     * Author-scoped search mirrors this: basic = BM25-only on filtered IDs; advanced = fuzzy BM25 + kNN (see authorScopedSearch).
      */
     async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null }) {
-        // Include mode and refine_within in cache key
+        const searchInNorm = this._normalizeSearchIn(search_in);
+
         const cachePayload = JSON.stringify({
-            query, filters, sort, page, per_page, search_in, mode, refine_within
+            query,
+            filters,
+            sort,
+            page,
+            per_page,
+            search_in: searchInNorm,
+            mode,
+            refine_within: refine_within || null
         });
         const cacheKey = `search:${crypto.createHash('sha256').update(cachePayload).digest('hex').slice(0, 16)}`;
 
-        this.logger.info({ cacheKey, query, filters, sort, search_in, mode, refine_within }, 'Search request');
+        this.logger.info({ cacheKey, query, filters, sort, search_in: searchInNorm, mode, refine_within }, 'Search request');
 
-        // TEMPORARY: Bypass cache for debugging
-        const bypassCache = true;
+        const bypassCache = false;
 
-        // Check cache
         try {
             if (!bypassCache) {
                 const cached = await this.redis.get(cacheKey);
@@ -786,16 +1143,32 @@ export default class SearchService {
                     return { ...JSON.parse(cached), cacheHit: true };
                 }
             }
-            this.logger.info({ cacheKey, bypassCache }, 'Search cache MISS or bypassed');
         } catch (err) {
             this.logger.warn({ err }, 'Redis cache read failed');
+        }
+
+        let facultyAuthorIds = null;
+        let refineFacultyIds = null;
+        let authorRefineNarrow = false;
+        if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
+            if (refine_within?.trim()) {
+                // Search-on-search: anchor author from original query; refine box narrows title/abstract
+                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(refine_within.trim());
+                authorRefineNarrow = true;
+            } else {
+                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(query);
+            }
+            this.logger.info(
+                { anchorIds: facultyAuthorIds?.length, authorRefineNarrow },
+                'Author-only: Faculty → Scopus author ids'
+            );
         }
 
         // ── BASIC MODE: Pure BM25, no embeddings ──
         if (mode === 'basic') {
             this.logger.info({ query, mode }, 'Running BASIC (BM25-only) search');
 
-            const osQuery = this._buildBasicQuery(query, filters, page, per_page, sort, search_in, refine_within);
+            const osQuery = this._buildBasicQuery(query, filters, page, per_page, sort, searchInNorm, refine_within, facultyAuthorIds, refineFacultyIds, authorRefineNarrow);
             // No min_score for basic: operator:'and' ensures all terms must match, no need for score threshold
 
             this.logger.info({ mode: 'basic', refine_within: !!refine_within }, 'Basic query built');
@@ -808,12 +1181,25 @@ export default class SearchService {
             let hits = osResponse.body.hits.hits;
             let total = osResponse.body.hits.total.value;
 
-            // If exact matching gives zero results, try the fuzzy fallback
+            // Basic mode: strict BM25 only — no fuzzy fallback (fuzziness belongs in advanced mode only)
             if (total === 0) {
-                this.logger.info({ query }, 'Basic exact search returned 0 results, attempting fuzzy fallback');
-                return await this._basicFuzzyFallback(query, filters, sort, page, per_page, search_in, refine_within);
+                this.logger.info({ query, refine_within: !!refine_within }, 'Basic search: no hits (strict match, no fuzzy fallback)');
+                let suggestions = [];
+                if (query.trim()) {
+                    suggestions = await this._getSuggestions(query);
+                }
+                return {
+                    results: [],
+                    related_faculty: [],
+                    suggestions,
+                    facets: {},
+                    pagination: { page, per_page, total: 0, total_pages: 0 },
+                    mode: 'basic',
+                    cacheHit: false
+                };
             }
             const results = await this._hydrateFromMongoDB(hits);
+            await this._applyFacultyDisplayNamesForBasicSearch(results);
             const related_faculty = await this._extractRelatedFaculty(results);
 
             let suggestions = [];
@@ -847,12 +1233,12 @@ export default class SearchService {
         const embedding = await this.embeddingService.embedQuery(query);
 
         // Pre-check: Run BM25 query WITH fuzziness to catch near-matches (typos)
-        const bm25Matches = await this._bm25PreCheck(query);
+        const bm25Matches = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
 
         // If no BM25 matches even with fuzziness, try fuzzy fallback
         if (bm25Matches === 0) {
             this.logger.info({ query }, 'No BM25 matches even with fuzziness, attempting fuzzy fallback');
-            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in);
+            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
         }
 
         // Dynamic min_score
@@ -861,22 +1247,22 @@ export default class SearchService {
         // Build query based on sort option
         let osQuery;
         if (sort === 'impact') {
-            osQuery = this._buildImpactQuery(query, embedding, filters, page, per_page, search_in);
+            osQuery = this._buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
         } else if (sort === 'normalized') {
-            osQuery = this._buildNormalizedHybridQuery(query, embedding, filters, page, per_page, search_in);
+            osQuery = this._buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
         } else {
-            osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, search_in);
+            osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
         }
 
         // If refining within a prior query, add the original query as an additional BM25 MUST clause
-        if (refine_within) {
-            const searchFields = this._getSearchFields(search_in);
+        if (refine_within && !authorRefineNarrow) {
+            const searchFields = this._getSearchFields(searchInNorm);
             const refineWords = refine_within.trim().split(/\s+/);
             const refineMinMatch = refineWords.length >= 2 ? '75%' : '1';
 
-            // Inject the original query into the bool.must array
-            if (osQuery.query?.bool?.must) {
-                osQuery.query.bool.must.push({
+            const refineClause = searchInNorm && searchInNorm.length > 0
+                ? this._buildConstrainedSearchInClause(refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds)
+                : {
                     multi_match: {
                         query: refine_within,
                         fields: searchFields,
@@ -885,19 +1271,16 @@ export default class SearchService {
                         fuzziness: 'AUTO',
                         minimum_should_match: refineMinMatch
                     }
-                });
-            } else if (osQuery.query?.function_score?.query?.bool?.must) {
-                // For impact/normalized queries that use function_score wrapper
-                osQuery.query.function_score.query.bool.must.push({
-                    multi_match: {
-                        query: refine_within,
-                        fields: searchFields,
-                        type: 'best_fields',
-                        tie_breaker: 0.3,
-                        fuzziness: 'AUTO',
-                        minimum_should_match: refineMinMatch
-                    }
-                });
+                };
+
+            const mustArrays = [
+                osQuery.query?.bool?.must,
+                osQuery.query?.script_score?.query?.bool?.must,
+                osQuery.query?.function_score?.query?.bool?.must
+            ].filter(Boolean);
+
+            if (mustArrays.length) {
+                mustArrays[0].push(refineClause);
             }
             this.logger.info({ refine_within }, 'Added refine_within constraint to advanced query');
         }
@@ -951,7 +1334,7 @@ export default class SearchService {
         // If primary search returned 0 results, try fuzzy fallback
         if (total === 0) {
             this.logger.info({ query }, 'Primary search returned 0 results, attempting fuzzy fallback');
-            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in);
+            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
         }
 
         // Cache results
@@ -977,34 +1360,47 @@ export default class SearchService {
      * BM25 pre-check: count how many documents match with fuzziness
      * Used to decide whether to attempt a fuzzy fallback
      */
-    async _bm25PreCheck(query) {
-        const bm25CheckQuery = {
-            size: 0,
-            query: {
-                bool: {
-                    should: [
-                        {
-                            multi_match: {
-                                query: query,
-                                fields: ['title', 'abstract', 'author_names', 'subject_area'],
-                                fuzziness: 'AUTO'
-                            }
-                        },
-                        {
-                            multi_match: {
-                                query: query,
-                                fields: [
-                                    'author_names.ngram',
-                                    'subject_area.ngram',
-                                    'field_associated.ngram'
-                                ]
-                            }
-                        }
-                    ],
-                    minimum_should_match: 1
-                }
+    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null) {
+        const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
+        const useAuthorRefine = authorRefineNarrow && authorOnly && refine_within?.trim();
+
+        const bm25CheckQuery = useAuthorRefine
+            ? {
+                size: 0,
+                query: this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' })
             }
-        };
+            : search_in && search_in.length > 0
+            ? {
+                size: 0,
+                query: this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds)
+            }
+            : {
+                size: 0,
+                query: {
+                    bool: {
+                        should: [
+                            {
+                                multi_match: {
+                                    query: query,
+                                    fields: ['title', 'abstract', 'author_names', 'subject_area'],
+                                    fuzziness: 'AUTO'
+                                }
+                            },
+                            {
+                                multi_match: {
+                                    query: query,
+                                    fields: [
+                                        'author_names.ngram',
+                                        'subject_area.ngram',
+                                        'field_associated.ngram'
+                                    ]
+                                }
+                            }
+                        ],
+                        minimum_should_match: 1
+                    }
+                }
+            };
 
         const response = await this.opensearch.search({
             index: this.indexName,
@@ -1015,100 +1411,30 @@ export default class SearchService {
     }
 
     /**
-     * Basic mode fuzzy fallback — BM25-only with high fuzziness, no embeddings
-     */
-    async _basicFuzzyFallback(query, filters, sort, page, per_page, search_in, refine_within) {
-        const from = (page - 1) * per_page;
-        const searchFields = this._getSearchFields(search_in);
-        const filterClauses = this._buildFilters(filters);
-
-        const words = query.trim().split(/\s+/);
-        const isMultiWord = words.length >= 2;
-        const minShouldMatch = isMultiWord ? '75%' : '1';
-
-        const mustClauses = [
-            {
-                multi_match: {
-                    query: query,
-                    fields: searchFields,
-                    type: 'cross_fields',
-                    operator: 'and',
-                    fuzziness: 2
-                }
-            }
-        ];
-
-        // Add refine_within constraint if present
-        if (refine_within) {
-            mustClauses.push({
-                multi_match: {
-                    query: refine_within,
-                    fields: searchFields,
-                    type: 'cross_fields',
-                    operator: 'and',
-                    fuzziness: 2
-                }
-            });
-        }
-
-        const fallbackQuery = {
-            size: per_page,
-            from,
-            track_total_hits: true,
-            _source: ['mongo_id'],
-            query: {
-                bool: {
-                    must: mustClauses,
-                    filter: filterClauses
-                }
-            },
-            aggs: this._getAggregations()
-        };
-
-        try {
-            const osResponse = await this.opensearch.search({
-                index: this.indexName,
-                body: fallbackQuery
-            });
-
-            const hits = osResponse.body.hits.hits;
-            const total = osResponse.body.hits.total.value;
-            const results = await this._hydrateFromMongoDB(hits);
-            const related_faculty = await this._extractRelatedFaculty(results);
-
-            return {
-                results,
-                related_faculty,
-                suggestions: [],
-                facets: this._parseFacets(osResponse.body.aggregations),
-                pagination: { page, per_page, total, total_pages: Math.ceil(total / per_page) },
-                mode: 'basic',
-                fuzzy_fallback: true,
-                cacheHit: false
-            };
-        } catch (err) {
-            this.logger.error({ err, query }, 'Basic fuzzy fallback search failed');
-            return {
-                results: [],
-                related_faculty: [],
-                suggestions: [],
-                facets: {},
-                pagination: { page, per_page, total: 0, total_pages: 0 },
-                mode: 'basic',
-                fuzzy_fallback: true,
-                cacheHit: false
-            };
-        }
-    }
-
-    /**
      * Fuzzy fallback search — used when primary search/pre-check returns 0 results
      * Runs with higher fuzziness tolerance and no min_score to catch typos
      */
-    async _fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in) {
+    async _fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null) {
         const from = (page - 1) * per_page;
         const searchFields = this._getSearchFields(search_in);
         const filterClauses = this._buildFilters(filters);
+
+        const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
+        const useAuthorRefine = authorRefineNarrow && authorOnly && refine_within?.trim();
+
+        const fuzzyMust = useAuthorRefine
+            ? this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 2 })
+            : search_in && search_in.length > 0
+            ? this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 2 }, facultyAuthorIds)
+            : {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    fuzziness: 2
+                }
+            };
 
         const fallbackQuery = {
             size: per_page,
@@ -1117,17 +1443,7 @@ export default class SearchService {
             _source: ['mongo_id'],
             query: {
                 bool: {
-                    must: [
-                        {
-                            multi_match: {
-                                query: query,
-                                fields: searchFields,
-                                type: 'best_fields',
-                                tie_breaker: 0.3,
-                                fuzziness: 2  // Higher fuzziness for fallback
-                            }
-                        }
-                    ],
+                    must: [fuzzyMust],
                     should: [
                         {
                             knn: {
@@ -1167,6 +1483,7 @@ export default class SearchService {
                     total,
                     total_pages: Math.ceil(total / per_page)
                 },
+                mode: 'advanced',
                 message: total > 0
                     ? 'Showing approximate matches for your query'
                     : 'No results found. Try different keywords.',
@@ -1176,9 +1493,12 @@ export default class SearchService {
             this.logger.error({ err, query }, 'Fuzzy fallback search failed');
             return {
                 results: [],
+                related_faculty: [],
                 facets: {},
                 suggestions: [],
+                fuzzy_fallback: true,
                 pagination: { page, per_page, total: 0, total_pages: 0 },
+                mode: 'advanced',
                 message: 'No relevant results found for your query',
                 cacheHit: false
             };
@@ -1326,22 +1646,25 @@ export default class SearchService {
     }
 
     /**
-     * Author-scoped search: find an author's papers most relevant to a query.
-     * 
-     * Phase 1: Fetch all paper IDs for the author from MongoDB (indexed).
-     * Phase 2: Run cosine similarity between query embedding and those papers in OpenSearch.
-     * Phase 3: Hydrate results from MongoDB.
+     * Author-scoped search: rank an author's papers for a query (e.g. Explore sidebar click).
+     *
+     * Phase 1: Resolve author via MongoDB Faculty (expert_id / scopus_id) or raw id; collect open_search_id for their papers.
+     * Phase 2: OpenSearch on that ID filter — basic: strict BM25 only (no embeddings, no fuzziness); refine_within adds a second strict multi_match.
+     *   Advanced: fuzzy BM25 + kNN; refine_within uses the same fuzzy multi_match rules.
+     * Phase 3: Hydrate from MongoDB by hit order; basic applies Faculty display names on authors.
      *
      * @param {Object} params
      * @param {string} params.query - The search query text
      * @param {string} params.author_id - Scopus author ID
      * @param {number} [params.page=1]
      * @param {number} [params.per_page=20]
+     * @param {string[]} [params.search_in] - Same as main search; e.g. ['author'] = match query only in author names (basic strict, advanced fuzzy).
      */
-    async authorScopedSearch({ query, author_id, page = 1, per_page = 20, mode = 'advanced', refine_within = null }) {
+    async authorScopedSearch({ query, author_id, page = 1, per_page = 20, mode = 'advanced', refine_within = null, search_in = null }) {
+        const searchInNorm = this._normalizeSearchIn(search_in);
         // Cache key
         const queryHash = crypto.createHash('sha256')
-            .update(JSON.stringify({ query, author_id, page, per_page, mode, refine_within }))
+            .update(JSON.stringify({ query, author_id, page, per_page, mode, refine_within, search_in: searchInNorm }))
             .digest('hex').slice(0, 16);
         const cacheKey = `author_scope:${queryHash}`;
 
@@ -1357,11 +1680,22 @@ export default class SearchService {
         }
 
         // Phase 1: Get author's paper OpenSearch IDs from MongoDB
+        // author_id may be Faculty.expert_id, a Scopus id in Faculty.scopus_id[], or raw authors.author_id.
         let osIds, authorName;
         try {
             const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
+            const Faculty = this.mongoose.model('Faculty');
+
+            const facultyMatch = await Faculty.findOne({
+                $or: [{ expert_id: author_id }, { scopus_id: author_id }]
+            }).lean();
+
+            const scopusAuthorIds = facultyMatch?.scopus_id?.length
+                ? facultyMatch.scopus_id.map(String)
+                : [author_id];
+
             const authorDocs = await ResearchDocument.find(
-                { 'authors.author_id': author_id },
+                { 'authors.author_id': { $in: scopusAuthorIds } },
                 { open_search_id: 1, _id: 0 }
             ).lean();
 
@@ -1384,166 +1718,251 @@ export default class SearchService {
                 };
             }
 
-            // Get the author's name from the first document
-            const authorNameDoc = await ResearchDocument.findOne(
-                { 'authors.author_id': author_id },
-                { 'authors.$': 1 }
-            ).lean();
-            authorName = authorNameDoc?.authors?.[0]?.author_name || 'Unknown';
+            if (facultyMatch) {
+                authorName = `${facultyMatch.firstName} ${facultyMatch.lastName}`.trim();
+            } else {
+                const authorNameDoc = await ResearchDocument.findOne(
+                    { 'authors.author_id': author_id },
+                    { 'authors.$': 1 }
+                ).lean();
+                authorName = authorNameDoc?.authors?.[0]?.author_name || 'Unknown';
+            }
         } catch (err) {
             this.logger.error({ err, author_id }, 'Author-scoped search: Phase 1 FAILED (MongoDB)');
             throw err;
         }
 
-        // Phase 2: Semantic similarity search restricted to author's papers
+        let facultyAuthorIds = null;
+        let refineFacultyIds = null;
+        let authorRefineNarrow = false;
+        if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
+            if (refine_within?.trim()) {
+                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(refine_within.trim());
+                authorRefineNarrow = true;
+            } else {
+                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(query);
+            }
+        }
+
+        // Phase 2: OpenSearch on author's paper IDs — honors search_in like main search (e.g. author = author names only).
         let hits, total;
         try {
-            const embedding = await this.embeddingService.embedQuery(query);
             const from = (page - 1) * per_page;
-
             const isBasic = mode === 'basic';
-            let searchFields = this._getSearchFields(null);
             let osQuery;
 
             if (isBasic) {
-                searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
-                const multiMatchConfig = {
-                    type: 'cross_fields',
-                    operator: 'and'
-                };
-                osQuery = {
-                    size: per_page,
-                    from,
-                    track_total_hits: true,
-                    _source: ['mongo_id'],
-                    query: {
-                        script_score: {
-                            query: {
-                                bool: {
-                                    filter: [
-                                        { ids: { values: osIds } }
-                                    ],
-                                    must: [
-                                        {
-                                            multi_match: {
-                                                query: query,
-                                                fields: searchFields,
-                                                ...multiMatchConfig
-                                            }
-                                        },
-                                        ...(refine_within ? [{
-                                            multi_match: {
-                                                query: refine_within,
-                                                fields: searchFields,
-                                                ...multiMatchConfig
-                                            }
-                                        }] : [])
-                                    ]
-                                }
-                            },
-                            script: {
-                                lang: 'knn',
-                                source: 'knn_score',
-                                params: {
-                                    field: 'embedding',
-                                    query_value: embedding,
-                                    space_type: 'cosinesimil'
-                                }
+                let mustBasic;
+                if (searchInNorm && searchInNorm.length > 0) {
+                    const authorOnly = searchInNorm.length === 1 && searchInNorm[0] === 'author';
+                    if (authorRefineNarrow && authorOnly && refine_within?.trim()) {
+                        mustBasic = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, {})];
+                    } else {
+                        mustBasic = [this._buildConstrainedSearchInClause(query, searchInNorm, {}, facultyAuthorIds)];
+                        if (refine_within) {
+                            mustBasic.push(this._buildConstrainedSearchInClause(refine_within, searchInNorm, {}, refineFacultyIds));
+                        }
+                    }
+                } else {
+                    let searchFields = this._getSearchFields(null)
+                        .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+                    const multiMatchConfig = {
+                        type: 'cross_fields',
+                        operator: 'and'
+                    };
+                    mustBasic = [
+                        {
+                            multi_match: {
+                                query: query,
+                                fields: searchFields,
+                                ...multiMatchConfig
                             }
                         }
+                    ];
+                    if (refine_within) {
+                        mustBasic.push({
+                            multi_match: {
+                                query: refine_within,
+                                fields: searchFields,
+                                ...multiMatchConfig
+                            }
+                        });
                     }
-                };
-            } else {
-                searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
-                const words = query.trim().split(/\s+/);
-                const isMultiWord = words.length >= 2;
-                const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
-                
-                const boostClauses = [];
-
-                if (isMultiWord) {
-                    boostClauses.push({
-                        multi_match: {
-                            query: query,
-                            fields: ['title^5', 'abstract^2'],
-                            type: 'phrase',
-                            slop: 2,
-                            boost: this.searchConfig.phraseBoost
-                        }
-                    });
                 }
-
-                boostClauses.push({
-                    match: {
-                        'subject_area': {
-                            query: query,
-                            boost: 2.0
-                        }
-                    }
-                });
-
-                boostClauses.push({
-                    match: {
-                        'field_associated': {
-                            query: query,
-                            boost: 1.5
-                        }
-                    }
-                });
-
-                boostClauses.push({
-                    knn: {
-                        embedding: {
-                            vector: embedding,
-                            k: 100
-                        }
-                    }
-                });
-
                 osQuery = {
                     size: per_page,
                     from,
                     track_total_hits: true,
-                    min_score: this.searchConfig.minScore.hybrid,
                     _source: ['mongo_id'],
                     query: {
                         bool: {
-                            filter: [
-                                { ids: { values: osIds } }
-                            ],
-                            must: [
-                                {
-                                    multi_match: {
-                                        query: query,
-                                        fields: searchFields,
-                                        type: 'best_fields',
-                                        tie_breaker: 0.3,
-                                        fuzziness: 'AUTO',
-                                        minimum_should_match: minShouldMatch
-                                    }
-                                },
-                                ...(refine_within ? [{
-                                    multi_match: {
-                                        query: refine_within,
-                                        fields: searchFields,
-                                        type: 'best_fields',
-                                        tie_breaker: 0.3,
-                                        fuzziness: 'AUTO',
-                                        minimum_should_match: refine_within.trim().split(/\s+/).length >= 2 ? '75%' : '1'
-                                    }
-                                }] : [])
-                            ],
-                            should: boostClauses
+                            filter: [{ ids: { values: osIds } }],
+                            must: mustBasic
+                        }
+                    },
+                    sort: ['_score']
+                };
+            } else {
+                const embedding = await this.embeddingService.embedQuery(query);
+                if (searchInNorm && searchInNorm.length > 0) {
+                    const words = query.trim().split(/\s+/);
+                    const isMultiWord = words.length >= 2;
+                    const authorOnly = searchInNorm.length === 1 && searchInNorm[0] === 'author';
+                    const boostClauses = [];
+
+                    if (isMultiWord && (searchInNorm.includes('title') || searchInNorm.includes('abstract') || (authorRefineNarrow && authorOnly))) {
+                        boostClauses.push({
+                            multi_match: {
+                                query: query,
+                                fields: ['title^5', 'abstract^2'],
+                                type: 'phrase',
+                                slop: 2,
+                                boost: this.searchConfig.phraseBoost
+                            }
+                        });
+                    }
+                    if (searchInNorm.includes('subject_area')) {
+                        boostClauses.push({
+                            match: { subject_area: { query: query, boost: 2.0 } }
+                        });
+                    }
+                    if (searchInNorm.includes('field')) {
+                        boostClauses.push({
+                            match: { field_associated: { query: query, boost: 1.5 } }
+                        });
+                    }
+                    boostClauses.push({
+                        knn: {
+                            embedding: {
+                                vector: embedding,
+                                k: 100
+                            }
+                        }
+                    });
+
+                    let mustAdv;
+                    if (authorRefineNarrow && authorOnly && refine_within?.trim()) {
+                        mustAdv = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' })];
+                    } else {
+                        mustAdv = [
+                            this._buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO' }, facultyAuthorIds)
+                        ];
+                        if (refine_within) {
+                            mustAdv.push(
+                                this._buildConstrainedSearchInClause(refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds)
+                            );
                         }
                     }
-                };
+
+                    osQuery = {
+                        size: per_page,
+                        from,
+                        track_total_hits: true,
+                        min_score: this.searchConfig.minScore.hybrid,
+                        _source: ['mongo_id'],
+                        query: {
+                            bool: {
+                                filter: [{ ids: { values: osIds } }],
+                                must: mustAdv,
+                                should: boostClauses
+                            }
+                        },
+                        sort: ['_score']
+                    };
+                } else {
+                    let searchFields = this._getSearchFields(null)
+                        .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+                    const words = query.trim().split(/\s+/);
+                    const isMultiWord = words.length >= 2;
+                    const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
+
+                    const boostClauses = [];
+
+                    if (isMultiWord) {
+                        boostClauses.push({
+                            multi_match: {
+                                query: query,
+                                fields: ['title^5', 'abstract^2'],
+                                type: 'phrase',
+                                slop: 2,
+                                boost: this.searchConfig.phraseBoost
+                            }
+                        });
+                    }
+
+                    boostClauses.push({
+                        match: {
+                            subject_area: {
+                                query: query,
+                                boost: 2.0
+                            }
+                        }
+                    });
+
+                    boostClauses.push({
+                        match: {
+                            field_associated: {
+                                query: query,
+                                boost: 1.5
+                            }
+                        }
+                    });
+
+                    boostClauses.push({
+                        knn: {
+                            embedding: {
+                                vector: embedding,
+                                k: 100
+                            }
+                        }
+                    });
+
+                    osQuery = {
+                        size: per_page,
+                        from,
+                        track_total_hits: true,
+                        min_score: this.searchConfig.minScore.hybrid,
+                        _source: ['mongo_id'],
+                        query: {
+                            bool: {
+                                filter: [{ ids: { values: osIds } }],
+                                must: [
+                                    {
+                                        multi_match: {
+                                            query: query,
+                                            fields: searchFields,
+                                            type: 'best_fields',
+                                            tie_breaker: 0.3,
+                                            fuzziness: 'AUTO',
+                                            minimum_should_match: minShouldMatch
+                                        }
+                                    },
+                                    ...(refine_within ? [{
+                                        multi_match: {
+                                            query: refine_within,
+                                            fields: searchFields,
+                                            type: 'best_fields',
+                                            tie_breaker: 0.3,
+                                            fuzziness: 'AUTO',
+                                            minimum_should_match: refine_within.trim().split(/\s+/).length >= 2 ? '75%' : '1'
+                                        }
+                                    }] : [])
+                                ],
+                                should: boostClauses
+                            }
+                        },
+                        sort: ['_score']
+                    };
+                }
             }
 
             this.logger.info({
                 author_id,
                 query,
                 osIdsCount: osIds.length,
-                embeddingLength: embedding.length
+                mode: isBasic ? 'basic' : 'advanced',
+                refine_within: !!refine_within,
+                search_in: searchInNorm
             }, 'Author-scoped search: Phase 2 - querying OpenSearch');
 
             const osResponse = await this.opensearch.search({
@@ -1576,6 +1995,9 @@ export default class SearchService {
                 ...r,
                 similarity_score: scoreMap.get(r._id.toString())
             }));
+            if (mode === 'basic') {
+                await this._applyFacultyDisplayNamesForBasicSearch(scoredResults);
+            }
         } catch (err) {
             this.logger.error({ err, author_id }, 'Author-scoped search: Phase 3 FAILED (Hydration)');
             throw err;
@@ -1646,7 +2068,7 @@ export default class SearchService {
                                     author_info: {
                                         top_hits: {
                                             size: 1,
-                                            _source: ['authors.author_name', 'authors.author_affiliation']
+                                            _source: ['authors.author_name']
                                         }
                                     }
                                 }
@@ -1666,8 +2088,7 @@ export default class SearchService {
             collaborators: coauthors.map(c => ({
                 author_id: c.key,
                 collaboration_count: c.doc_count,
-                name: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_name,
-                affiliation: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_affiliation
+                name: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_name
             }))
         };
     }
@@ -1688,7 +2109,53 @@ export default class SearchService {
             doc = await ResearchDocument.findOne({ open_search_id: id }).lean();
         }
 
+        if (doc) {
+            await this._filterAuthorsToFacultyRoster([doc]);
+        }
+
         return doc;
+    }
+
+    /**
+     * Merge terms buckets from flat `author_ids` and nested `authors.author_id` (same Scopus id).
+     * Combines doc_count, max of max _score, and doc_count-weighted average of avg _score.
+     */
+    _mergeFacultyAuthorAggBuckets(flatBuckets, nestedBuckets) {
+        const byKey = new Map();
+        const accumulate = (buckets) => {
+            for (const bucket of buckets) {
+                const key = bucket.key == null ? '' : String(bucket.key).trim();
+                if (!key) continue;
+                const dc = bucket.doc_count || 0;
+                const maxRel = bucket.max_relevance?.value || 0;
+                const avgRel = bucket.avg_relevance?.value || 0;
+                const prev = byKey.get(key);
+                if (!prev) {
+                    byKey.set(key, {
+                        key,
+                        doc_count: dc,
+                        max_relevance: { value: maxRel },
+                        avg_relevance: { value: avgRel },
+                        _avgWeight: avgRel * dc
+                    });
+                } else {
+                    prev.doc_count += dc;
+                    prev.max_relevance = { value: Math.max(prev.max_relevance.value, maxRel) };
+                    prev._avgWeight += avgRel * dc;
+                    prev.avg_relevance = {
+                        value: prev.doc_count > 0 ? prev._avgWeight / prev.doc_count : 0
+                    };
+                }
+            }
+        };
+        accumulate(flatBuckets);
+        accumulate(nestedBuckets);
+        return [...byKey.values()].map((b) => ({
+            key: b.key,
+            doc_count: b.doc_count,
+            max_relevance: b.max_relevance,
+            avg_relevance: b.avg_relevance
+        }));
     }
 
     /**
@@ -1700,7 +2167,7 @@ export default class SearchService {
     async getAllFacultyForQuery(query, mode = 'advanced') {
         // Cache key
         const queryHash = crypto.createHash('sha256')
-            .update(JSON.stringify({ query, type: 'faculty_for_query', mode }))
+            .update(JSON.stringify({ query, type: 'faculty_for_query_nested', mode }))
             .digest('hex').slice(0, 16);
         const cacheKey = `faculty_query:${queryHash}`;
 
@@ -1756,41 +2223,42 @@ export default class SearchService {
                 }
             },
             aggs: {
-                faculty_authors: {
+                // Go indexer: nested authors.author_id. Python indexer: flat author_ids only — use both and merge.
+                from_author_ids: {
+                    filter: { exists: { field: 'author_ids' } },
+                    aggs: {
+                        by_scopus_author: {
+                            terms: {
+                                field: 'author_ids',
+                                size: 200,
+                                min_doc_count: 1
+                            },
+                            aggs: {
+                                max_relevance: {
+                                    max: { script: '_score' }
+                                },
+                                avg_relevance: {
+                                    avg: { script: '_score' }
+                                }
+                            }
+                        }
+                    }
+                },
+                from_nested_authors: {
                     nested: { path: 'authors' },
                     aggs: {
-                        matched_only: {
-                            filter: { term: { 'authors.has_matched_profile': true } },
+                        by_scopus_author: {
+                            terms: {
+                                field: 'authors.author_id',
+                                size: 200,
+                                min_doc_count: 1
+                            },
                             aggs: {
-                                by_author_id: {
-                                    terms: {
-                                        field: 'authors.author_id',
-                                        size: 200
-                                    },
-                                    aggs: {
-                                        author_name: {
-                                            terms: {
-                                                field: 'authors.author_name.keyword',
-                                                size: 1
-                                            }
-                                        },
-                                        // Pop back to parent doc to get relevance scores
-                                        parent_docs: {
-                                            reverse_nested: {},
-                                            aggs: {
-                                                max_relevance: {
-                                                    max: {
-                                                        script: '_score'
-                                                    }
-                                                },
-                                                avg_relevance: {
-                                                    avg: {
-                                                        script: '_score'
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                max_relevance: {
+                                    max: { script: '_score' }
+                                },
+                                avg_relevance: {
+                                    avg: { script: '_score' }
                                 }
                             }
                         }
@@ -1807,19 +2275,23 @@ export default class SearchService {
         });
 
         const totalDocs = osResponse.body.hits.total.value;
-        const authorBuckets = osResponse.body.aggregations
-            ?.faculty_authors
-            ?.matched_only
-            ?.by_author_id
+        const flatBuckets = osResponse.body.aggregations
+            ?.from_author_ids
+            ?.by_scopus_author
             ?.buckets || [];
+        const nestedBuckets = osResponse.body.aggregations
+            ?.from_nested_authors
+            ?.by_scopus_author
+            ?.buckets || [];
+        const expertBuckets = this._mergeFacultyAuthorAggBuckets(flatBuckets, nestedBuckets);
 
         this.logger.info({
             query,
             totalDocs,
-            uniqueAuthors: authorBuckets.length
+            uniqueScopusAuthors: expertBuckets.length
         }, 'Faculty-for-query: aggregation results');
 
-        if (authorBuckets.length === 0) {
+        if (expertBuckets.length === 0) {
             const emptyResult = {
                 departments: [],
                 total_faculty: 0,
@@ -1829,16 +2301,14 @@ export default class SearchService {
             return emptyResult;
         }
 
-        // Extract author info from aggregation (with relevance scores)
-        let authorInfos = authorBuckets.map(bucket => {
-            const maxRel = bucket.parent_docs?.max_relevance?.value || 0;
-            const avgRel = bucket.parent_docs?.avg_relevance?.value || 0;
+        // Bucket key = Scopus author_id (matches Faculty.scopus_id elements)
+        let authorInfos = expertBuckets.map(bucket => {
+            const maxRel = bucket.max_relevance?.value || 0;
+            const avgRel = bucket.avg_relevance?.value || 0;
             const paperCount = bucket.doc_count;
-            // Hybrid score: 60% best-paper-match + 30% consistency + 10% volume (log-dampened)
             const authorScore = 0.6 * maxRel + 0.3 * avgRel + 0.1 * Math.log2(1 + paperCount);
             return {
-                author_id: bucket.key,
-                author_name: bucket.author_name?.buckets?.[0]?.key || 'Unknown',
+                scopus_author_id: bucket.key,
                 paper_count: paperCount,
                 max_relevance: maxRel,
                 avg_relevance: avgRel,
@@ -1850,10 +2320,10 @@ export default class SearchService {
         if (authorInfos.length > 0) {
             const maxAuthorScore = Math.max(...authorInfos.map(a => a.author_score));
             const scoreThreshold = maxAuthorScore * 0.25; // Keep authors with at least 25% of the top profile's score
-            
+
             const initialCount = authorInfos.length;
             authorInfos = authorInfos.filter(a => a.author_score >= scoreThreshold);
-            
+
             this.logger.info({
                 maxAuthorScore,
                 scoreThreshold,
@@ -1862,73 +2332,45 @@ export default class SearchService {
             }, 'Faculty-for-query: applied dynamic relevance threshold');
         }
 
-        // Use matched_profile to look up Faculty + Department
-        // Step 1: Find matched_profile ObjectIds for each author_id from MongoDB
-        const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
-        const authorIds = authorInfos.map(a => a.author_id);
-
-        const profilePipeline = [
-            { $match: { 'authors.author_id': { $in: authorIds } } },
-            { $unwind: '$authors' },
-            { $match: {
-                'authors.author_id': { $in: authorIds },
-                'authors.matched_profile': { $ne: null }
-            }},
-            { $group: {
-                _id: '$authors.author_id',
-                matched_profile: { $first: '$authors.matched_profile' }
-            }}
-        ];
-
-        const profileResults = await ResearchDocument.aggregate(profilePipeline);
-        const authorToProfileMap = new Map(
-            profileResults.map(r => [r._id, r.matched_profile])
-        );
-
-        this.logger.info({
-            totalAuthors: authorIds.length,
-            matchedProfiles: profileResults.length
-        }, 'Faculty-for-query: matched_profile lookup');
-
-        // Step 2: Look up Faculty with department using matched_profile ObjectIds
-        const profileIds = [...new Set(profileResults.map(r => r.matched_profile))];
+        const scopusIds = authorInfos.map(a => a.scopus_author_id);
         const Faculty = this.mongoose.model('Faculty');
 
         let facultyDocs = [];
-        if (profileIds.length > 0) {
-            facultyDocs = await Faculty.find({ _id: { $in: profileIds } })
+        if (scopusIds.length > 0) {
+            facultyDocs = await Faculty.find({ scopus_id: { $in: scopusIds } })
                 .populate('department', 'name')
-                .select('name department')
+                .select('firstName lastName expert_id department scopus_id')
                 .lean();
         }
 
-        const facultyByProfileId = new Map(
-            facultyDocs.map(f => [f._id.toString(), f])
-        );
+        const facultyByScopusId = new Map();
+        for (const f of facultyDocs) {
+            for (const sid of f.scopus_id || []) {
+                facultyByScopusId.set(String(sid), f);
+            }
+        }
 
-        // Build department-grouped response with RELEVANCE ordering
-        // Only include authors that have a matched_profile (real IITD faculty)
-        // DEDUP: Multiple Scopus author_ids can map to the same Faculty _id
-        //        (e.g., "Bhim Singh" with two Scopus profiles → 1793 + 265 papers)
-        //        We merge them: sum paper_count, keep best author_score
-        const facultyDedup = new Map(); // profileId -> merged faculty info
+        this.logger.info({
+            totalBuckets: scopusIds.length,
+            matchedFaculty: facultyDocs.length
+        }, 'Faculty-for-query: scopus_id lookup');
+
+        const facultyDedup = new Map(); // faculty.expert_id -> merged faculty info
 
         for (const author of authorInfos) {
-            const profileId = authorToProfileMap.get(author.author_id);
-            if (!profileId) continue;
+            const faculty = facultyByScopusId.get(String(author.scopus_author_id));
+            if (!faculty) continue;
 
-            const faculty = facultyByProfileId.get(profileId.toString());
-            if (!faculty || !faculty.name) continue;
-
-            const key = profileId.toString();
+            const facultyName = `${faculty.firstName} ${faculty.lastName}`.trim();
+            const key = faculty.expert_id;
             if (facultyDedup.has(key)) {
                 const existing = facultyDedup.get(key);
                 existing.paper_count += author.paper_count;
                 existing.author_score = Math.max(existing.author_score, author.author_score);
             } else {
                 facultyDedup.set(key, {
-                    name: faculty.name,
-                    author_id: author.author_id, // Keep first author_id for click handling
+                    name: facultyName,
+                    expert_id: faculty.expert_id,
                     paper_count: author.paper_count,
                     author_score: author.author_score,
                     deptName: faculty?.department?.name || 'Other'
@@ -1949,7 +2391,7 @@ export default class SearchService {
             const dept = deptMap.get(deptName);
             dept.faculty.push({
                 name: merged.name,
-                author_id: merged.author_id,
+                author_id: merged.expert_id,
                 paper_count: merged.paper_count,
                 relevance_score: Math.round(merged.author_score * 100) / 100
             });

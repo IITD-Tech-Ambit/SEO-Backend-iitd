@@ -1183,9 +1183,8 @@
                             ${authors.map(author => {
                                 // Handle both object format and string format
                                 const name = author.author_name || author.name || author;
-                                const affiliation = author.author_affiliation || author.affiliation;
                                 const authorId = author.author_id || '';
-                                const tooltipText = affiliation ? escapeHtml(affiliation) : (authorId ? `ID: ${authorId}` : '');
+                                const tooltipText = authorId ? `ID: ${authorId}` : '';
                                 return `
                                     <div class="author-badge" 
                                          ${authorId ? `onclick="filterByAuthor('${authorId}')" title="Click to filter by this author"` : ''}>

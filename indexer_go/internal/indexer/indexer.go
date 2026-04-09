@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -330,10 +331,7 @@ func (idx *Indexer) Phase1FetchAndEmbed(ctx context.Context, limit int, reindexA
 							AuthorID:             a.AuthorID,
 							AuthorPosition:       a.AuthorPosition,
 							AuthorName:           a.AuthorName,
-							AuthorEmail:          a.AuthorEmail,
 							AuthorAvailableNames: a.AuthorAvailableNames,
-							AuthorAffiliation:    a.AuthorAffiliation,
-							HasMatchedProfile:    a.MatchedProfile != nil,
 						}
 					}
 					entries[i] = cache.CacheEntry{
@@ -342,6 +340,7 @@ func (idx *Indexer) Phase1FetchAndEmbed(ctx context.Context, limit int, reindexA
 						Title:           doc.Title,
 						Abstract:        doc.Abstract,
 						Authors:         authors,
+						ExpertID:        doc.ExpertID,
 						PublicationYear: doc.PublicationYear,
 						FieldAssociated: doc.FieldAssociated,
 						DocumentType:    doc.DocumentType,
@@ -470,6 +469,7 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 			authorNames := make([]string, len(entry.Authors))
 			allVariants := make([]string, 0)
 
+			authorIDs := make([]string, 0, len(entry.Authors))
 			for k, a := range entry.Authors {
 				authorNames[k] = a.AuthorName
 				if len(a.AuthorAvailableNames) > 0 {
@@ -486,9 +486,9 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 					AuthorName:         a.AuthorName,
 					AuthorNameVariants: a.AuthorAvailableNames,
 					AuthorPosition:     position,
-					AuthorAffiliation:  a.AuthorAffiliation,
-					AuthorEmail:        a.AuthorEmail,
-					HasMatchedProfile:  a.HasMatchedProfile,
+				}
+				if id := strings.TrimSpace(a.AuthorID); id != "" {
+					authorIDs = append(authorIDs, id)
 				}
 			}
 
@@ -499,6 +499,8 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 				Authors:            osAuthors,
 				AuthorNames:        authorNames,
 				AuthorNameVariants: allVariants,
+				AuthorIDs:          authorIDs,
+				ExpertID:           entry.ExpertID,
 				PublicationYear:    entry.PublicationYear,
 				FieldAssociated:    entry.FieldAssociated,
 				DocumentType:       entry.DocumentType,

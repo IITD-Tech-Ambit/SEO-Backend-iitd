@@ -6,10 +6,6 @@ const AuthorSchema = new mongoose.Schema({
         type: String,
         required: true,
     },
-    author_eid: {
-        type: String,
-        required: true,
-    },
     author_position: {
         type: String,
     },
@@ -17,22 +13,9 @@ const AuthorSchema = new mongoose.Schema({
         type: String,
         required: true
     },
-    author_email: {
-        type: String,
-    },
     author_avaialable_names: [{
         type: String,
-    }],
-    author_orcid: {
-        type: String,
-    },
-    author_affiliation: {
-        type: String,
-    },
-    matched_profile: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Faculty"
-    }
+    }]
 })
 
 const ResearchMetaDataScopus = new mongoose.Schema({
@@ -81,6 +64,8 @@ const ResearchMetaDataScopus = new mongoose.Schema({
         required: true,
         unique: true
     }
+}, {
+    timestamps: true
 });
 
 // === INDEXES ===
@@ -94,7 +79,6 @@ ResearchMetaDataScopus.index({
 
 // 2. Author-based queries
 ResearchMetaDataScopus.index({ "authors.author_id": 1 });
-ResearchMetaDataScopus.index({ "authors.matched_profile": 1 });
 
 // 3. Subject area filtering
 ResearchMetaDataScopus.index({ subject_area: 1, publication_year: -1 });

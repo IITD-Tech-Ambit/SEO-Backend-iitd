@@ -46,10 +46,6 @@ export const searchRequestSchema = {
                     type: 'string',
                     description: 'Filter by specific author ID'
                 },
-                affiliation: {
-                    type: 'string',
-                    description: 'Filter by author affiliation/institution'
-                },
                 first_author_only: {
                     type: 'boolean',
                     description: 'Only return first-author papers'
@@ -84,8 +80,7 @@ export const searchRequestSchema = {
                 type: 'string',
                 enum: ['title', 'abstract', 'author', 'subject_area', 'field']
             },
-            default: ['title', 'abstract', 'author'],
-            description: 'Fields to search in. Default: hybrid (title, abstract, author). Use specific fields for targeted search.'
+            description: 'When omitted or empty, search all default fields. When set, each query term must match at least one selected field (AND across terms).'
         },
         mode: {
             type: 'string',
@@ -119,7 +114,11 @@ export const searchResponseSchema = {
                     field_associated: { type: 'string' },
                     subject_area: { type: 'array' },
                     citation_count: { type: 'integer' },
-                    link: { type: 'string' }
+                    reference_count: { type: 'integer' },
+                    link: { type: 'string' },
+                    document_eid: { type: 'string' },
+                    document_scopus_id: { type: 'string' },
+                    open_search_id: { type: 'string' }
                 }
             }
         },
@@ -131,7 +130,8 @@ export const searchResponseSchema = {
                     _id: { type: 'string' },
                     name: { type: 'string' },
                     email: { type: 'string' },
-                    department: { 
+                    expert_id: { type: 'string' },
+                    department: {
                         type: 'object',
                         properties: {
                             _id: { type: 'string' },
@@ -177,6 +177,11 @@ export const searchResponseSchema = {
         fuzzy_fallback: {
             type: 'boolean',
             description: 'True if results came from fuzzy fallback search'
+        },
+        mode: {
+            type: 'string',
+            enum: ['basic', 'advanced'],
+            description: 'Search mode used: basic (BM25-only) or advanced (hybrid BM25 + semantic)'
         },
         message: {
             type: 'string',
@@ -255,6 +260,14 @@ export const authorScopedSearchRequestSchema = {
             type: 'string',
             maxLength: 500,
             description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
+        },
+        search_in: {
+            type: 'array',
+            items: {
+                type: 'string',
+                enum: ['title', 'abstract', 'author', 'subject_area', 'field']
+            },
+            description: 'Same as POST /search. When set, constrains BM25 (and refine_within) to those fields; basic = strict, advanced = fuzzy where applicable.'
         }
     },
     additionalProperties: false
@@ -277,7 +290,11 @@ export const authorScopedSearchResponseSchema = {
                     field_associated: { type: 'string' },
                     subject_area: { type: 'array' },
                     citation_count: { type: 'integer' },
+                    reference_count: { type: 'integer' },
                     link: { type: 'string' },
+                    document_eid: { type: 'string' },
+                    document_scopus_id: { type: 'string' },
+                    open_search_id: { type: 'string' },
                     similarity_score: { type: 'number' }
                 }
             }
