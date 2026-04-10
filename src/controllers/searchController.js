@@ -156,11 +156,16 @@ export async function authorScopedSearch(request, reply) {
  */
 export async function getAllFacultyForQuery(request, reply) {
     const startTime = Date.now();
-    const { query, mode } = request.query;
+    const { query, mode, search_in: searchInRaw, refine_within } = request.query;
     const searchService = request.server.searchService;
 
+    const parsedSearchIn =
+        typeof searchInRaw === 'string' && searchInRaw.trim()
+            ? searchInRaw.split(',').map((s) => s.trim()).filter(Boolean)
+            : undefined;
+
     try {
-        const result = await searchService.getAllFacultyForQuery(query, mode);
+        const result = await searchService.getAllFacultyForQuery(query, mode, parsedSearchIn, refine_within);
 
         const tookMs = Date.now() - startTime;
 

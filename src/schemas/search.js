@@ -350,6 +350,16 @@ export const facultyForQueryRequestSchema = {
             enum: ['basic', 'advanced'],
             default: 'advanced',
             description: 'Search mode to apply keyword strictness'
+        },
+        search_in: {
+            type: 'string',
+            maxLength: 200,
+            description: 'Comma-separated field list matching POST /search search_in (e.g. author or title,abstract)'
+        },
+        refine_within: {
+            type: 'string',
+            maxLength: 500,
+            description: 'Optional base query when refining (same as POST /search refine_within)'
         }
     },
     additionalProperties: false

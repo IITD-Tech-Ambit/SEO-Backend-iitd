@@ -488,6 +488,49 @@ export default class SearchService {
     }
 
     /**
+     * Build a per-term BM25 clause for advanced mode.
+     * Short queries (≤3 terms): all terms required (strict, avoids noisy matches).
+     * Longer queries (4+): uses should with ~75% minimum_should_match so
+     * natural-language phrases still find results.
+     */
+    _buildStrictBm25Must(query, searchFields, fuzz = { fuzziness: 'AUTO' }, { strict = false } = {}) {
+        const terms = query.trim().split(/\s+/).filter(t => t.length > 0);
+        if (terms.length <= 1) {
+            return {
+                multi_match: {
+                    query: query,
+                    fields: searchFields,
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    ...fuzz
+                }
+            };
+        }
+
+        const clauses = terms.map(term => ({
+            multi_match: {
+                query: term,
+                fields: searchFields,
+                type: 'best_fields',
+                tie_breaker: 0.3,
+                ...fuzz
+            }
+        }));
+
+        if (terms.length <= 3 || strict) {
+            return { bool: { must: clauses } };
+        }
+
+        const minRequired = Math.max(3, Math.ceil(terms.length * 0.75));
+        return {
+            bool: {
+                should: clauses,
+                minimum_should_match: minRequired
+            }
+        };
+    }
+
+    /**
      * Build BM25-only query (Basic mode) — no embeddings, no ML
      * STRICT keyword matching: no fuzziness on the primary match.
      * Uses cross_fields + operator:and for precise multi-word matching.
@@ -620,9 +663,6 @@ export default class SearchService {
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
 
-        // Determine minimum_should_match for multi-word convergence (legacy full-index multi_match only)
-        const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
-
         // Build BOOST-only should clauses (ranking, not matching)
         const boostClauses = [];
 
@@ -676,16 +716,7 @@ export default class SearchService {
         } else if (searchIn && searchIn.length > 0) {
             bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds);
         } else {
-            bm25Must = {
-                multi_match: {
-                    query: query,
-                    fields: searchFields,
-                    type: 'best_fields',
-                    tie_breaker: 0.3,
-                    fuzziness: 'AUTO',
-                    minimum_should_match: minShouldMatch
-                }
-            };
+            bm25Must = this._buildStrictBm25Must(query, searchFields);
         }
 
         // Build sort clause
@@ -699,14 +730,11 @@ export default class SearchService {
         return {
             size: perPage,
             from,
-            track_total_hits: true,  // Get accurate total count
-            min_score: this.searchConfig.minScore.hybrid,  // Filter low-confidence results
+            track_total_hits: true,
             _source: ['mongo_id'],
             query: {
                 bool: {
-                    // MUST: BM25 keyword match required (controls result set size)
                     must: [bm25Must],
-                    // SHOULD: Boost clauses improve ranking but don't expand results
                     should: boostClauses,
                     filter: filterClauses
                 }
@@ -724,7 +752,8 @@ export default class SearchService {
     _buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
-        const searchFields = this._getSearchFields(searchIn);
+        const searchFields = this._getSearchFields(searchIn)
+            .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
         const currentYear = new Date().getFullYear();
         const searchAllFields = !searchIn || searchIn.length === 0;
         const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
@@ -732,7 +761,6 @@ export default class SearchService {
         // Detect multi-word query
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
-        const minShouldMatch = isMultiWord ? '75%' : '1';
 
         // Build boost-only should clauses
         const boostClauses = [];
@@ -762,16 +790,7 @@ export default class SearchService {
         } else if (searchIn && searchIn.length > 0) {
             bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds);
         } else {
-            bm25Must = {
-                multi_match: {
-                    query: query,
-                    fields: searchFields,
-                    type: 'best_fields',
-                    tie_breaker: 0.3,
-                    fuzziness: 'AUTO',
-                    minimum_should_match: minShouldMatch
-                }
-            };
+            bm25Must = this._buildStrictBm25Must(query, searchFields);
         }
 
         return {
@@ -827,7 +846,8 @@ export default class SearchService {
     _buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
-        const searchFields = this._getSearchFields(searchIn);
+        const searchFields = this._getSearchFields(searchIn)
+            .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
         const weights = this.searchConfig.hybridWeights;
         const searchAllFields = !searchIn || searchIn.length === 0;
         const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
@@ -835,7 +855,6 @@ export default class SearchService {
         // Detect multi-word query
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
-        const minShouldMatch = isMultiWord ? '75%' : '1';
 
         let bm25Must;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
@@ -843,16 +862,7 @@ export default class SearchService {
         } else if (searchIn && searchIn.length > 0) {
             bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds);
         } else {
-            bm25Must = {
-                multi_match: {
-                    query: query,
-                    fields: searchFields,
-                    type: 'best_fields',
-                    tie_breaker: 0.3,
-                    fuzziness: 'AUTO',
-                    minimum_should_match: minShouldMatch
-                }
-            };
+            bm25Must = this._buildStrictBm25Must(query, searchFields);
         }
 
         // Boost-only clauses
@@ -1241,9 +1251,6 @@ export default class SearchService {
             return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
         }
 
-        // Dynamic min_score
-        const dynamicMinScore = 0.5;
-
         // Build query based on sort option
         let osQuery;
         if (sort === 'impact') {
@@ -1285,9 +1292,6 @@ export default class SearchService {
             this.logger.info({ refine_within }, 'Added refine_within constraint to advanced query');
         }
 
-        // Apply dynamic min_score
-        osQuery.min_score = dynamicMinScore;
-
         this.logger.info({ 
             opensearchQuery: JSON.stringify(osQuery.query, null, 2),
             sort: osQuery.sort,
@@ -1306,6 +1310,7 @@ export default class SearchService {
 
         // Hydrate from MongoDB
         const results = await this._hydrateFromMongoDB(hits);
+        await this._applyFacultyDisplayNamesForBasicSearch(results);
 
         // Extract related faculty from results
         const related_faculty = await this._extractRelatedFaculty(results);
@@ -1744,6 +1749,11 @@ export default class SearchService {
             }
         }
 
+        // When search_in is author-only, papers are already restricted to this author's corpus (ids filter).
+        // Re-applying author-field constraints from the global query often yields 0 hits (name tokens ≠ indexed strings).
+        const skipAuthorMustForScoped =
+            searchInNorm?.length === 1 && searchInNorm[0] === 'author' && !authorRefineNarrow;
+
         // Phase 2: OpenSearch on author's paper IDs — honors search_in like main search (e.g. author = author names only).
         let hits, total;
         try {
@@ -1753,7 +1763,14 @@ export default class SearchService {
 
             if (isBasic) {
                 let mustBasic;
-                if (searchInNorm && searchInNorm.length > 0) {
+                if (skipAuthorMustForScoped) {
+                    mustBasic = [{ match_all: {} }];
+                    if (refine_within) {
+                        mustBasic.push(
+                            this._buildConstrainedSearchInClause(refine_within, searchInNorm, {}, refineFacultyIds)
+                        );
+                    }
+                } else if (searchInNorm && searchInNorm.length > 0) {
                     const authorOnly = searchInNorm.length === 1 && searchInNorm[0] === 'author';
                     if (authorRefineNarrow && authorOnly && refine_within?.trim()) {
                         mustBasic = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, {})];
@@ -1841,7 +1858,19 @@ export default class SearchService {
                     });
 
                     let mustAdv;
-                    if (authorRefineNarrow && authorOnly && refine_within?.trim()) {
+                    if (skipAuthorMustForScoped) {
+                        mustAdv = [{ match_all: {} }];
+                        if (refine_within) {
+                            mustAdv.push(
+                                this._buildConstrainedSearchInClause(
+                                    refine_within,
+                                    searchInNorm,
+                                    { fuzziness: 'AUTO' },
+                                    refineFacultyIds
+                                )
+                            );
+                        }
+                    } else if (authorRefineNarrow && authorOnly && refine_within?.trim()) {
                         mustAdv = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' })];
                     } else {
                         mustAdv = [
@@ -1858,7 +1887,6 @@ export default class SearchService {
                         size: per_page,
                         from,
                         track_total_hits: true,
-                        min_score: this.searchConfig.minScore.hybrid,
                         _source: ['mongo_id'],
                         query: {
                             bool: {
@@ -1874,7 +1902,6 @@ export default class SearchService {
                         .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
                     const words = query.trim().split(/\s+/);
                     const isMultiWord = words.length >= 2;
-                    const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
 
                     const boostClauses = [];
 
@@ -1917,37 +1944,35 @@ export default class SearchService {
                         }
                     });
 
+                    const buildAuthorScopedMatch = (q) => {
+                        const w = q.trim().split(/\s+/);
+                        const isMulti = w.length >= 2;
+                        const minMatch = isMulti ? (w.length === 2 ? '2' : '2<75%') : '1';
+                        return {
+                            multi_match: {
+                                query: q,
+                                fields: searchFields,
+                                type: 'best_fields',
+                                tie_breaker: 0.3,
+                                fuzziness: 'AUTO',
+                                minimum_should_match: minMatch
+                            }
+                        };
+                    };
+                    const mustClauses = [
+                        buildAuthorScopedMatch(query),
+                        ...(refine_within ? [buildAuthorScopedMatch(refine_within)] : [])
+                    ];
+
                     osQuery = {
                         size: per_page,
                         from,
                         track_total_hits: true,
-                        min_score: this.searchConfig.minScore.hybrid,
                         _source: ['mongo_id'],
                         query: {
                             bool: {
                                 filter: [{ ids: { values: osIds } }],
-                                must: [
-                                    {
-                                        multi_match: {
-                                            query: query,
-                                            fields: searchFields,
-                                            type: 'best_fields',
-                                            tie_breaker: 0.3,
-                                            fuzziness: 'AUTO',
-                                            minimum_should_match: minShouldMatch
-                                        }
-                                    },
-                                    ...(refine_within ? [{
-                                        multi_match: {
-                                            query: refine_within,
-                                            fields: searchFields,
-                                            type: 'best_fields',
-                                            tie_breaker: 0.3,
-                                            fuzziness: 'AUTO',
-                                            minimum_should_match: refine_within.trim().split(/\s+/).length >= 2 ? '75%' : '1'
-                                        }
-                                    }] : [])
-                                ],
+                                must: mustClauses,
                                 should: boostClauses
                             }
                         },
@@ -1995,9 +2020,7 @@ export default class SearchService {
                 ...r,
                 similarity_score: scoreMap.get(r._id.toString())
             }));
-            if (mode === 'basic') {
-                await this._applyFacultyDisplayNamesForBasicSearch(scoredResults);
-            }
+            await this._applyFacultyDisplayNamesForBasicSearch(scoredResults);
         } catch (err) {
             this.logger.error({ err, author_id }, 'Author-scoped search: Phase 3 FAILED (Hydration)');
             throw err;
@@ -2159,15 +2182,65 @@ export default class SearchService {
     }
 
     /**
+     * Aggregations for GET /search/faculty-for-query (Scopus author buckets + score stats).
+     */
+    _facultyForQueryAggregations() {
+        return {
+            from_author_ids: {
+                filter: { exists: { field: 'author_ids' } },
+                aggs: {
+                    by_scopus_author: {
+                        terms: {
+                            field: 'author_ids',
+                            size: 200,
+                            min_doc_count: 1
+                        },
+                        aggs: {
+                            max_relevance: { max: { script: '_score' } },
+                            avg_relevance: { avg: { script: '_score' } }
+                        }
+                    }
+                }
+            },
+            from_nested_authors: {
+                nested: { path: 'authors' },
+                aggs: {
+                    by_scopus_author: {
+                        terms: {
+                            field: 'authors.author_id',
+                            size: 200,
+                            min_doc_count: 1
+                        },
+                        aggs: {
+                            max_relevance: { max: { script: '_score' } },
+                            avg_relevance: { avg: { script: '_score' } }
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    /**
      * Get all IITD faculty for a query across the entire result set.
      * Uses OpenSearch nested aggregation (size: 0, no docs fetched).
      *
+     * Query body matches POST /search (including search_in / refine_within) so Explore "Show all"
+     * does not disagree with the main result set (e.g. author-only name search vs cross_fields on all text).
+     *
      * Returns faculty grouped by department, sorted by relevance.
      */
-    async getAllFacultyForQuery(query, mode = 'advanced') {
+    async getAllFacultyForQuery(query, mode = 'advanced', search_in = null, refine_within = null) {
+        const searchInNorm = this._normalizeSearchIn(search_in);
         // Cache key
         const queryHash = crypto.createHash('sha256')
-            .update(JSON.stringify({ query, type: 'faculty_for_query_nested', mode }))
+            .update(JSON.stringify({
+                query,
+                type: 'faculty_for_query_nested',
+                mode,
+                search_in: searchInNorm,
+                refine_within: refine_within || null
+            }))
             .digest('hex').slice(0, 16);
         const cacheKey = `faculty_query:${queryHash}`;
 
@@ -2182,92 +2255,101 @@ export default class SearchService {
             this.logger.warn({ err }, 'Redis cache read failed for faculty-for-query');
         }
 
-        // Build BM25 query with size: 0
-        const isBasic = mode === 'basic';
-        let searchFields = this._getSearchFields(null);
-        let multiMatchConfig = {};
-
-        if (isBasic) {
-            // Strict exact-matching fields
-            searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
-            multiMatchConfig = {
-                type: 'cross_fields',
-                operator: 'and'
-            };
-        } else {
-            // Fuzzy, backwards-compatible "advanced" search.
-            // Filter n-grams to prevent 35k result explosions
-            searchFields = searchFields.filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
-            const words = query.trim().split(/\s+/);
-            const isMultiWord = words.length >= 2;
-            // For 2 words, require both (100%). For 3+ words, require 75%.
-            const minShouldMatch = isMultiWord ? (words.length === 2 ? '2' : '2<75%') : '1';
-            
-            multiMatchConfig = {
-                type: 'best_fields',
-                tie_breaker: 0.3,
-                fuzziness: 'AUTO',
-                minimum_should_match: minShouldMatch
-            };
+        let facultyAuthorIds = null;
+        let refineFacultyIds = null;
+        let authorRefineNarrow = false;
+        if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
+            if (refine_within?.trim()) {
+                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(refine_within.trim());
+                authorRefineNarrow = true;
+            } else {
+                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(query);
+            }
         }
 
-        const osQuery = {
-            size: 0,
-            track_total_hits: true,
-            min_score: this.searchConfig.minScore.impact, // Drop noisy fuzzy papers from the aggregation pool
-            query: {
-                multi_match: {
-                    query: query,
-                    fields: searchFields,
-                    ...multiMatchConfig
-                }
-            },
-            aggs: {
-                // Go indexer: nested authors.author_id. Python indexer: flat author_ids only — use both and merge.
-                from_author_ids: {
-                    filter: { exists: { field: 'author_ids' } },
-                    aggs: {
-                        by_scopus_author: {
-                            terms: {
-                                field: 'author_ids',
-                                size: 200,
-                                min_doc_count: 1
-                            },
-                            aggs: {
-                                max_relevance: {
-                                    max: { script: '_score' }
-                                },
-                                avg_relevance: {
-                                    avg: { script: '_score' }
-                                }
-                            }
-                        }
-                    }
-                },
-                from_nested_authors: {
-                    nested: { path: 'authors' },
-                    aggs: {
-                        by_scopus_author: {
-                            terms: {
-                                field: 'authors.author_id',
-                                size: 200,
-                                min_doc_count: 1
-                            },
-                            aggs: {
-                                max_relevance: {
-                                    max: { script: '_score' }
-                                },
-                                avg_relevance: {
-                                    avg: { script: '_score' }
-                                }
-                            }
-                        }
-                    }
-                }
+        const facultyAggs = this._facultyForQueryAggregations();
+        const emptyFilters = {};
+
+        const patchFacultyAggBody = (base) => {
+            const body = { ...base };
+            body.size = 0;
+            body.from = 0;
+            body.track_total_hits = true;
+            body._source = false;
+            body.aggs = facultyAggs;
+            if (mode === 'advanced') {
+                body.min_score = this.searchConfig.minScore.impact;
+            } else {
+                delete body.min_score;
             }
+            delete body.sort;
+            return body;
         };
 
-        this.logger.info({ query }, 'Faculty-for-query: querying OpenSearch aggregation');
+        let osQuery;
+        if (mode === 'basic') {
+            const base = this._buildBasicQuery(
+                query,
+                emptyFilters,
+                1,
+                1,
+                'relevance',
+                searchInNorm,
+                refine_within,
+                facultyAuthorIds,
+                refineFacultyIds,
+                authorRefineNarrow
+            );
+            osQuery = patchFacultyAggBody(base);
+        } else {
+            const embedding = await this.embeddingService.embedQuery(query);
+            let base = this._buildHybridQuery(
+                query,
+                embedding,
+                emptyFilters,
+                1,
+                1,
+                'relevance',
+                searchInNorm,
+                facultyAuthorIds,
+                authorRefineNarrow,
+                refine_within
+            );
+            if (refine_within && !authorRefineNarrow) {
+                const searchFields = this._getSearchFields(searchInNorm);
+                const refineWords = refine_within.trim().split(/\s+/);
+                const refineMinMatch = refineWords.length >= 2 ? '75%' : '1';
+                const refineClause =
+                    searchInNorm && searchInNorm.length > 0
+                        ? this._buildConstrainedSearchInClause(
+                            refine_within,
+                            searchInNorm,
+                            { fuzziness: 'AUTO' },
+                            refineFacultyIds
+                        )
+                        : {
+                              multi_match: {
+                                  query: refine_within,
+                                  fields: searchFields,
+                                  type: 'best_fields',
+                                  tie_breaker: 0.3,
+                                  fuzziness: 'AUTO',
+                                  minimum_should_match: refineMinMatch
+                              }
+                          };
+                const mustArrays = [
+                    base.query?.bool?.must,
+                    base.query?.script_score?.query?.bool?.must,
+                    base.query?.function_score?.query?.bool?.must
+                ].filter(Boolean);
+                if (mustArrays.length) {
+                    mustArrays[0].push(refineClause);
+                }
+            }
+            osQuery = patchFacultyAggBody(base);
+        }
+
+        this.logger.info({ query, mode, search_in: searchInNorm }, 'Faculty-for-query: querying OpenSearch aggregation');
 
         const osResponse = await this.opensearch.search({
             index: this.indexName,
