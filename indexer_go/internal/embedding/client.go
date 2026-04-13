@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/sudarshan/indexer/internal/config"
@@ -29,14 +28,14 @@ type Client struct {
 	baseURL    string
 	cfg        *config.Config
 	semaphore  chan struct{} // Limits concurrent requests to embedding service
-	mu         sync.Mutex    // Protects request timing
-	lastReq    time.Time     // Time of last request for rate limiting
 }
 
 // NewClient creates a new embedding service client with connection pooling and rate limiting
 func NewClient(cfg *config.Config) *Client {
-	// Allow higher concurrency for TEI (was 2 for Python service)
-	maxConcurrent := 32
+	maxConcurrent := cfg.EmbeddingMaxConcurrent
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	}
 
 	return &Client{
 		httpClient: &http.Client{

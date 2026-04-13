@@ -25,8 +25,9 @@ type Config struct {
 	OpenSearchVerifyCerts bool
 
 	// Embedding Service
-	EmbeddingServiceURL string
-	EmbeddingTimeout    int
+	EmbeddingServiceURL    string
+	EmbeddingTimeout       int
+	EmbeddingMaxConcurrent int // Max in-flight HTTP /embed calls across all workers (semaphore)
 
 	// Batch sizes
 	MongoBatchSize     int
@@ -65,8 +66,9 @@ func Load() *Config {
 		OpenSearchVerifyCerts: getEnv("OPENSEARCH_VERIFY_CERTS", "false") == "true",
 
 		// Embedding
-		EmbeddingServiceURL: getEnv("EMBEDDING_SERVICE_URL", "http://localhost:8001"),
-		EmbeddingTimeout:    getEnvInt("EMBEDDING_TIMEOUT", 60), // Increased from 30s for slower services
+		EmbeddingServiceURL:    getEnv("EMBEDDING_SERVICE_URL", "http://localhost:8001"),
+		EmbeddingTimeout:       getEnvInt("EMBEDDING_TIMEOUT", 60), // Increased from 30s for slower services
+		EmbeddingMaxConcurrent: getEnvInt("EMBEDDING_MAX_CONCURRENT", 32),
 
 		// Batch sizes - smaller for free tier
 		MongoBatchSize:     getEnvInt("MONGO_BATCH_SIZE", 100),     // Increased from 50
