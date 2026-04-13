@@ -8,7 +8,7 @@ healthy GPU nodes in parallel and merges the results back in order.
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -135,7 +135,16 @@ class NodePool:
         return available + half_open
 
     def _pick_least_busy(self, nodes: List[BackendNode]) -> BackendNode:
-        return min(nodes, key=lambda n: n.active_requests)
+        """Prefer least in-flight work; on ties, round-robin so every node gets traffic."""
+        if not nodes:
+            raise ValueError("nodes must be non-empty")
+        min_active = min(n.active_requests for n in nodes)
+        tied = [n for n in nodes if n.active_requests == min_active]
+        if len(tied) == 1:
+            return tied[0]
+        pick = tied[self._rr_index % len(tied)]
+        self._rr_index += 1
+        return pick
 
     # ── Scatter-gather core ──────────────────────────────────────────
 
