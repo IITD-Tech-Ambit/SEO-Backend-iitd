@@ -1749,10 +1749,14 @@ export default class SearchService {
             }
         }
 
-        // When search_in is author-only, papers are already restricted to this author's corpus (ids filter).
-        // Re-applying author-field constraints from the global query often yields 0 hits (name tokens ≠ indexed strings).
+        // When search_in is author-only AND we couldn't resolve Faculty Scopus IDs for the query,
+        // text-matching the query against author name fields inside the clicked author's corpus
+        // often yields 0 hits (name tokens ≠ indexed strings).  Fall back to match_all only then.
+        // When Scopus IDs ARE resolved, use them as an exact terms filter so clicking a coworker
+        // correctly narrows to co-authored papers instead of showing the entire corpus.
         const skipAuthorMustForScoped =
-            searchInNorm?.length === 1 && searchInNorm[0] === 'author' && !authorRefineNarrow;
+            searchInNorm?.length === 1 && searchInNorm[0] === 'author' && !authorRefineNarrow
+            && (!facultyAuthorIds || facultyAuthorIds.length === 0);
 
         // Phase 2: OpenSearch on author's paper IDs — honors search_in like main search (e.g. author = author names only).
         let hits, total;
@@ -2141,7 +2145,8 @@ export default class SearchService {
 
     /**
      * Merge terms buckets from flat `author_ids` and nested `authors.author_id` (same Scopus id).
-     * Combines doc_count, max of max _score, and doc_count-weighted average of avg _score.
+     * Both aggregations count the same underlying documents, so we take the MAX of doc_count
+     * (not sum) to avoid double-counting papers that appear in both flat and nested fields.
      */
     _mergeFacultyAuthorAggBuckets(flatBuckets, nestedBuckets) {
         const byKey = new Map();
@@ -2158,16 +2163,12 @@ export default class SearchService {
                         key,
                         doc_count: dc,
                         max_relevance: { value: maxRel },
-                        avg_relevance: { value: avgRel },
-                        _avgWeight: avgRel * dc
+                        avg_relevance: { value: avgRel }
                     });
                 } else {
-                    prev.doc_count += dc;
+                    prev.doc_count = Math.max(prev.doc_count, dc);
                     prev.max_relevance = { value: Math.max(prev.max_relevance.value, maxRel) };
-                    prev._avgWeight += avgRel * dc;
-                    prev.avg_relevance = {
-                        value: prev.doc_count > 0 ? prev._avgWeight / prev.doc_count : 0
-                    };
+                    prev.avg_relevance = { value: Math.max(prev.avg_relevance.value, avgRel) };
                 }
             }
         };
