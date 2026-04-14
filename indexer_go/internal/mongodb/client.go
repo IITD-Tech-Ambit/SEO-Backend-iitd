@@ -31,6 +31,7 @@ type Document struct {
 	Abstract         string             `bson:"abstract"`
 	Authors          []Author           `bson:"authors"`
 	ExpertID         string             `bson:"expert_id"`
+	Kerberos         string             `bson:"kerberos"`
 	PublicationYear  int                `bson:"publication_year"`
 	FieldAssociated  string             `bson:"field_associated"`
 	DocumentType     string             `bson:"document_type"`

@@ -59,6 +59,10 @@ const ResearchMetaDataScopus = new mongoose.Schema({
         type: String,
     }],
     authors: [AuthorSchema],
+    kerberos:{
+        type: String,
+        required: true,
+    },
     open_search_id: {
         type: String,
         required: true,
@@ -85,6 +89,9 @@ ResearchMetaDataScopus.index({ subject_area: 1, publication_year: -1 });
 
 // 4. Citation-based sorting
 ResearchMetaDataScopus.index({ citation_count: -1 });
+
+// 5. Kerberos-based sorting
+ResearchMetaDataScopus.index({ kerberos: 1 });
 
 // 5. Text index for fallback keyword search
 ResearchMetaDataScopus.index(

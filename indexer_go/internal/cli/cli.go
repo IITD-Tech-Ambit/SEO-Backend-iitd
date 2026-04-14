@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -93,21 +94,21 @@ func (c *CLI) Warning(message string) {
 	fmt.Printf(" ---> [WARNING] %s\n", message)
 }
 
-// Progress prints a progress line that updates in place
+// Progress prints a progress line that updates in place (safe for concurrent Updates)
 func (c *CLI) Progress(p *Progress) {
 	if c.quiet || p.Total == 0 {
 		return
 	}
 
-	percent := float64(p.Current) / float64(p.Total) * 100
+	current := atomic.LoadInt64(&p.Current)
+	percent := float64(current) / float64(p.Total) * 100
 	elapsed := time.Since(p.StartTime)
 
-	// Calculate rate and ETA
 	var eta time.Duration
 	var rateStr string
-	if p.Current > 0 && elapsed > 0 {
-		rate := float64(p.Current) / elapsed.Seconds()
-		remaining := p.Total - p.Current
+	if current > 0 && elapsed > 0 {
+		rate := float64(current) / elapsed.Seconds()
+		remaining := p.Total - current
 		if rate > 0 {
 			eta = time.Duration(float64(remaining)/rate) * time.Second
 		}
@@ -116,9 +117,8 @@ func (c *CLI) Progress(p *Progress) {
 		rateStr = "--/s"
 	}
 
-	// Docker-style progress with arrow
 	fmt.Printf("\r ---> Downloading: [%s] %d/%d %.1f%% %s eta %s    ",
-		progressBar(percent), p.Current, p.Total, percent, rateStr, formatDuration(eta))
+		progressBar(percent), current, p.Total, percent, rateStr, formatDuration(eta))
 }
 
 // ProgressDone finishes progress output with newline
@@ -213,31 +213,28 @@ func formatBytes(b int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-// Progress tracks progress of a long-running operation
+// Progress tracks progress of a long-running operation.
+// Current is accessed atomically so multiple goroutines can call Update concurrently.
 type Progress struct {
-	Total      int64
-	Current    int64
-	StartTime  time.Time
-	LastUpdate time.Time
+	Total     int64
+	Current   int64 // use atomic operations only
+	StartTime time.Time
 }
 
 // NewProgress creates a new progress tracker
 func NewProgress(total int64) *Progress {
 	return &Progress{
 		Total:     total,
-		Current:   0,
 		StartTime: time.Now(),
 	}
 }
 
-// Update updates progress by incrementing current count
+// Update atomically increments current count (safe for concurrent use)
 func (p *Progress) Update(delta int64) {
-	p.Current += delta
-	p.LastUpdate = time.Now()
+	atomic.AddInt64(&p.Current, delta)
 }
 
-// Set sets the current progress value
+// Set atomically sets the current progress value
 func (p *Progress) Set(current int64) {
-	p.Current = current
-	p.LastUpdate = time.Now()
+	atomic.StoreInt64(&p.Current, current)
 }

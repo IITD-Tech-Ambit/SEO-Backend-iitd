@@ -19,6 +19,7 @@ type CacheEntry struct {
 	Abstract        string
 	Authors         []CachedAuthor
 	ExpertID        string
+	Kerberos        string
 	PublicationYear int
 	FieldAssociated string
 	DocumentType    string

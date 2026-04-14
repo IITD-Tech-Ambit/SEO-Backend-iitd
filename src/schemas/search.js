@@ -53,6 +53,10 @@ export const searchRequestSchema = {
                 interdisciplinary: {
                     type: 'boolean',
                     description: 'Papers spanning 3+ subject areas'
+                },
+                kerberos: {
+                    type: 'string',
+                    description: 'Filter by faculty kerberos ID (matches email prefix)'
                 }
             },
             additionalProperties: false

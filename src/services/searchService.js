@@ -155,6 +155,10 @@ export default class SearchService {
             });
         }
 
+        if (filters?.kerberos) {
+            mustFilters.push({ term: { kerberos: filters.kerberos } });
+        }
+
         return mustFilters;
     }
 
@@ -1071,13 +1075,14 @@ export default class SearchService {
 
     /**
      * Extract related faculty from search results (Mongo-hydrated docs).
-     * Links via paper.authors[].author_id ∩ Faculty.scopus_id (no expert_id on papers).
+     * Dual strategy: scopus_id matching for co-authors + kerberos for primary faculty.
      */
     async _extractRelatedFaculty(results) {
         if (!results.length) return [];
 
         const Faculty = this.mongoose.model('Faculty');
 
+        // Collect author_ids for co-author discovery via scopus_id
         const authorPaperCount = new Map();
         for (const doc of results) {
             for (const a of doc.authors || []) {
@@ -1087,33 +1092,83 @@ export default class SearchService {
             }
         }
 
+        // Collect unique kerberos values for primary faculty discovery
+        const kerberosPaperCount = new Map();
+        for (const doc of results) {
+            const k = (doc.kerberos || '').trim();
+            if (k) kerberosPaperCount.set(k, (kerberosPaperCount.get(k) || 0) + 1);
+        }
+
         const authorIds = Array.from(authorPaperCount.keys());
-        this.logger.info({ uniqueAuthorIds: authorIds.length }, 'Scopus author IDs collected from results');
+        const kerberosValues = Array.from(kerberosPaperCount.keys());
 
-        if (authorIds.length === 0) return [];
+        this.logger.info({
+            uniqueAuthorIds: authorIds.length,
+            uniqueKerberos: kerberosValues.length
+        }, 'Related faculty: IDs collected from results');
 
-        const facultyDocs = await Faculty.find({ scopus_id: { $in: authorIds } })
-            .populate('department', 'name')
-            .select('firstName lastName email expert_id department scopus_id')
-            .limit(20)
-            .lean();
+        if (authorIds.length === 0 && kerberosValues.length === 0) return [];
 
-        this.logger.info({ foundCount: facultyDocs.length }, 'Faculty found by scopus_id match');
+        // Parallel batch lookups: scopus_id + kerberos (email prefix)
+        const [scopusFacultyDocs, kerberosFacultyDocs] = await Promise.all([
+            authorIds.length > 0
+                ? Faculty.find({ scopus_id: { $in: authorIds } })
+                    .populate('department', 'name')
+                    .select('firstName lastName email expert_id department scopus_id')
+                    .limit(20)
+                    .lean()
+                : [],
+            kerberosValues.length > 0
+                ? Faculty.find({ email: { $in: kerberosValues.map(k => new RegExp(`^${k}@`, 'i')) } })
+                    .populate('department', 'name')
+                    .select('firstName lastName email expert_id department scopus_id')
+                    .limit(20)
+                    .lean()
+                : []
+        ]);
 
-        return facultyDocs.map(f => {
+        this.logger.info({
+            scopusMatched: scopusFacultyDocs.length,
+            kerberosMatched: kerberosFacultyDocs.length
+        }, 'Related faculty: lookup results');
+
+        // Dedup by expert_id, merge paper counts from both strategies
+        const facultyMap = new Map();
+
+        for (const f of scopusFacultyDocs) {
             let paperCount = 0;
             for (const sid of f.scopus_id || []) {
                 paperCount += authorPaperCount.get(String(sid)) || 0;
             }
-            return {
+            facultyMap.set(f.expert_id, {
                 _id: f._id,
                 name: `${f.firstName} ${f.lastName}`.trim(),
                 email: f.email,
                 expert_id: f.expert_id,
                 department: f.department,
                 paperCount: paperCount || 1
-            };
-        });
+            });
+        }
+
+        for (const f of kerberosFacultyDocs) {
+            const k = (f.email || '').split('@')[0].toLowerCase();
+            const kCount = kerberosPaperCount.get(k) || 1;
+            if (facultyMap.has(f.expert_id)) {
+                const existing = facultyMap.get(f.expert_id);
+                existing.paperCount = Math.max(existing.paperCount, kCount);
+            } else {
+                facultyMap.set(f.expert_id, {
+                    _id: f._id,
+                    name: `${f.firstName} ${f.lastName}`.trim(),
+                    email: f.email,
+                    expert_id: f.expert_id,
+                    department: f.department,
+                    paperCount: kCount
+                });
+            }
+        }
+
+        return Array.from(facultyMap.values());
     }
 
     /**
@@ -1672,6 +1727,7 @@ export default class SearchService {
 
         // Phase 1: Get author's paper OpenSearch IDs from MongoDB
         // author_id may be Faculty.expert_id, a Scopus id in Faculty.scopus_id[], or raw authors.author_id.
+        // Uses both scopus_id matching (co-authored papers) and kerberos (primary-authored papers).
         let osIds, authorName;
         try {
             const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
@@ -1685,8 +1741,20 @@ export default class SearchService {
                 ? facultyMatch.scopus_id.map(String)
                 : [author_id];
 
+            // Derive kerberos from faculty email for primary-authored paper discovery
+            const kerberosId = facultyMatch?.email
+                ? facultyMatch.email.split('@')[0].toLowerCase()
+                : null;
+
+            const paperFilter = kerberosId
+                ? { $or: [
+                    { 'authors.author_id': { $in: scopusAuthorIds } },
+                    { kerberos: kerberosId }
+                  ] }
+                : { 'authors.author_id': { $in: scopusAuthorIds } };
+
             const authorDocs = await ResearchDocument.find(
-                { 'authors.author_id': { $in: scopusAuthorIds } },
+                paperFilter,
                 { open_search_id: 1, _id: 0 }
             ).lean();
 
@@ -2204,6 +2272,17 @@ export default class SearchService {
                         }
                     }
                 }
+            },
+            from_kerberos: {
+                terms: {
+                    field: 'kerberos',
+                    size: 200,
+                    min_doc_count: 1
+                },
+                aggs: {
+                    max_relevance: { max: { script: '_score' } },
+                    avg_relevance: { avg: { script: '_score' } }
+                }
             }
         };
     }
@@ -2343,14 +2422,18 @@ export default class SearchService {
             ?.by_scopus_author
             ?.buckets || [];
         const expertBuckets = this._mergeFacultyAuthorAggBuckets(flatBuckets, nestedBuckets);
+        const kerberosBuckets = osResponse.body.aggregations
+            ?.from_kerberos
+            ?.buckets || [];
 
         this.logger.info({
             query,
             totalDocs,
-            uniqueScopusAuthors: expertBuckets.length
+            uniqueScopusAuthors: expertBuckets.length,
+            uniqueKerberos: kerberosBuckets.length
         }, 'Faculty-for-query: aggregation results');
 
-        if (expertBuckets.length === 0) {
+        if (expertBuckets.length === 0 && kerberosBuckets.length === 0) {
             const emptyResult = {
                 departments: [],
                 total_faculty: 0,
@@ -2378,7 +2461,7 @@ export default class SearchService {
         // Apply dynamic relevance thresholding logic
         if (authorInfos.length > 0) {
             const maxAuthorScore = Math.max(...authorInfos.map(a => a.author_score));
-            const scoreThreshold = maxAuthorScore * 0.25; // Keep authors with at least 25% of the top profile's score
+            const scoreThreshold = maxAuthorScore * 0.25;
 
             const initialCount = authorInfos.length;
             authorInfos = authorInfos.filter(a => a.author_score >= scoreThreshold);
@@ -2394,11 +2477,25 @@ export default class SearchService {
         const scopusIds = authorInfos.map(a => a.scopus_author_id);
         const Faculty = this.mongoose.model('Faculty');
 
+        // Batch lookup by scopus_id
         let facultyDocs = [];
         if (scopusIds.length > 0) {
             facultyDocs = await Faculty.find({ scopus_id: { $in: scopusIds } })
                 .populate('department', 'name')
-                .select('firstName lastName expert_id department scopus_id')
+                .select('firstName lastName expert_id department scopus_id email')
+                .lean();
+        }
+
+        // Batch lookup by kerberos (email prefix match) for primary faculty
+        const kerberosValues = kerberosBuckets
+            .map(b => String(b.key).trim())
+            .filter(Boolean);
+        let kerberosFacultyDocs = [];
+        if (kerberosValues.length > 0) {
+            const kerberosRegexes = kerberosValues.map(k => new RegExp(`^${k}@`, 'i'));
+            kerberosFacultyDocs = await Faculty.find({ email: { $in: kerberosRegexes } })
+                .populate('department', 'name')
+                .select('firstName lastName expert_id department scopus_id email')
                 .lean();
         }
 
@@ -2409,13 +2506,22 @@ export default class SearchService {
             }
         }
 
+        // Map kerberos -> faculty
+        const facultyByKerberos = new Map();
+        for (const f of kerberosFacultyDocs) {
+            const k = (f.email || '').split('@')[0].toLowerCase();
+            if (k) facultyByKerberos.set(k, f);
+        }
+
         this.logger.info({
             totalBuckets: scopusIds.length,
-            matchedFaculty: facultyDocs.length
-        }, 'Faculty-for-query: scopus_id lookup');
+            matchedFaculty: facultyDocs.length,
+            kerberosFaculty: kerberosFacultyDocs.length
+        }, 'Faculty-for-query: scopus_id + kerberos lookup');
 
-        const facultyDedup = new Map(); // faculty.expert_id -> merged faculty info
+        const facultyDedup = new Map();
 
+        // Merge scopus_id-resolved faculty
         for (const author of authorInfos) {
             const faculty = facultyByScopusId.get(String(author.scopus_author_id));
             if (!faculty) continue;
@@ -2432,6 +2538,33 @@ export default class SearchService {
                     expert_id: faculty.expert_id,
                     paper_count: author.paper_count,
                     author_score: author.author_score,
+                    deptName: faculty?.department?.name || 'Other'
+                });
+            }
+        }
+
+        // Merge kerberos-resolved primary faculty (ensures primary faculty always appear)
+        for (const bucket of kerberosBuckets) {
+            const k = String(bucket.key).trim().toLowerCase();
+            const faculty = facultyByKerberos.get(k);
+            if (!faculty) continue;
+
+            const maxRel = bucket.max_relevance?.value || 0;
+            const avgRel = bucket.avg_relevance?.value || 0;
+            const paperCount = bucket.doc_count;
+            const authorScore = 0.6 * maxRel + 0.3 * avgRel + 0.1 * Math.log2(1 + paperCount);
+
+            const key = faculty.expert_id;
+            if (facultyDedup.has(key)) {
+                const existing = facultyDedup.get(key);
+                existing.paper_count = Math.max(existing.paper_count, paperCount);
+                existing.author_score = Math.max(existing.author_score, authorScore);
+            } else {
+                facultyDedup.set(key, {
+                    name: `${faculty.firstName} ${faculty.lastName}`.trim(),
+                    expert_id: faculty.expert_id,
+                    paper_count: paperCount,
+                    author_score: authorScore,
                     deptName: faculty?.department?.name || 'Other'
                 });
             }

@@ -280,9 +280,24 @@ func (idx *Indexer) Phase1FetchAndEmbed(ctx context.Context, limit int, reindexA
 		}
 	}()
 
-	// Mutex for safe cache writes
-	var cacheMu sync.Mutex
-	lastSave := time.Now()
+	// Background cache saver (avoids blocking workers during gob serialization)
+	saveCtx, cancelSave := context.WithCancel(ctx)
+	saveDone := make(chan struct{})
+	go func() {
+		defer close(saveDone)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := idx.cache.Save(); err != nil {
+					idx.cli.Warning(fmt.Sprintf("Periodic cache save failed: %v", err))
+				}
+			case <-saveCtx.Done():
+				return
+			}
+		}
+	}()
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -334,34 +349,25 @@ func (idx *Indexer) Phase1FetchAndEmbed(ctx context.Context, limit int, reindexA
 							AuthorAvailableNames: a.AuthorAvailableNames,
 						}
 					}
-					entries[i] = cache.CacheEntry{
-						MongoID:         doc.ID,
-						DocumentEID:     doc.DocumentEID,
-						Title:           doc.Title,
-						Abstract:        doc.Abstract,
-						Authors:         authors,
-						ExpertID:        doc.ExpertID,
-						PublicationYear: doc.PublicationYear,
-						FieldAssociated: doc.FieldAssociated,
-						DocumentType:    doc.DocumentType,
-						SubjectArea:     doc.SubjectArea,
-						CitationCount:   doc.CitationCount,
-						ReferenceCount:  doc.ReferenceCount,
-						Embedding:       allEmbeddings[i],
-					}
+				entries[i] = cache.CacheEntry{
+					MongoID:         doc.ID,
+					DocumentEID:     doc.DocumentEID,
+					Title:           doc.Title,
+					Abstract:        doc.Abstract,
+					Authors:         authors,
+					ExpertID:        doc.ExpertID,
+					Kerberos:        doc.Kerberos,
+					PublicationYear: doc.PublicationYear,
+					FieldAssociated: doc.FieldAssociated,
+					DocumentType:    doc.DocumentType,
+					SubjectArea:     doc.SubjectArea,
+					CitationCount:   doc.CitationCount,
+					ReferenceCount:  doc.ReferenceCount,
+					Embedding:       allEmbeddings[i],
+				}
 				}
 
-				// Add to cache
-				cacheMu.Lock()
 				idx.cache.AddEntries(entries)
-
-				// Save periodically (every 30 seconds)
-				if time.Since(lastSave) > 30*time.Second {
-					idx.cache.Save()
-					lastSave = time.Now()
-				}
-				cacheMu.Unlock()
-
 				atomic.AddInt64(&processed, int64(len(docs)))
 				progress.Update(int64(len(docs)))
 			}
@@ -369,6 +375,8 @@ func (idx *Indexer) Phase1FetchAndEmbed(ctx context.Context, limit int, reindexA
 	}
 
 	wg.Wait()
+	cancelSave()
+	<-saveDone
 	cancelProgress()
 	idx.cli.ProgressDone()
 
@@ -400,7 +408,7 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 	idx.cli.StartPhase("Phase 2: Index & Update")
 
 	// Step 1: Load cache
-	idx.cli.Step(1, 4, "Loading cache")
+	idx.cli.Step(1, 5, "Loading cache")
 	if err := idx.cache.Load(); err != nil {
 		return fmt.Errorf("load cache: %w", err)
 	}
@@ -414,14 +422,15 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 	idx.cli.Info(fmt.Sprintf("Loaded %d entries from cache", len(entries)))
 
 	// Step 2: Ensure index exists
-	idx.cli.Step(2, 4, "Checking OpenSearch index")
+	idx.cli.Step(2, 5, "Checking OpenSearch index")
 	if err := idx.openSearch.CreateIndex(ctx); err != nil {
 		return fmt.Errorf("ensure index: %w", err)
 	}
 
-	// Step 3: Index to OpenSearch
-	idx.cli.Step(3, 4, "Indexing to OpenSearch")
-	idx.cli.Running(fmt.Sprintf("Bulk indexing with batch size %d", idx.cfg.OpenSearchBulkSize))
+	// Step 3: Index to OpenSearch (parallel)
+	bulkWorkers := max(1, idx.cfg.BulkIndexWorkers)
+	idx.cli.Step(3, 5, "Indexing to OpenSearch")
+	idx.cli.Running(fmt.Sprintf("Bulk indexing: batch size %d, %d workers", idx.cfg.OpenSearchBulkSize, bulkWorkers))
 
 	var (
 		indexed int64
@@ -430,10 +439,8 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 
 	progress := cli.NewProgress(int64(len(entries)))
 
-	// Progress ticker
 	progressCtx, cancelProgress := context.WithCancel(ctx)
 	progressTicker := time.NewTicker(500 * time.Millisecond)
-
 	go func() {
 		defer progressTicker.Stop()
 		for {
@@ -446,110 +453,97 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 		}
 	}()
 
-	// Collect MongoDB updates
+	type indexResult struct {
+		updates []mongodb.IDUpdate
+		indexed int64
+		errors  int64
+		count   int64
+	}
+
+	batchChan := make(chan []cache.CacheEntry, bulkWorkers*2)
+	resultChan := make(chan indexResult, bulkWorkers*2)
+
+	var bulkWg sync.WaitGroup
+	for w := 0; w < bulkWorkers; w++ {
+		bulkWg.Add(1)
+		go func() {
+			defer bulkWg.Done()
+			for batch := range batchChan {
+				select {
+				case <-ctx.Done():
+					resultChan <- indexResult{errors: int64(len(batch)), count: int64(len(batch))}
+					continue
+				default:
+				}
+
+				osDocs := idx.buildOSDocuments(batch)
+				idMap, err := idx.openSearch.BulkIndex(ctx, osDocs)
+
+				r := indexResult{count: int64(len(batch))}
+				if err != nil {
+					r.errors = int64(len(batch))
+				} else {
+					r.indexed = int64(len(idMap))
+					r.errors = int64(len(batch) - len(idMap))
+					for _, entry := range batch {
+						if osID, ok := idMap[entry.MongoID.Hex()]; ok {
+							r.updates = append(r.updates, mongodb.IDUpdate{
+								MongoID:      entry.MongoID,
+								OpenSearchID: osID,
+							})
+						}
+					}
+				}
+				resultChan <- r
+			}
+		}()
+	}
+
+	// Producer: feed batches to workers
+	go func() {
+		defer func() {
+			close(batchChan)
+			bulkWg.Wait()
+			close(resultChan)
+		}()
+		for i := 0; i < len(entries); i += idx.cfg.OpenSearchBulkSize {
+			end := min(i+idx.cfg.OpenSearchBulkSize, len(entries))
+			select {
+			case batchChan <- entries[i:end]:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Collector (single goroutine — no atomics needed)
 	var mongoUpdates []mongodb.IDUpdate
-
-	// Process in batches
-	for i := 0; i < len(entries); i += idx.cfg.OpenSearchBulkSize {
-		select {
-		case <-ctx.Done():
-			cancelProgress()
-			return ctx.Err()
-		default:
-		}
-
-		end := min(i+idx.cfg.OpenSearchBulkSize, len(entries))
-		batch := entries[i:end]
-
-		// Build OpenSearch documents
-		osDocs := make([]opensearch.OSDocument, len(batch))
-		for j, entry := range batch {
-			// Build author structures
-			osAuthors := make([]opensearch.OSAuthor, len(entry.Authors))
-			authorNames := make([]string, len(entry.Authors))
-			allVariants := make([]string, 0)
-
-			authorIDs := make([]string, 0, len(entry.Authors))
-			for k, a := range entry.Authors {
-				authorNames[k] = a.AuthorName
-				if len(a.AuthorAvailableNames) > 0 {
-					allVariants = append(allVariants, a.AuthorAvailableNames...)
-				}
-
-				position := 0
-				if a.AuthorPosition != "" {
-					fmt.Sscanf(a.AuthorPosition, "%d", &position)
-				}
-
-				osAuthors[k] = opensearch.OSAuthor{
-					AuthorID:           a.AuthorID,
-					AuthorName:         a.AuthorName,
-					AuthorNameVariants: a.AuthorAvailableNames,
-					AuthorPosition:     position,
-				}
-				if id := strings.TrimSpace(a.AuthorID); id != "" {
-					authorIDs = append(authorIDs, id)
-				}
-			}
-
-			osDocs[j] = opensearch.OSDocument{
-				MongoID:            entry.MongoID.Hex(),
-				Title:              entry.Title,
-				Abstract:           entry.Abstract,
-				Authors:            osAuthors,
-				AuthorNames:        authorNames,
-				AuthorNameVariants: allVariants,
-				AuthorIDs:          authorIDs,
-				ExpertID:           entry.ExpertID,
-				PublicationYear:    entry.PublicationYear,
-				FieldAssociated:    entry.FieldAssociated,
-				DocumentType:       entry.DocumentType,
-				SubjectArea:        entry.SubjectArea,
-				SubjectAreaCount:   len(entry.SubjectArea),
-				CitationCount:      entry.CitationCount,
-				ReferenceCount:     entry.ReferenceCount,
-				Embedding:          entry.Embedding,
-			}
-		}
-
-		// Bulk index
-		idMap, err := idx.openSearch.BulkIndex(ctx, osDocs)
-		if err != nil {
-			errors += int64(len(batch))
-			progress.Update(int64(len(batch)))
-			continue
-		}
-
-		indexed += int64(len(idMap))
-		errors += int64(len(batch) - len(idMap))
-		progress.Update(int64(len(batch)))
-
-		// Collect MongoDB updates
-		for _, entry := range batch {
-			if osID, ok := idMap[entry.MongoID.Hex()]; ok {
-				mongoUpdates = append(mongoUpdates, mongodb.IDUpdate{
-					MongoID:      entry.MongoID,
-					OpenSearchID: osID,
-				})
-			}
-		}
+	for r := range resultChan {
+		indexed += r.indexed
+		errors += r.errors
+		mongoUpdates = append(mongoUpdates, r.updates...)
+		progress.Update(r.count)
 	}
 
 	cancelProgress()
 	idx.cli.ProgressDone()
 	idx.cli.Success(fmt.Sprintf("Indexed %d documents to OpenSearch", indexed))
 
-	// Step 4: Update MongoDB
-	idx.cli.Step(4, 4, "Updating MongoDB")
-	idx.cli.Running(fmt.Sprintf("Updating %d documents with OpenSearch IDs", len(mongoUpdates)))
+	// Step 4: Single refresh (replaces per-batch Refresh:"true")
+	idx.cli.Step(4, 5, "Refreshing OpenSearch index")
+	if err := idx.openSearch.RefreshIndex(ctx); err != nil {
+		idx.cli.Warning(fmt.Sprintf("Index refresh failed: %v", err))
+	} else {
+		idx.cli.Success("Index refreshed")
+	}
 
-	// Progress for MongoDB updates
+	// Step 5: Update MongoDB (parallel)
+	idx.cli.Step(5, 5, "Updating MongoDB")
+	idx.cli.Running(fmt.Sprintf("Updating %d documents, %d workers", len(mongoUpdates), bulkWorkers))
+
 	mongoProgress := cli.NewProgress(int64(len(mongoUpdates)))
-
-	// Progress ticker for MongoDB updates
 	mongoProgressCtx, cancelMongoProgress := context.WithCancel(ctx)
 	mongoProgressTicker := time.NewTicker(500 * time.Millisecond)
-
 	go func() {
 		defer mongoProgressTicker.Stop()
 		for {
@@ -562,16 +556,27 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 		}
 	}()
 
-	// Process MongoDB updates in batches
+	updateChan := make(chan []mongodb.IDUpdate, bulkWorkers*2)
+	var updateWg sync.WaitGroup
+	for w := 0; w < bulkWorkers; w++ {
+		updateWg.Add(1)
+		go func() {
+			defer updateWg.Done()
+			for batch := range updateChan {
+				if err := idx.mongoDB.BulkUpdateOpenSearchIDs(ctx, batch); err != nil {
+					idx.cli.Warning(fmt.Sprintf("MongoDB update batch failed: %v", err))
+				}
+				mongoProgress.Update(int64(len(batch)))
+			}
+		}()
+	}
+
 	for i := 0; i < len(mongoUpdates); i += idx.cfg.OpenSearchBulkSize {
 		end := min(i+idx.cfg.OpenSearchBulkSize, len(mongoUpdates))
-		batch := mongoUpdates[i:end]
-
-		if err := idx.mongoDB.BulkUpdateOpenSearchIDs(ctx, batch); err != nil {
-			idx.cli.Warning(fmt.Sprintf("MongoDB update batch failed: %v", err))
-		}
-		mongoProgress.Update(int64(len(batch)))
+		updateChan <- mongoUpdates[i:end]
 	}
+	close(updateChan)
+	updateWg.Wait()
 
 	cancelMongoProgress()
 	idx.cli.ProgressDone()
@@ -579,7 +584,6 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 
 	elapsed := idx.cli.EndPhase()
 
-	// Print summary
 	idx.cli.Summary("Phase 2 Complete", map[string]string{
 		"Indexed":    fmt.Sprintf("%d", indexed),
 		"Errors":     fmt.Sprintf("%d", errors),
@@ -589,6 +593,58 @@ func (idx *Indexer) Phase2IndexAndUpdate(ctx context.Context) error {
 	})
 
 	return nil
+}
+
+// buildOSDocuments converts a batch of cache entries into OpenSearch documents
+func (idx *Indexer) buildOSDocuments(batch []cache.CacheEntry) []opensearch.OSDocument {
+	osDocs := make([]opensearch.OSDocument, len(batch))
+	for j, entry := range batch {
+		osAuthors := make([]opensearch.OSAuthor, len(entry.Authors))
+		authorNames := make([]string, len(entry.Authors))
+		allVariants := make([]string, 0)
+		authorIDs := make([]string, 0, len(entry.Authors))
+
+		for k, a := range entry.Authors {
+			authorNames[k] = a.AuthorName
+			if len(a.AuthorAvailableNames) > 0 {
+				allVariants = append(allVariants, a.AuthorAvailableNames...)
+			}
+			position := 0
+			if a.AuthorPosition != "" {
+				fmt.Sscanf(a.AuthorPosition, "%d", &position)
+			}
+			osAuthors[k] = opensearch.OSAuthor{
+				AuthorID:           a.AuthorID,
+				AuthorName:         a.AuthorName,
+				AuthorNameVariants: a.AuthorAvailableNames,
+				AuthorPosition:     position,
+			}
+			if id := strings.TrimSpace(a.AuthorID); id != "" {
+				authorIDs = append(authorIDs, id)
+			}
+		}
+
+		osDocs[j] = opensearch.OSDocument{
+			MongoID:            entry.MongoID.Hex(),
+			Title:              entry.Title,
+			Abstract:           entry.Abstract,
+			Authors:            osAuthors,
+			AuthorNames:        authorNames,
+			AuthorNameVariants: allVariants,
+			AuthorIDs:          authorIDs,
+			ExpertID:           entry.ExpertID,
+			Kerberos:           entry.Kerberos,
+			PublicationYear:    entry.PublicationYear,
+			FieldAssociated:    entry.FieldAssociated,
+			DocumentType:       entry.DocumentType,
+			SubjectArea:        entry.SubjectArea,
+			SubjectAreaCount:   len(entry.SubjectArea),
+			CitationCount:      entry.CitationCount,
+			ReferenceCount:     entry.ReferenceCount,
+			Embedding:          entry.Embedding,
+		}
+	}
+	return osDocs
 }
 
 // RunBothPhases runs Phase 1 and Phase 2 sequentially

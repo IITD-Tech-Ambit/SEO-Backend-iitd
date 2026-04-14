@@ -139,6 +139,7 @@ class BatchIndexer:
                 "document_type": doc.get("document_type"),
                 "subject_area": doc.get("subject_area", []),
                 "citation_count": doc.get("citation_count", 0),
+                "kerberos": doc.get("kerberos", ""),
                 "embedding": embedding
             }
         }
@@ -420,6 +421,9 @@ def create_index_if_not_exists(os_client: OpenSearch):
                     "type": "integer"
                 },
                 "author_ids": {
+                    "type": "keyword"
+                },
+                "kerberos": {
                     "type": "keyword"
                 },
                 "embedding": {

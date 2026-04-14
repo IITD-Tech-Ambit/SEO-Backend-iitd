@@ -35,7 +35,8 @@ type Config struct {
 	OpenSearchBulkSize int
 
 	// Workers
-	NumWorkers int
+	NumWorkers      int
+	BulkIndexWorkers int // Parallel workers for Phase 2 OpenSearch bulk + MongoDB updates
 
 	// Retry
 	MaxRetries int
@@ -75,8 +76,9 @@ func Load() *Config {
 		EmbedBatchSize:     getEnvInt("EMBED_BATCH_SIZE", 128),     // Optimal for TEI
 		OpenSearchBulkSize: getEnvInt("OPENSEARCH_BULK_SIZE", 100), // Increased from 50
 
-		// Workers - fewer for free tier to reduce concurrent MongoDB load
-		NumWorkers: getEnvInt("NUM_WORKERS", 8), // Increased for TEI
+		// Workers
+		NumWorkers:       getEnvInt("NUM_WORKERS", 8),
+		BulkIndexWorkers: getEnvInt("BULK_INDEX_WORKERS", 4),
 
 		// Retry
 		MaxRetries: getEnvInt("MAX_RETRIES", 3),

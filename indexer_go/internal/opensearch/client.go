@@ -40,6 +40,7 @@ type OSDocument struct {
 	// AuthorIDs: flat Scopus author IDs for terms aggregations (faculty-for-query). Mirrors Python indexer.
 	AuthorIDs []string `json:"author_ids"`
 	ExpertID  string   `json:"expert_id"`
+	Kerberos  string   `json:"kerberos"`
 	PublicationYear    int        `json:"publication_year"`
 	FieldAssociated    string     `json:"field_associated"`
 	DocumentType       string     `json:"document_type"`
@@ -111,8 +112,7 @@ func (c *Client) BulkIndex(ctx context.Context, docs []OSDocument) (map[string]s
 	}
 
 	req := opensearchapi.BulkRequest{
-		Body:    strings.NewReader(buf.String()),
-		Refresh: "true",
+		Body: bytes.NewReader(buf.Bytes()),
 	}
 
 	res, err := req.Do(ctx, c.client)
@@ -353,6 +353,7 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 				"subject_area_count": {"type": "integer"},
 				"citation_count": {"type": "integer"},
 				"reference_count": {"type": "integer"},
+				"kerberos": {"type": "keyword"},
 				"embedding": {
 					"type": "knn_vector",
 					"dimension": 768,
@@ -402,6 +403,23 @@ func (c *Client) DeleteIndex(ctx context.Context) error {
 	}
 
 	fmt.Printf("Deleted index %s\n", c.cfg.OpenSearchIndex)
+	return nil
+}
+
+// RefreshIndex forces a refresh so recently indexed documents become searchable.
+// Call once at the end of bulk indexing instead of per-batch Refresh:"true".
+func (c *Client) RefreshIndex(ctx context.Context) error {
+	res, err := c.client.Indices.Refresh(
+		c.client.Indices.Refresh.WithContext(ctx),
+		c.client.Indices.Refresh.WithIndex(c.cfg.OpenSearchIndex),
+	)
+	if err != nil {
+		return fmt.Errorf("refresh index: %w", err)
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("refresh index error: %s", res.String())
+	}
 	return nil
 }
 
