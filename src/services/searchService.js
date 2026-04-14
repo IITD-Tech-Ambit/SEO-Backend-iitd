@@ -1261,24 +1261,16 @@ export default class SearchService {
             osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
         }
 
-        // If refining within a prior query, add the original query as an additional BM25 MUST clause
+        // If refining within a prior query, add the original query as an additional BM25 MUST clause.
+        // Uses the same per-term must logic as the primary query (_buildStrictBm25Must) so that
+        // the refine constraint is equally strict — all terms required for short queries (≤3 words).
         if (refine_within && !authorRefineNarrow) {
-            const searchFields = this._getSearchFields(searchInNorm);
-            const refineWords = refine_within.trim().split(/\s+/);
-            const refineMinMatch = refineWords.length >= 2 ? '75%' : '1';
+            const searchFields = this._getSearchFields(searchInNorm)
+                .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
 
             const refineClause = searchInNorm && searchInNorm.length > 0
                 ? this._buildConstrainedSearchInClause(refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds)
-                : {
-                    multi_match: {
-                        query: refine_within,
-                        fields: searchFields,
-                        type: 'best_fields',
-                        tie_breaker: 0.3,
-                        fuzziness: 'AUTO',
-                        minimum_should_match: refineMinMatch
-                    }
-                };
+                : this._buildStrictBm25Must(refine_within, searchFields);
 
             const mustArrays = [
                 osQuery.query?.bool?.must,
@@ -1382,27 +1374,10 @@ export default class SearchService {
             : {
                 size: 0,
                 query: {
-                    bool: {
-                        should: [
-                            {
-                                multi_match: {
-                                    query: query,
-                                    fields: ['title', 'abstract', 'author_names', 'subject_area'],
-                                    fuzziness: 'AUTO'
-                                }
-                            },
-                            {
-                                multi_match: {
-                                    query: query,
-                                    fields: [
-                                        'author_names.ngram',
-                                        'subject_area.ngram',
-                                        'field_associated.ngram'
-                                    ]
-                                }
-                            }
-                        ],
-                        minimum_should_match: 1
+                    multi_match: {
+                        query: query,
+                        fields: ['title', 'abstract', 'author_names', 'subject_area', 'field_associated'],
+                        fuzziness: 'AUTO'
                     }
                 }
             };
@@ -1420,8 +1395,27 @@ export default class SearchService {
      * Runs with higher fuzziness tolerance and no min_score to catch typos
      */
     async _fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null) {
+        // When refining (search-on-search), the user is narrowing results.
+        // If the refinement query has no BM25 matches, return 0 — don't broaden via fuzzy.
+        if (refine_within && !authorRefineNarrow) {
+            this.logger.info({ query, refine_within }, 'Skipping fuzzy fallback: refine_within is active — narrowing should not expand results');
+            const suggestions = await this._getSuggestions(query);
+            return {
+                results: [],
+                related_faculty: [],
+                suggestions,
+                fuzzy_fallback: false,
+                facets: {},
+                pagination: { page, per_page, total: 0, total_pages: 0 },
+                mode: 'advanced',
+                message: 'No results found matching your refinement. Try different keywords.',
+                cacheHit: false
+            };
+        }
+
         const from = (page - 1) * per_page;
-        const searchFields = this._getSearchFields(search_in);
+        const searchFields = this._getSearchFields(search_in)
+            .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
         const filterClauses = this._buildFilters(filters);
 
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
@@ -1431,15 +1425,7 @@ export default class SearchService {
             ? this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 2 })
             : search_in && search_in.length > 0
             ? this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 2 }, facultyAuthorIds)
-            : {
-                multi_match: {
-                    query: query,
-                    fields: searchFields,
-                    type: 'best_fields',
-                    tie_breaker: 0.3,
-                    fuzziness: 2
-                }
-            };
+            : this._buildStrictBm25Must(query, searchFields, { fuzziness: 2 });
 
         const fallbackQuery = {
             size: per_page,
@@ -1749,10 +1735,14 @@ export default class SearchService {
             }
         }
 
-        // When search_in is author-only, papers are already restricted to this author's corpus (ids filter).
-        // Re-applying author-field constraints from the global query often yields 0 hits (name tokens ≠ indexed strings).
+        // When search_in is author-only AND we couldn't resolve Faculty Scopus IDs for the query,
+        // text-matching the query against author name fields inside the clicked author's corpus
+        // often yields 0 hits (name tokens ≠ indexed strings).  Fall back to match_all only then.
+        // When Scopus IDs ARE resolved, use them as an exact terms filter so clicking a coworker
+        // correctly narrows to co-authored papers instead of showing the entire corpus.
         const skipAuthorMustForScoped =
-            searchInNorm?.length === 1 && searchInNorm[0] === 'author' && !authorRefineNarrow;
+            searchInNorm?.length === 1 && searchInNorm[0] === 'author' && !authorRefineNarrow
+            && (!facultyAuthorIds || facultyAuthorIds.length === 0);
 
         // Phase 2: OpenSearch on author's paper IDs — honors search_in like main search (e.g. author = author names only).
         let hits, total;
@@ -2141,7 +2131,8 @@ export default class SearchService {
 
     /**
      * Merge terms buckets from flat `author_ids` and nested `authors.author_id` (same Scopus id).
-     * Combines doc_count, max of max _score, and doc_count-weighted average of avg _score.
+     * Both aggregations count the same underlying documents, so we take the MAX of doc_count
+     * (not sum) to avoid double-counting papers that appear in both flat and nested fields.
      */
     _mergeFacultyAuthorAggBuckets(flatBuckets, nestedBuckets) {
         const byKey = new Map();
@@ -2158,16 +2149,12 @@ export default class SearchService {
                         key,
                         doc_count: dc,
                         max_relevance: { value: maxRel },
-                        avg_relevance: { value: avgRel },
-                        _avgWeight: avgRel * dc
+                        avg_relevance: { value: avgRel }
                     });
                 } else {
-                    prev.doc_count += dc;
+                    prev.doc_count = Math.max(prev.doc_count, dc);
                     prev.max_relevance = { value: Math.max(prev.max_relevance.value, maxRel) };
-                    prev._avgWeight += avgRel * dc;
-                    prev.avg_relevance = {
-                        value: prev.doc_count > 0 ? prev._avgWeight / prev.doc_count : 0
-                    };
+                    prev.avg_relevance = { value: Math.max(prev.avg_relevance.value, avgRel) };
                 }
             }
         };
@@ -2316,9 +2303,8 @@ export default class SearchService {
                 refine_within
             );
             if (refine_within && !authorRefineNarrow) {
-                const searchFields = this._getSearchFields(searchInNorm);
-                const refineWords = refine_within.trim().split(/\s+/);
-                const refineMinMatch = refineWords.length >= 2 ? '75%' : '1';
+                const refineSearchFields = this._getSearchFields(searchInNorm)
+                    .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
                 const refineClause =
                     searchInNorm && searchInNorm.length > 0
                         ? this._buildConstrainedSearchInClause(
@@ -2327,16 +2313,7 @@ export default class SearchService {
                             { fuzziness: 'AUTO' },
                             refineFacultyIds
                         )
-                        : {
-                              multi_match: {
-                                  query: refine_within,
-                                  fields: searchFields,
-                                  type: 'best_fields',
-                                  tie_breaker: 0.3,
-                                  fuzziness: 'AUTO',
-                                  minimum_should_match: refineMinMatch
-                              }
-                          };
+                        : this._buildStrictBm25Must(refine_within, refineSearchFields);
                 const mustArrays = [
                     base.query?.bool?.must,
                     base.query?.script_score?.query?.bool?.must,
