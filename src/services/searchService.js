@@ -55,6 +55,44 @@ export default class SearchService {
     }
 
     /**
+     * Get the British/American English spelling variant of a word, if one exists.
+     * Returns null if no variant is known.
+     */
+    _getSpellingVariant(word) {
+        const w = word.toLowerCase();
+        // [american, british] pairs
+        const pairs = [
+            ['color', 'colour'], ['favor', 'favour'], ['honor', 'honour'],
+            ['humor', 'humour'], ['labor', 'labour'], ['neighbor', 'neighbour'],
+            ['vapor', 'vapour'], ['fiber', 'fibre'], ['center', 'centre'],
+            ['liter', 'litre'], ['meter', 'metre'], ['caliber', 'calibre'],
+            ['theater', 'theatre'], ['defense', 'defence'], ['offense', 'offence'],
+            ['license', 'licence'], ['practice', 'practise'],
+            ['analyze', 'analyse'], ['catalyze', 'catalyse'],
+            ['optimize', 'optimise'], ['recognize', 'recognise'],
+            ['characterize', 'characterise'], ['minimize', 'minimise'],
+            ['maximize', 'maximise'], ['utilize', 'utilise'],
+            ['realize', 'realise'], ['organize', 'organise'],
+            ['stabilize', 'stabilise'], ['polymerize', 'polymerise'],
+            ['synthesize', 'synthesise'], ['oxidize', 'oxidise'],
+            ['ionize', 'ionise'], ['polarize', 'polarise'],
+            ['crystallize', 'crystallise'], ['paralyze', 'paralyse'],
+            ['modeling', 'modelling'], ['traveling', 'travelling'],
+            ['labeling', 'labelling'], ['canceling', 'cancelling'],
+            ['aluminum', 'aluminium'], ['sulfur', 'sulphur'],
+            ['aging', 'ageing'], ['gray', 'grey'],
+        ];
+        for (const [am, br] of pairs) {
+            if (w === am) return br;
+            if (w === br) return am;
+            // Derived forms: colorful→colourful, colorimetric→colourimetric, etc.
+            if (w.startsWith(am)) return br + w.slice(am.length);
+            if (w.startsWith(br)) return am + w.slice(br.length);
+        }
+        return null;
+    }
+
+    /**
      * Dedupe + sort search_in so cache keys match regardless of field order from the client.
      */
     _normalizeSearchIn(searchIn) {
@@ -127,14 +165,28 @@ export default class SearchService {
             mustFilters.push({ terms: { 'subject_area.keyword': filters.subject_area } });
         }
 
-        // Nested author filters (Phase 2 - will work after reindexing)
+        // Author filter: union of nested authors.author_id AND top-level kerberos
+        // when _authorKerberos has been pre-resolved from Faculty.email
         if (filters?.author_id) {
-            mustFilters.push({
+            const authorNestedClause = {
                 nested: {
                     path: 'authors',
                     query: { term: { 'authors.author_id': filters.author_id } }
                 }
-            });
+            };
+            if (filters._authorKerberos) {
+                mustFilters.push({
+                    bool: {
+                        should: [
+                            authorNestedClause,
+                            { term: { kerberos: filters._authorKerberos } }
+                        ],
+                        minimum_should_match: 1
+                    }
+                });
+            } else {
+                mustFilters.push(authorNestedClause);
+            }
         }
 
         // author_affiliation removed from schema — affiliation filter disabled
@@ -275,7 +327,7 @@ export default class SearchService {
      */
     async _resolveFacultyScopusIdsForAuthorQuery(query) {
         const q = query.trim();
-        if (!q) return [];
+        if (!q) return { scopusIds: [], kerberosIds: [] };
         const Faculty = this.mongoose.model('Faculty');
         const esc = (s) => this._escapeRegexForMongo(s);
         const tokens = q.split(/\s+/).filter(Boolean);
@@ -293,7 +345,7 @@ export default class SearchService {
                     }
                 }
             })
-                .select('scopus_id')
+                .select('scopus_id email')
                 .limit(25)
                 .lean();
         } catch (err) {
@@ -307,7 +359,7 @@ export default class SearchService {
                 firstName: new RegExp(`^${esc(first)}$`, 'i'),
                 lastName: new RegExp(`^${esc(last)}$`, 'i')
             })
-                .select('scopus_id')
+                .select('scopus_id email')
                 .limit(25)
                 .lean();
         }
@@ -319,7 +371,7 @@ export default class SearchService {
                 firstName: new RegExp(`^${esc(first)}$`, 'i'),
                 lastName: new RegExp(`^${esc(last)}$`, 'i')
             })
-                .select('scopus_id')
+                .select('scopus_id email')
                 .limit(25)
                 .lean();
         }
@@ -329,18 +381,23 @@ export default class SearchService {
             candidates = await Faculty.find({
                 $or: [{ firstName: re }, { lastName: re }]
             })
-                .select('scopus_id')
+                .select('scopus_id email')
                 .limit(25)
                 .lean();
         }
 
         const ids = new Set();
+        const kerberosIds = new Set();
         for (const f of candidates) {
             for (const sid of f.scopus_id || []) {
                 ids.add(String(sid));
             }
+            if (f.email) {
+                const k = f.email.split('@')[0].toLowerCase();
+                if (k) kerberosIds.add(k);
+            }
         }
-        return [...ids];
+        return { scopusIds: [...ids], kerberosIds: [...kerberosIds] };
     }
 
     /**
@@ -350,7 +407,7 @@ export default class SearchService {
      * @param {object} [matchOpts] - Pass `{ fuzziness: 'AUTO' }` for advanced primary queries, `{ fuzziness: 2 }` only for advanced fuzzy fallback. Omit fuzziness for basic (strict token match).
      * @param {string[]|null} [facultyAuthorIds] - Author-only: restrict to these Scopus ids when resolved from Faculty.
      */
-    _buildConstrainedSearchInClause(query, searchIn, matchOpts = {}, facultyAuthorIds = null) {
+    _buildConstrainedSearchInClause(query, searchIn, matchOpts = {}, facultyAuthorIds = null, facultyKerberosIds = null) {
         const terms = query.trim().split(/\s+/).filter((t) => t.length > 0);
         if (!terms.length) {
             return { match_all: {} };
@@ -358,22 +415,26 @@ export default class SearchService {
         const fuzz = matchOpts.fuzziness != null ? { fuzziness: matchOpts.fuzziness } : {};
         const b = this.searchConfig.fieldBoosts;
 
-        // Author-only: Mongo-resolved Faculty.scopus_id → terms; else nested authors only (same row for all tokens). No flat author_names.
+        // Author-only: Mongo-resolved Faculty.scopus_id + kerberos → terms; else nested authors only.
         if (searchIn.length === 1 && searchIn[0] === 'author') {
-            if (facultyAuthorIds && facultyAuthorIds.length > 0) {
-                return {
-                    bool: {
-                        should: [
-                            { terms: { author_ids: facultyAuthorIds } },
-                            {
-                                nested: {
-                                    path: 'authors',
-                                    query: { terms: { 'authors.author_id': facultyAuthorIds } }
-                                }
+            if ((facultyAuthorIds && facultyAuthorIds.length > 0) || (facultyKerberosIds && facultyKerberosIds.length > 0)) {
+                const should = [];
+                if (facultyAuthorIds?.length > 0) {
+                    should.push(
+                        { terms: { author_ids: facultyAuthorIds } },
+                        {
+                            nested: {
+                                path: 'authors',
+                                query: { terms: { 'authors.author_id': facultyAuthorIds } }
                             }
-                        ],
-                        minimum_should_match: 1
-                    }
+                        }
+                    );
+                }
+                if (facultyKerberosIds?.length > 0) {
+                    should.push({ terms: { kerberos: facultyKerberosIds } });
+                }
+                return {
+                    bool: { should, minimum_should_match: 1 }
                 };
             }
             return {
@@ -480,11 +541,11 @@ export default class SearchService {
      * Author-only + search-on-search: `anchorText` (refine_within) pins the person via Faculty / nested author;
      * `queryNarrow` (current query box) matches title + abstract inside those papers.
      */
-    _buildAuthorRefineNarrowMust(queryNarrow, anchorText, anchorFacultyIds, matchOpts = {}) {
+    _buildAuthorRefineNarrowMust(queryNarrow, anchorText, anchorFacultyIds, matchOpts = {}, anchorKerberosIds = null) {
         return {
             bool: {
                 must: [
-                    this._buildConstrainedSearchInClause(anchorText, ['author'], matchOpts, anchorFacultyIds),
+                    this._buildConstrainedSearchInClause(anchorText, ['author'], matchOpts, anchorFacultyIds, anchorKerberosIds),
                     this._buildConstrainedSearchInClause(queryNarrow, ['title', 'abstract'], matchOpts)
                 ]
             }
@@ -499,7 +560,21 @@ export default class SearchService {
      */
     _buildStrictBm25Must(query, searchFields, fuzz = { fuzziness: 'AUTO' }, { strict = false } = {}) {
         const terms = query.trim().split(/\s+/).filter(t => t.length > 0);
+
+        // For a single term with a spelling variant, search for either form
         if (terms.length <= 1) {
+            const variant = this._getSpellingVariant(terms[0] || query);
+            if (variant) {
+                return {
+                    bool: {
+                        should: [
+                            { multi_match: { query: query, fields: searchFields, type: 'best_fields', tie_breaker: 0.3, ...fuzz } },
+                            { multi_match: { query: variant, fields: searchFields, type: 'best_fields', tie_breaker: 0.3, ...fuzz } }
+                        ],
+                        minimum_should_match: 1
+                    }
+                };
+            }
             return {
                 multi_match: {
                     query: query,
@@ -511,15 +586,30 @@ export default class SearchService {
             };
         }
 
-        const clauses = terms.map(term => ({
-            multi_match: {
-                query: term,
-                fields: searchFields,
-                type: 'best_fields',
-                tie_breaker: 0.3,
-                ...fuzz
+        // For multi-term queries, wrap each term that has a variant in a should group
+        const clauses = terms.map(term => {
+            const variant = this._getSpellingVariant(term);
+            if (variant) {
+                return {
+                    bool: {
+                        should: [
+                            { multi_match: { query: term, fields: searchFields, type: 'best_fields', tie_breaker: 0.3, ...fuzz } },
+                            { multi_match: { query: variant, fields: searchFields, type: 'best_fields', tie_breaker: 0.3, ...fuzz } }
+                        ],
+                        minimum_should_match: 1
+                    }
+                };
             }
-        }));
+            return {
+                multi_match: {
+                    query: term,
+                    fields: searchFields,
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    ...fuzz
+                }
+            };
+        });
 
         if (terms.length <= 3 || strict) {
             return { bool: { must: clauses } };
@@ -535,13 +625,39 @@ export default class SearchService {
     }
 
     /**
+     * Build a cross_fields query that handles British/American spelling variants.
+     * If any word has a variant, wraps the original + variant queries in should.
+     */
+    _buildCrossFieldsWithVariants(query, searchFields) {
+        const words = query.trim().split(/\s+/);
+        const hasVariant = words.some(w => this._getSpellingVariant(w) !== null);
+        if (!hasVariant) {
+            return {
+                multi_match: { query, fields: searchFields, type: 'cross_fields', operator: 'and' }
+            };
+        }
+        // Build variant query by replacing each word with its alternative
+        const variantWords = words.map(w => this._getSpellingVariant(w) || w);
+        const variantQuery = variantWords.join(' ');
+        return {
+            bool: {
+                should: [
+                    { multi_match: { query, fields: searchFields, type: 'cross_fields', operator: 'and' } },
+                    { multi_match: { query: variantQuery, fields: searchFields, type: 'cross_fields', operator: 'and' } }
+                ],
+                minimum_should_match: 1
+            }
+        };
+    }
+
+    /**
      * Build BM25-only query (Basic mode) — no embeddings, no ML
      * STRICT keyword matching: no fuzziness on the primary match.
      * Uses cross_fields + operator:and for precise multi-word matching.
      * Fuzziness is reserved for the fallback path only.
      * Supports refine_within for search-on-search narrowing
      */
-    _buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null, facultyAuthorIds = null, refineFacultyIds = null, authorRefineNarrow = false) {
+    _buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null, facultyAuthorIds = null, refineFacultyIds = null, authorRefineNarrow = false, facultyKerberosIds = null, refineKerberosIds = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         
@@ -558,33 +674,17 @@ export default class SearchService {
         let mustClauses;
         if (searchIn && searchIn.length > 0) {
             if (authorRefineNarrow && authorOnly && refineWithin?.trim()) {
-                mustClauses = [this._buildAuthorRefineNarrowMust(query, refineWithin, facultyAuthorIds, {})];
+                mustClauses = [this._buildAuthorRefineNarrowMust(query, refineWithin, facultyAuthorIds, {}, facultyKerberosIds)];
             } else {
-                mustClauses = [this._buildConstrainedSearchInClause(query, searchIn, {}, facultyAuthorIds)];
+                mustClauses = [this._buildConstrainedSearchInClause(query, searchIn, {}, facultyAuthorIds, facultyKerberosIds)];
                 if (refineWithin) {
-                    mustClauses.push(this._buildConstrainedSearchInClause(refineWithin, searchIn, {}, refineFacultyIds));
+                    mustClauses.push(this._buildConstrainedSearchInClause(refineWithin, searchIn, {}, refineFacultyIds, refineKerberosIds));
                 }
             }
         } else {
-            mustClauses = [
-                {
-                    multi_match: {
-                        query: query,
-                        fields: searchFields,
-                        type: 'cross_fields',
-                        operator: 'and'
-                    }
-                }
-            ];
+            mustClauses = [this._buildCrossFieldsWithVariants(query, searchFields)];
             if (refineWithin) {
-                mustClauses.push({
-                    multi_match: {
-                        query: refineWithin,
-                        fields: searchFields,
-                        type: 'cross_fields',
-                        operator: 'and'
-                    }
-                });
+                mustClauses.push(this._buildCrossFieldsWithVariants(refineWithin, searchFields));
             }
         }
 
@@ -653,7 +753,7 @@ export default class SearchService {
      * - Citation Count (desc)
      * - Publication Year (desc)
      */
-         _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null) {
+         _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         // For advanced search fuzzy matching, n-gram fields generate too much noise. Filter them out.
@@ -716,9 +816,9 @@ export default class SearchService {
 
         let bm25Must;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' });
+            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds);
         } else if (searchIn && searchIn.length > 0) {
-            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds);
+            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
         } else {
             bm25Must = this._buildStrictBm25Must(query, searchFields);
         }
@@ -753,7 +853,7 @@ export default class SearchService {
      * Build impact-weighted query using function_score
      * Combines relevance with citation count and recency
      */
-    _buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null) {
+    _buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         const searchFields = this._getSearchFields(searchIn)
@@ -790,9 +890,9 @@ export default class SearchService {
 
         let bm25Must;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' });
+            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds);
         } else if (searchIn && searchIn.length > 0) {
-            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds);
+            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
         } else {
             bm25Must = this._buildStrictBm25Must(query, searchFields);
         }
@@ -847,7 +947,7 @@ export default class SearchService {
      * Build normalized hybrid query using script_score
      * Normalizes BM25 and k-NN scores for fair combination
      */
-    _buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null) {
+    _buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         const searchFields = this._getSearchFields(searchIn)
@@ -862,9 +962,9 @@ export default class SearchService {
 
         let bm25Must;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' });
+            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds);
         } else if (searchIn && searchIn.length > 0) {
-            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds);
+            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
         } else {
             bm25Must = this._buildStrictBm25Must(query, searchFields);
         }
@@ -985,70 +1085,118 @@ export default class SearchService {
 
     /**
      * Keep only paper authors whose Scopus author_id appears on a Faculty record (IIT Delhi roster).
+     * Also uses paper.kerberos to guarantee the primary faculty author is always retained.
      * Mutates each document in place.
      */
     async _filterAuthorsToFacultyRoster(results) {
         if (!results?.length) return;
 
         const scopusIds = new Set();
+        const kerberosValues = new Set();
         for (const doc of results) {
             for (const a of doc.authors || []) {
                 if (a?.author_id != null && String(a.author_id).trim() !== '') {
                     scopusIds.add(String(a.author_id).trim());
                 }
             }
+            if (doc.kerberos && String(doc.kerberos).trim()) {
+                kerberosValues.add(String(doc.kerberos).trim());
+            }
         }
-        if (scopusIds.size === 0) return;
+        if (scopusIds.size === 0 && kerberosValues.size === 0) return;
 
         const Faculty = this.mongoose.model('Faculty');
-        const facultyDocs = await Faculty.find(
-            { scopus_id: { $in: [...scopusIds] } },
-            { scopus_id: 1 }
-        ).lean();
+        const [scopusFacultyDocs, kerberosFacultyDocs] = await Promise.all([
+            scopusIds.size > 0
+                ? Faculty.find({ scopus_id: { $in: [...scopusIds] } }, { scopus_id: 1 }).lean()
+                : [],
+            kerberosValues.size > 0
+                ? Faculty.find(
+                    { email: { $in: [...kerberosValues].map(k => new RegExp(`^${k}@`, 'i')) } },
+                    { scopus_id: 1, email: 1, title: 1, firstName: 1, lastName: 1 }
+                ).lean()
+                : []
+        ]);
 
         const allowed = new Set();
-        for (const f of facultyDocs) {
+        for (const f of scopusFacultyDocs) {
             for (const sid of f.scopus_id || []) {
-                if (sid != null && String(sid).trim()) {
-                    allowed.add(String(sid).trim());
-                }
+                if (sid != null && String(sid).trim()) allowed.add(String(sid).trim());
+            }
+        }
+        for (const f of kerberosFacultyDocs) {
+            for (const sid of f.scopus_id || []) {
+                if (sid != null && String(sid).trim()) allowed.add(String(sid).trim());
             }
         }
 
+        const kerberosFacultyMap = new Map();
+        for (const f of kerberosFacultyDocs) {
+            const k = (f.email || '').split('@')[0].toLowerCase();
+            if (k) kerberosFacultyMap.set(k, f);
+        }
+
         for (const doc of results) {
-            if (!doc.authors?.length) continue;
-            doc.authors = doc.authors.filter(
-                (a) => a.author_id != null && allowed.has(String(a.author_id).trim())
-            );
+            if (doc.authors?.length) {
+                doc.authors = doc.authors.filter(
+                    (a) => a.author_id != null && allowed.has(String(a.author_id).trim())
+                );
+            }
+            if ((!doc.authors || doc.authors.length === 0) && doc.kerberos) {
+                const faculty = kerberosFacultyMap.get(String(doc.kerberos).trim().toLowerCase());
+                if (faculty) {
+                    const name = [faculty.title, faculty.firstName, faculty.lastName]
+                        .filter(p => p && String(p).trim())
+                        .join(' ').replace(/\s+/g, ' ').trim();
+                    if (name) {
+                        doc.authors = [{
+                            author_name: name,
+                            author_id: (faculty.scopus_id || [])[0] || ''
+                        }];
+                    }
+                }
+            }
         }
     }
 
     /**
      * For basic search responses: replace paper author_name (Scopus string) with the canonical
      * directory name from Faculty when authors.author_id matches Faculty.scopus_id.
+     * Also resolves names via paper.kerberos for authors injected by _filterAuthorsToFacultyRoster.
      */
     async _applyFacultyDisplayNamesForBasicSearch(results) {
         if (!results?.length) return;
 
         const scopusIds = new Set();
+        const kerberosValues = new Set();
         for (const doc of results) {
             for (const a of doc.authors || []) {
                 if (a?.author_id != null && String(a.author_id).trim() !== '') {
                     scopusIds.add(String(a.author_id).trim());
                 }
             }
+            if (doc.kerberos && String(doc.kerberos).trim()) {
+                kerberosValues.add(String(doc.kerberos).trim());
+            }
         }
-        if (scopusIds.size === 0) return;
+        if (scopusIds.size === 0 && kerberosValues.size === 0) return;
 
         const Faculty = this.mongoose.model('Faculty');
-        const facultyDocs = await Faculty.find({
-            scopus_id: { $in: [...scopusIds] }
-        })
-            .select('title firstName lastName scopus_id')
-            .lean();
+        const [scopusFacultyDocs, kerberosFacultyDocs] = await Promise.all([
+            scopusIds.size > 0
+                ? Faculty.find({ scopus_id: { $in: [...scopusIds] } })
+                    .select('title firstName lastName scopus_id')
+                    .lean()
+                : [],
+            kerberosValues.size > 0
+                ? Faculty.find({ email: { $in: [...kerberosValues].map(k => new RegExp(`^${k}@`, 'i')) } })
+                    .select('title firstName lastName scopus_id email')
+                    .lean()
+                : []
+        ]);
 
         const idToDisplayName = new Map();
-        for (const f of facultyDocs) {
+        for (const f of [...scopusFacultyDocs, ...kerberosFacultyDocs]) {
             const parts = [f.title, f.firstName, f.lastName].filter((p) => p && String(p).trim());
             const name = parts.join(' ').replace(/\s+/g, ' ').trim();
             if (!name) continue;
@@ -1058,7 +1206,14 @@ export default class SearchService {
                 }
             }
         }
-        if (idToDisplayName.size === 0) return;
+
+        const kerberosToName = new Map();
+        for (const f of kerberosFacultyDocs) {
+            const k = (f.email || '').split('@')[0].toLowerCase();
+            const parts = [f.title, f.firstName, f.lastName].filter(p => p && String(p).trim());
+            const name = parts.join(' ').replace(/\s+/g, ' ').trim();
+            if (k && name) kerberosToName.set(k, name);
+        }
 
         for (const doc of results) {
             if (!doc.authors?.length) continue;
@@ -1068,6 +1223,16 @@ export default class SearchService {
                 const display = idToDisplayName.get(key);
                 if (display) {
                     a.author_name = display;
+                }
+            }
+            if (doc.kerberos) {
+                const kName = kerberosToName.get(String(doc.kerberos).trim().toLowerCase());
+                if (kName) {
+                    for (const a of doc.authors) {
+                        if (!a.author_name || !a.author_name.trim()) {
+                            a.author_name = kName;
+                        }
+                    }
                 }
             }
         }
@@ -1082,32 +1247,31 @@ export default class SearchService {
 
         const Faculty = this.mongoose.model('Faculty');
 
-        // Collect author_ids for co-author discovery via scopus_id
-        const authorPaperCount = new Map();
+        // Build per-faculty paper sets using BOTH scopus_id and kerberos to count unique papers.
+        // A faculty member can appear on a paper via scopus author_id, kerberos, or both —
+        // we need the union of those papers, not separate counts.
+
+        const scopusIds = new Set();
+        const kerberosValues = new Set();
         for (const doc of results) {
             for (const a of doc.authors || []) {
-                const aid = a.author_id;
-                if (!aid) continue;
-                authorPaperCount.set(aid, (authorPaperCount.get(aid) || 0) + 1);
+                if (a?.author_id != null && String(a.author_id).trim()) {
+                    scopusIds.add(String(a.author_id).trim());
+                }
             }
+            const k = (doc.kerberos || '').trim().toLowerCase();
+            if (k) kerberosValues.add(k);
         }
 
-        // Collect unique kerberos values for primary faculty discovery
-        const kerberosPaperCount = new Map();
-        for (const doc of results) {
-            const k = (doc.kerberos || '').trim();
-            if (k) kerberosPaperCount.set(k, (kerberosPaperCount.get(k) || 0) + 1);
-        }
-
-        const authorIds = Array.from(authorPaperCount.keys());
-        const kerberosValues = Array.from(kerberosPaperCount.keys());
+        const authorIds = [...scopusIds];
+        const kerberosArr = [...kerberosValues];
 
         this.logger.info({
             uniqueAuthorIds: authorIds.length,
-            uniqueKerberos: kerberosValues.length
+            uniqueKerberos: kerberosArr.length
         }, 'Related faculty: IDs collected from results');
 
-        if (authorIds.length === 0 && kerberosValues.length === 0) return [];
+        if (authorIds.length === 0 && kerberosArr.length === 0) return [];
 
         // Parallel batch lookups: scopus_id + kerberos (email prefix)
         const [scopusFacultyDocs, kerberosFacultyDocs] = await Promise.all([
@@ -1115,14 +1279,13 @@ export default class SearchService {
                 ? Faculty.find({ scopus_id: { $in: authorIds } })
                     .populate('department', 'name')
                     .select('firstName lastName email expert_id department scopus_id')
-                    .limit(20)
+                    .limit(50)
                     .lean()
                 : [],
-            kerberosValues.length > 0
-                ? Faculty.find({ email: { $in: kerberosValues.map(k => new RegExp(`^${k}@`, 'i')) } })
+            kerberosArr.length > 0
+                ? Faculty.find({ email: { $in: kerberosArr.map(k => new RegExp(`^${k}@`, 'i')) } })
                     .populate('department', 'name')
                     .select('firstName lastName email expert_id department scopus_id')
-                    .limit(20)
                     .lean()
                 : []
         ]);
@@ -1132,43 +1295,70 @@ export default class SearchService {
             kerberosMatched: kerberosFacultyDocs.length
         }, 'Related faculty: lookup results');
 
-        // Dedup by expert_id, merge paper counts from both strategies
-        const facultyMap = new Map();
+        // Build lookup maps: expert_id → Faculty doc, scopus_id → expert_id, kerberos → expert_id
+        const facultyByExpertId = new Map();
+        const scopusToExpertId = new Map();
+        const kerberosToExpertId = new Map();
 
         for (const f of scopusFacultyDocs) {
-            let paperCount = 0;
+            facultyByExpertId.set(f.expert_id, f);
             for (const sid of f.scopus_id || []) {
-                paperCount += authorPaperCount.get(String(sid)) || 0;
+                scopusToExpertId.set(String(sid).trim(), f.expert_id);
             }
-            facultyMap.set(f.expert_id, {
+        }
+        for (const f of kerberosFacultyDocs) {
+            facultyByExpertId.set(f.expert_id, f);
+            const k = (f.email || '').split('@')[0].toLowerCase();
+            if (k) kerberosToExpertId.set(k, f.expert_id);
+            for (const sid of f.scopus_id || []) {
+                scopusToExpertId.set(String(sid).trim(), f.expert_id);
+            }
+        }
+
+        // Count unique papers per faculty (union of scopus_id + kerberos matches)
+        const facultyPaperSets = new Map();
+        for (let i = 0; i < results.length; i++) {
+            const doc = results[i];
+            const docKey = doc._id?.toString() || String(i);
+            const matched = new Set();
+
+            // Match via author scopus_ids
+            for (const a of doc.authors || []) {
+                const aid = a?.author_id != null ? String(a.author_id).trim() : '';
+                if (!aid) continue;
+                const eid = scopusToExpertId.get(aid);
+                if (eid) matched.add(eid);
+            }
+
+            // Match via kerberos
+            const k = (doc.kerberos || '').trim().toLowerCase();
+            if (k) {
+                const eid = kerberosToExpertId.get(k);
+                if (eid) matched.add(eid);
+            }
+
+            for (const eid of matched) {
+                if (!facultyPaperSets.has(eid)) facultyPaperSets.set(eid, new Set());
+                facultyPaperSets.get(eid).add(docKey);
+            }
+        }
+
+        // Build final faculty list
+        const facultyList = [];
+        for (const [expertId, paperSet] of facultyPaperSets) {
+            const f = facultyByExpertId.get(expertId);
+            if (!f) continue;
+            facultyList.push({
                 _id: f._id,
                 name: `${f.firstName} ${f.lastName}`.trim(),
                 email: f.email,
                 expert_id: f.expert_id,
                 department: f.department,
-                paperCount: paperCount || 1
+                paperCount: paperSet.size
             });
         }
 
-        for (const f of kerberosFacultyDocs) {
-            const k = (f.email || '').split('@')[0].toLowerCase();
-            const kCount = kerberosPaperCount.get(k) || 1;
-            if (facultyMap.has(f.expert_id)) {
-                const existing = facultyMap.get(f.expert_id);
-                existing.paperCount = Math.max(existing.paperCount, kCount);
-            } else {
-                facultyMap.set(f.expert_id, {
-                    _id: f._id,
-                    name: `${f.firstName} ${f.lastName}`.trim(),
-                    email: f.email,
-                    expert_id: f.expert_id,
-                    department: f.department,
-                    paperCount: kCount
-                });
-            }
-        }
-
-        return Array.from(facultyMap.values());
+        return facultyList.sort((a, b) => b.paperCount - a.paperCount);
     }
 
     /**
@@ -1183,6 +1373,21 @@ export default class SearchService {
      */
     async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null }) {
         const searchInNorm = this._normalizeSearchIn(search_in);
+
+        // Pre-resolve kerberos for author_id filter so _buildFilters can create a union clause
+        if (filters?.author_id && !filters._authorKerberos) {
+            try {
+                const Faculty = this.mongoose.model('Faculty');
+                let f = await Faculty.findOne({ scopus_id: filters.author_id }).select('email').lean();
+                if (!f) f = await Faculty.findOne({ expert_id: filters.author_id }).select('email').lean();
+                if (f?.email) {
+                    const k = f.email.split('@')[0].trim().toLowerCase();
+                    if (k) filters._authorKerberos = k;
+                }
+            } catch (err) {
+                this.logger.warn({ err: err?.message }, 'Failed to resolve kerberos for author_id filter');
+            }
+        }
 
         const cachePayload = JSON.stringify({
             query,
@@ -1213,19 +1418,24 @@ export default class SearchService {
         }
 
         let facultyAuthorIds = null;
+        let facultyKerberosIds = null;
         let refineFacultyIds = null;
+        let refineKerberosIds = null;
         let authorRefineNarrow = false;
         if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
             if (refine_within?.trim()) {
-                // Search-on-search: anchor author from original query; refine box narrows title/abstract
-                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(refine_within.trim());
+                const resolved = await this._resolveFacultyScopusIdsForAuthorQuery(refine_within.trim());
+                facultyAuthorIds = resolved.scopusIds;
+                facultyKerberosIds = resolved.kerberosIds;
                 authorRefineNarrow = true;
             } else {
-                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(query);
+                const resolved = await this._resolveFacultyScopusIdsForAuthorQuery(query);
+                facultyAuthorIds = resolved.scopusIds;
+                facultyKerberosIds = resolved.kerberosIds;
             }
             this.logger.info(
-                { anchorIds: facultyAuthorIds?.length, authorRefineNarrow },
-                'Author-only: Faculty → Scopus author ids'
+                { anchorIds: facultyAuthorIds?.length, kerberosIds: facultyKerberosIds?.length, authorRefineNarrow },
+                'Author-only: Faculty → Scopus author ids + kerberos'
             );
         }
 
@@ -1233,7 +1443,7 @@ export default class SearchService {
         if (mode === 'basic') {
             this.logger.info({ query, mode }, 'Running BASIC (BM25-only) search');
 
-            const osQuery = this._buildBasicQuery(query, filters, page, per_page, sort, searchInNorm, refine_within, facultyAuthorIds, refineFacultyIds, authorRefineNarrow);
+            const osQuery = this._buildBasicQuery(query, filters, page, per_page, sort, searchInNorm, refine_within, facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds);
             // No min_score for basic: operator:'and' ensures all terms must match, no need for score threshold
 
             this.logger.info({ mode: 'basic', refine_within: !!refine_within }, 'Basic query built');
@@ -1298,22 +1508,22 @@ export default class SearchService {
         const embedding = await this.embeddingService.embedQuery(query);
 
         // Pre-check: Run BM25 query WITH fuzziness to catch near-matches (typos)
-        const bm25Matches = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
+        const bm25Matches = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
 
         // If no BM25 matches even with fuzziness, try fuzzy fallback
         if (bm25Matches === 0) {
             this.logger.info({ query }, 'No BM25 matches even with fuzziness, attempting fuzzy fallback');
-            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
+            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
         }
 
         // Build query based on sort option
         let osQuery;
         if (sort === 'impact') {
-            osQuery = this._buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
+            osQuery = this._buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
         } else if (sort === 'normalized') {
-            osQuery = this._buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
+            osQuery = this._buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
         } else {
-            osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
+            osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
         }
 
         // If refining within a prior query, add the original query as an additional BM25 MUST clause.
@@ -1324,7 +1534,7 @@ export default class SearchService {
                 .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
 
             const refineClause = searchInNorm && searchInNorm.length > 0
-                ? this._buildConstrainedSearchInClause(refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds)
+                ? this._buildConstrainedSearchInClause(refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds, refineKerberosIds)
                 : this._buildStrictBm25Must(refine_within, searchFields);
 
             const mustArrays = [
@@ -1386,7 +1596,7 @@ export default class SearchService {
         // If primary search returned 0 results, try fuzzy fallback
         if (total === 0) {
             this.logger.info({ query }, 'Primary search returned 0 results, attempting fuzzy fallback');
-            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within);
+            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
         }
 
         // Cache results
@@ -1412,19 +1622,19 @@ export default class SearchService {
      * BM25 pre-check: count how many documents match with fuzziness
      * Used to decide whether to attempt a fuzzy fallback
      */
-    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null) {
+    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null, facultyKerberosIds = null) {
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
         const useAuthorRefine = authorRefineNarrow && authorOnly && refine_within?.trim();
 
         const bm25CheckQuery = useAuthorRefine
             ? {
                 size: 0,
-                query: this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' })
+                query: this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds)
             }
             : search_in && search_in.length > 0
             ? {
                 size: 0,
-                query: this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds)
+                query: this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds)
             }
             : {
                 size: 0,
@@ -1449,7 +1659,7 @@ export default class SearchService {
      * Fuzzy fallback search — used when primary search/pre-check returns 0 results
      * Runs with higher fuzziness tolerance and no min_score to catch typos
      */
-    async _fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null) {
+    async _fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null, facultyKerberosIds = null) {
         // When refining (search-on-search), the user is narrowing results.
         // If the refinement query has no BM25 matches, return 0 — don't broaden via fuzzy.
         if (refine_within && !authorRefineNarrow) {
@@ -1477,9 +1687,9 @@ export default class SearchService {
         const useAuthorRefine = authorRefineNarrow && authorOnly && refine_within?.trim();
 
         const fuzzyMust = useAuthorRefine
-            ? this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 2 })
+            ? this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 2 }, facultyKerberosIds)
             : search_in && search_in.length > 0
-            ? this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 2 }, facultyAuthorIds)
+            ? this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 2 }, facultyAuthorIds, facultyKerberosIds)
             : this._buildStrictBm25Must(query, searchFields, { fuzziness: 2 });
 
         const fallbackQuery = {
@@ -1515,11 +1725,13 @@ export default class SearchService {
             const hits = osResponse.body.hits.hits;
             const total = osResponse.body.hits.total.value;
             const results = await this._hydrateFromMongoDB(hits);
+            await this._applyFacultyDisplayNamesForBasicSearch(results);
+            const related_faculty = await this._extractRelatedFaculty(results);
             const suggestions = await this._getSuggestions(query);
 
             return {
                 results,
-                related_faculty: [],
+                related_faculty,
                 suggestions,
                 fuzzy_fallback: true,
                 facets: this._parseFacets(osResponse.body.aggregations),
@@ -1792,14 +2004,20 @@ export default class SearchService {
         }
 
         let facultyAuthorIds = null;
+        let facultyKerberosIds = null;
         let refineFacultyIds = null;
+        let refineKerberosIds = null;
         let authorRefineNarrow = false;
         if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
             if (refine_within?.trim()) {
-                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(refine_within.trim());
+                const resolved = await this._resolveFacultyScopusIdsForAuthorQuery(refine_within.trim());
+                facultyAuthorIds = resolved.scopusIds;
+                facultyKerberosIds = resolved.kerberosIds;
                 authorRefineNarrow = true;
             } else {
-                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(query);
+                const resolved = await this._resolveFacultyScopusIdsForAuthorQuery(query);
+                facultyAuthorIds = resolved.scopusIds;
+                facultyKerberosIds = resolved.kerberosIds;
             }
         }
 
@@ -1810,7 +2028,8 @@ export default class SearchService {
         // correctly narrows to co-authored papers instead of showing the entire corpus.
         const skipAuthorMustForScoped =
             searchInNorm?.length === 1 && searchInNorm[0] === 'author' && !authorRefineNarrow
-            && (!facultyAuthorIds || facultyAuthorIds.length === 0);
+            && (!facultyAuthorIds || facultyAuthorIds.length === 0)
+            && (!facultyKerberosIds || facultyKerberosIds.length === 0);
 
         // Phase 2: OpenSearch on author's paper IDs — honors search_in like main search (e.g. author = author names only).
         let hits, total;
@@ -1825,17 +2044,17 @@ export default class SearchService {
                     mustBasic = [{ match_all: {} }];
                     if (refine_within) {
                         mustBasic.push(
-                            this._buildConstrainedSearchInClause(refine_within, searchInNorm, {}, refineFacultyIds)
+                            this._buildConstrainedSearchInClause(refine_within, searchInNorm, {}, refineFacultyIds, refineKerberosIds)
                         );
                     }
                 } else if (searchInNorm && searchInNorm.length > 0) {
                     const authorOnly = searchInNorm.length === 1 && searchInNorm[0] === 'author';
                     if (authorRefineNarrow && authorOnly && refine_within?.trim()) {
-                        mustBasic = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, {})];
+                        mustBasic = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, {}, facultyKerberosIds)];
                     } else {
-                        mustBasic = [this._buildConstrainedSearchInClause(query, searchInNorm, {}, facultyAuthorIds)];
+                        mustBasic = [this._buildConstrainedSearchInClause(query, searchInNorm, {}, facultyAuthorIds, facultyKerberosIds)];
                         if (refine_within) {
-                            mustBasic.push(this._buildConstrainedSearchInClause(refine_within, searchInNorm, {}, refineFacultyIds));
+                            mustBasic.push(this._buildConstrainedSearchInClause(refine_within, searchInNorm, {}, refineFacultyIds, refineKerberosIds));
                         }
                     }
                 } else {
@@ -1924,19 +2143,20 @@ export default class SearchService {
                                     refine_within,
                                     searchInNorm,
                                     { fuzziness: 'AUTO' },
-                                    refineFacultyIds
+                                    refineFacultyIds,
+                                    refineKerberosIds
                                 )
                             );
                         }
                     } else if (authorRefineNarrow && authorOnly && refine_within?.trim()) {
-                        mustAdv = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' })];
+                        mustAdv = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds)];
                     } else {
                         mustAdv = [
-                            this._buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO' }, facultyAuthorIds)
+                            this._buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds)
                         ];
                         if (refine_within) {
                             mustAdv.push(
-                                this._buildConstrainedSearchInClause(refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds)
+                                this._buildConstrainedSearchInClause(refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds, refineKerberosIds)
                             );
                         }
                     }
@@ -2122,18 +2342,39 @@ export default class SearchService {
     }
 
     /**
-     * Get co-authors for a specific author (Phase 2 - after reindexing)
+     * Get co-authors for a specific author.
+     * Uses BOTH scopus author_id (nested) and kerberos (top-level) to find all papers
+     * for the given faculty, then aggregates co-authors from those papers.
      */
     async getCoAuthors(authorId) {
+        const Faculty = this.mongoose.model('Faculty');
+        let faculty = await Faculty.findOne({ scopus_id: authorId })
+            .select('email scopus_id')
+            .lean();
+        if (!faculty) {
+            faculty = await Faculty.findOne({ expert_id: authorId })
+                .select('email scopus_id')
+                .lean();
+        }
+
+        const kerberosId = faculty?.email
+            ? faculty.email.split('@')[0].trim().toLowerCase()
+            : null;
+        const allScopusIds = (faculty?.scopus_id || [authorId]).map(String);
+
+        const shouldClauses = [
+            { nested: { path: 'authors', query: { terms: { 'authors.author_id': allScopusIds } } } }
+        ];
+        if (kerberosId) {
+            shouldClauses.push({ term: { kerberos: kerberosId } });
+        }
+
         const result = await this.opensearch.search({
             index: this.indexName,
             body: {
                 size: 0,
                 query: {
-                    nested: {
-                        path: 'authors',
-                        query: { term: { 'authors.author_id': authorId } }
-                    }
+                    bool: { should: shouldClauses, minimum_should_match: 1 }
                 },
                 aggs: {
                     author_papers: {
@@ -2143,7 +2384,7 @@ export default class SearchService {
                                 terms: {
                                     field: 'authors.author_id',
                                     size: 50,
-                                    exclude: authorId
+                                    exclude: allScopusIds
                                 },
                                 aggs: {
                                     author_info: {
@@ -2322,14 +2563,20 @@ export default class SearchService {
         }
 
         let facultyAuthorIds = null;
+        let facultyKerberosIds = null;
         let refineFacultyIds = null;
+        let refineKerberosIds = null;
         let authorRefineNarrow = false;
         if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
             if (refine_within?.trim()) {
-                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(refine_within.trim());
+                const resolved = await this._resolveFacultyScopusIdsForAuthorQuery(refine_within.trim());
+                facultyAuthorIds = resolved.scopusIds;
+                facultyKerberosIds = resolved.kerberosIds;
                 authorRefineNarrow = true;
             } else {
-                facultyAuthorIds = await this._resolveFacultyScopusIdsForAuthorQuery(query);
+                const resolved = await this._resolveFacultyScopusIdsForAuthorQuery(query);
+                facultyAuthorIds = resolved.scopusIds;
+                facultyKerberosIds = resolved.kerberosIds;
             }
         }
 
@@ -2364,7 +2611,9 @@ export default class SearchService {
                 refine_within,
                 facultyAuthorIds,
                 refineFacultyIds,
-                authorRefineNarrow
+                authorRefineNarrow,
+                facultyKerberosIds,
+                refineKerberosIds
             );
             osQuery = patchFacultyAggBody(base);
         } else {
@@ -2379,7 +2628,8 @@ export default class SearchService {
                 searchInNorm,
                 facultyAuthorIds,
                 authorRefineNarrow,
-                refine_within
+                refine_within,
+                facultyKerberosIds
             );
             if (refine_within && !authorRefineNarrow) {
                 const refineSearchFields = this._getSearchFields(searchInNorm)
@@ -2390,7 +2640,8 @@ export default class SearchService {
                             refine_within,
                             searchInNorm,
                             { fuzziness: 'AUTO' },
-                            refineFacultyIds
+                            refineFacultyIds,
+                            refineKerberosIds
                         )
                         : this._buildStrictBm25Must(refine_within, refineSearchFields);
                 const mustArrays = [
@@ -2543,7 +2794,17 @@ export default class SearchService {
             }
         }
 
-        // Merge kerberos-resolved primary faculty (ensures primary faculty always appear)
+        // Merge kerberos-resolved primary faculty (ensures primary faculty always appear).
+        // Build a set of scopus_ids that already contributed to each expert_id's paper_count
+        // so we can avoid double-counting papers that appear in BOTH scopus and kerberos aggs.
+        const expertScopusIds = new Map();
+        for (const author of authorInfos) {
+            const faculty = facultyByScopusId.get(String(author.scopus_author_id));
+            if (!faculty) continue;
+            if (!expertScopusIds.has(faculty.expert_id)) expertScopusIds.set(faculty.expert_id, new Set());
+            expertScopusIds.get(faculty.expert_id).add(String(author.scopus_author_id));
+        }
+
         for (const bucket of kerberosBuckets) {
             const k = String(bucket.key).trim().toLowerCase();
             const faculty = facultyByKerberos.get(k);
@@ -2570,7 +2831,69 @@ export default class SearchService {
             }
         }
 
-        const deptMap = new Map(); // dept_name -> { name, faculty[], facultyScores[] }
+        // MongoDB correction: OpenSearch aggregations count scopus_id and kerberos independently,
+        // so neither alone captures the union. Fetch the matching mongo_ids from OpenSearch,
+        // then count per-faculty using $or scoped to those IDs.
+        if (facultyDedup.size > 0) {
+            try {
+                // Fetch all matching mongo_ids from the same OpenSearch query (lightweight: _source only mongo_id)
+                const idsQuery = { ...osQuery, size: totalDocs, _source: ['mongo_id'], aggs: undefined };
+                delete idsQuery.aggs;
+                const idsResponse = await this.opensearch.search({
+                    index: this.indexName,
+                    body: idsQuery
+                });
+                const mongoIds = idsResponse.body.hits.hits
+                    .map(h => h._source?.mongo_id)
+                    .filter(Boolean);
+
+                if (mongoIds.length > 0) {
+                    const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
+                    const facultyLookup = new Map();
+                    for (const f of [...facultyDocs, ...kerberosFacultyDocs]) {
+                        facultyLookup.set(f.expert_id, f);
+                    }
+
+                    const { ObjectId } = this.mongoose.Types;
+                    const objectIds = mongoIds
+                        .filter(id => ObjectId.isValid(id))
+                        .map(id => new ObjectId(id));
+
+                    await Promise.all([...facultyDedup.values()].map(async (merged) => {
+                        const f = facultyLookup.get(merged.expert_id);
+                        if (!f) return;
+
+                        const kerbId = (f.email || '').split('@')[0].toLowerCase();
+                        const sids = (f.scopus_id || []).map(String);
+
+                        const orClauses = [];
+                        if (kerbId) orClauses.push({ kerberos: kerbId });
+                        if (sids.length > 0) orClauses.push({ 'authors.author_id': { $in: sids } });
+                        if (orClauses.length === 0) return;
+
+                        const count = await ResearchDocument.countDocuments({
+                            _id: { $in: objectIds },
+                            $or: orClauses
+                        });
+                        if (count > merged.paper_count) {
+                            this.logger.info({
+                                faculty: merged.name,
+                                oldCount: merged.paper_count,
+                                newCount: count
+                            }, 'Faculty-for-query: MongoDB union correction applied');
+                            merged.paper_count = count;
+                        }
+                    }));
+                }
+            } catch (correctionErr) {
+                this.logger.warn({
+                    err: correctionErr?.message || String(correctionErr),
+                    stack: correctionErr?.stack
+                }, 'Faculty-for-query: MongoDB correction failed, using aggregation counts');
+            }
+        }
+
+        const deptMap = new Map();
         let includedCount = 0;
 
         for (const [, merged] of facultyDedup) {

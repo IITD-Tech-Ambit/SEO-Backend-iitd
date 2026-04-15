@@ -35,7 +35,9 @@ export async function getDocument(request, reply) {
 }
 
 /**
- * Get documents by author ID
+ * Get documents by author ID.
+ * Uses BOTH kerberos (from Faculty.email prefix) and scopus_id to find all papers
+ * for the given faculty, matching the dual-mapping strategy used everywhere else.
  */
 export async function getDocumentsByAuthor(request, reply) {
     const { authorId } = request.params;
@@ -44,16 +46,41 @@ export async function getDocumentsByAuthor(request, reply) {
 
     try {
         const ResearchDocument = mongoose.model('ResearchMetaDataScopus');
+        const Faculty = mongoose.model('Faculty');
         const skip = (page - 1) * per_page;
 
+        // authorId may be a scopus_id or an expert_id — try both lookups
+        let faculty = await Faculty.findOne({ scopus_id: authorId })
+            .select('email scopus_id')
+            .lean();
+        if (!faculty) {
+            faculty = await Faculty.findOne({ expert_id: authorId })
+                .select('email scopus_id')
+                .lean();
+        }
+
+        const orClauses = [];
+        if (faculty?.email) {
+            const k = faculty.email.split('@')[0].trim().toLowerCase();
+            if (k) orClauses.push({ kerberos: k });
+        }
+        const scopusIds = faculty?.scopus_id?.map(String).filter(Boolean) || [];
+        if (scopusIds.length > 0) {
+            orClauses.push({ 'authors.author_id': { $in: scopusIds } });
+        } else {
+            orClauses.push({ 'authors.author_id': authorId });
+        }
+
+        const filter = orClauses.length > 1 ? { $or: orClauses } : orClauses[0];
+
         const [documents, total] = await Promise.all([
-            ResearchDocument.find({ 'authors.author_id': authorId })
+            ResearchDocument.find(filter)
                 .select('-__v')
                 .sort({ publication_year: -1 })
                 .skip(skip)
                 .limit(per_page)
                 .lean(),
-            ResearchDocument.countDocuments({ 'authors.author_id': authorId })
+            ResearchDocument.countDocuments(filter)
         ]);
 
         return {
