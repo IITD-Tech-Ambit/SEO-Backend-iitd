@@ -1937,12 +1937,11 @@ export default class SearchService {
             this.logger.warn({ err }, 'Redis cache read failed for author-scoped search');
         }
 
-        // Phase 1: Get author's paper OpenSearch IDs from MongoDB
-        // author_id may be Faculty.expert_id, a Scopus id in Faculty.scopus_id[], or raw authors.author_id.
-        // Uses both scopus_id matching (co-authored papers) and kerberos (primary-authored papers).
-        let osIds, authorName;
+        // Phase 1: Resolve author identity and build OpenSearch-native author filter.
+        // Uses the SAME filter methodology as getAllFacultyForQuery aggregations,
+        // ensuring consistent paper counts between People section and author-scoped search.
+        let authorName, totalAuthorPapers, authorFilter;
         try {
-            const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
             const Faculty = this.mongoose.model('Faculty');
 
             const facultyMatch = await Faculty.findOne({
@@ -1953,34 +1952,34 @@ export default class SearchService {
                 ? facultyMatch.scopus_id.map(String)
                 : [author_id];
 
-            // Derive kerberos from faculty email for primary-authored paper discovery
             const kerberosId = facultyMatch?.email
                 ? facultyMatch.email.split('@')[0].toLowerCase()
                 : null;
 
-            const paperFilter = kerberosId
-                ? { $or: [
-                    { 'authors.author_id': { $in: scopusAuthorIds } },
-                    { kerberos: kerberosId }
-                  ] }
-                : { 'authors.author_id': { $in: scopusAuthorIds } };
+            // OpenSearch-native author filter (same data source as aggregations)
+            const authorShouldClauses = [
+                { nested: { path: 'authors', query: { terms: { 'authors.author_id': scopusAuthorIds } } } }
+            ];
+            if (kerberosId) {
+                authorShouldClauses.push({ term: { kerberos: kerberosId } });
+            }
+            authorFilter = { bool: { should: authorShouldClauses, minimum_should_match: 1 } };
 
-            const authorDocs = await ResearchDocument.find(
-                paperFilter,
-                { open_search_id: 1, _id: 0 }
-            ).lean();
-
-            osIds = authorDocs
-                .map(d => d.open_search_id)
-                .filter(Boolean);
+            // Total papers for this author from OpenSearch
+            const countResult = await this.opensearch.search({
+                index: this.indexName,
+                body: { size: 0, query: authorFilter, track_total_hits: true }
+            });
+            totalAuthorPapers = countResult.body.hits.total.value;
 
             this.logger.info({
                 author_id,
-                totalPapers: osIds.length,
-                sampleIds: osIds.slice(0, 3)
-            }, 'Author-scoped search: Phase 1 - fetched paper IDs from MongoDB');
+                totalPapers: totalAuthorPapers,
+                scopusIds: scopusAuthorIds.length,
+                hasKerberos: !!kerberosId
+            }, 'Author-scoped search: Phase 1 - resolved author identity');
 
-            if (osIds.length === 0) {
+            if (totalAuthorPapers === 0) {
                 return {
                     results: [],
                     author: { author_id, name: 'Unknown', total_papers: 0 },
@@ -1992,6 +1991,7 @@ export default class SearchService {
             if (facultyMatch) {
                 authorName = `${facultyMatch.firstName} ${facultyMatch.lastName}`.trim();
             } else {
+                const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
                 const authorNameDoc = await ResearchDocument.findOne(
                     { 'authors.author_id': author_id },
                     { 'authors.$': 1 }
@@ -1999,7 +1999,7 @@ export default class SearchService {
                 authorName = authorNameDoc?.authors?.[0]?.author_name || 'Unknown';
             }
         } catch (err) {
-            this.logger.error({ err, author_id }, 'Author-scoped search: Phase 1 FAILED (MongoDB)');
+            this.logger.error({ err, author_id }, 'Author-scoped search: Phase 1 FAILED');
             throw err;
         }
 
@@ -2031,7 +2031,8 @@ export default class SearchService {
             && (!facultyAuthorIds || facultyAuthorIds.length === 0)
             && (!facultyKerberosIds || facultyKerberosIds.length === 0);
 
-        // Phase 2: OpenSearch on author's paper IDs — honors search_in like main search (e.g. author = author names only).
+        // Phase 2: Build query using the SAME builders as main search + author filter.
+        // This ensures the paper count is consistent with getAllFacultyForQuery (People section).
         let hits, total;
         try {
             const from = (page - 1) * per_page;
@@ -2039,230 +2040,97 @@ export default class SearchService {
             let osQuery;
 
             if (isBasic) {
-                let mustBasic;
+                // Reuse _buildBasicQuery to guarantee identical matching logic
+                const base = this._buildBasicQuery(
+                    query, {}, page, per_page, 'relevance',
+                    searchInNorm, refine_within,
+                    facultyAuthorIds, refineFacultyIds, authorRefineNarrow,
+                    facultyKerberosIds, refineKerberosIds
+                );
+
+                // For author-only search_in where Faculty IDs couldn't be resolved,
+                // fall back to match_all (author name tokens don't match indexed strings).
                 if (skipAuthorMustForScoped) {
-                    mustBasic = [{ match_all: {} }];
+                    base.query.bool.must = [{ match_all: {} }];
                     if (refine_within) {
-                        mustBasic.push(
+                        base.query.bool.must.push(
                             this._buildConstrainedSearchInClause(refine_within, searchInNorm, {}, refineFacultyIds, refineKerberosIds)
                         );
                     }
-                } else if (searchInNorm && searchInNorm.length > 0) {
-                    const authorOnly = searchInNorm.length === 1 && searchInNorm[0] === 'author';
-                    if (authorRefineNarrow && authorOnly && refine_within?.trim()) {
-                        mustBasic = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, {}, facultyKerberosIds)];
-                    } else {
-                        mustBasic = [this._buildConstrainedSearchInClause(query, searchInNorm, {}, facultyAuthorIds, facultyKerberosIds)];
-                        if (refine_within) {
-                            mustBasic.push(this._buildConstrainedSearchInClause(refine_within, searchInNorm, {}, refineFacultyIds, refineKerberosIds));
-                        }
-                    }
-                } else {
-                    let searchFields = this._getSearchFields(null)
-                        .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
-                    const multiMatchConfig = {
-                        type: 'cross_fields',
-                        operator: 'and'
-                    };
-                    mustBasic = [
-                        {
-                            multi_match: {
-                                query: query,
-                                fields: searchFields,
-                                ...multiMatchConfig
-                            }
-                        }
-                    ];
-                    if (refine_within) {
-                        mustBasic.push({
-                            multi_match: {
-                                query: refine_within,
-                                fields: searchFields,
-                                ...multiMatchConfig
-                            }
-                        });
-                    }
                 }
-                osQuery = {
-                    size: per_page,
-                    from,
-                    track_total_hits: true,
-                    _source: ['mongo_id'],
-                    query: {
-                        bool: {
-                            filter: [{ ids: { values: osIds } }],
-                            must: mustBasic
-                        }
-                    },
-                    sort: ['_score']
-                };
+
+                // Scope to this author's papers via OpenSearch-native filter
+                const filterClauses = base.query.bool.filter || [];
+                filterClauses.push(authorFilter);
+                base.query.bool.filter = filterClauses;
+                delete base.aggs;
+                osQuery = base;
             } else {
                 const embedding = await this.embeddingService.embedQuery(query);
-                if (searchInNorm && searchInNorm.length > 0) {
-                    const words = query.trim().split(/\s+/);
-                    const isMultiWord = words.length >= 2;
-                    const authorOnly = searchInNorm.length === 1 && searchInNorm[0] === 'author';
-                    const boostClauses = [];
+                // Reuse _buildHybridQuery to guarantee identical matching logic
+                const base = this._buildHybridQuery(
+                    query, embedding, {}, page, per_page, 'relevance',
+                    searchInNorm, facultyAuthorIds, authorRefineNarrow,
+                    refine_within, facultyKerberosIds
+                );
 
-                    if (isMultiWord && (searchInNorm.includes('title') || searchInNorm.includes('abstract') || (authorRefineNarrow && authorOnly))) {
-                        boostClauses.push({
-                            multi_match: {
-                                query: query,
-                                fields: ['title^5', 'abstract^2'],
-                                type: 'phrase',
-                                slop: 2,
-                                boost: this.searchConfig.phraseBoost
-                            }
-                        });
-                    }
-                    if (searchInNorm.includes('subject_area')) {
-                        boostClauses.push({
-                            match: { subject_area: { query: query, boost: 2.0 } }
-                        });
-                    }
-                    if (searchInNorm.includes('field')) {
-                        boostClauses.push({
-                            match: { field_associated: { query: query, boost: 1.5 } }
-                        });
-                    }
-                    boostClauses.push({
-                        knn: {
-                            embedding: {
-                                vector: embedding,
-                                k: 100
-                            }
-                        }
-                    });
-
-                    let mustAdv;
-                    if (skipAuthorMustForScoped) {
-                        mustAdv = [{ match_all: {} }];
+                if (skipAuthorMustForScoped) {
+                    const mustArray = base.query?.bool?.must
+                        || base.query?.script_score?.query?.bool?.must
+                        || base.query?.function_score?.query?.bool?.must;
+                    if (mustArray) {
+                        mustArray.splice(0, mustArray.length, { match_all: {} });
                         if (refine_within) {
-                            mustAdv.push(
+                            mustArray.push(
                                 this._buildConstrainedSearchInClause(
-                                    refine_within,
-                                    searchInNorm,
+                                    refine_within, searchInNorm,
                                     { fuzziness: 'AUTO' },
-                                    refineFacultyIds,
-                                    refineKerberosIds
+                                    refineFacultyIds, refineKerberosIds
                                 )
                             );
                         }
-                    } else if (authorRefineNarrow && authorOnly && refine_within?.trim()) {
-                        mustAdv = [this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds)];
-                    } else {
-                        mustAdv = [
-                            this._buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds)
-                        ];
-                        if (refine_within) {
-                            mustAdv.push(
-                                this._buildConstrainedSearchInClause(refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds, refineKerberosIds)
-                            );
-                        }
                     }
-
-                    osQuery = {
-                        size: per_page,
-                        from,
-                        track_total_hits: true,
-                        _source: ['mongo_id'],
-                        query: {
-                            bool: {
-                                filter: [{ ids: { values: osIds } }],
-                                must: mustAdv,
-                                should: boostClauses
-                            }
-                        },
-                        sort: ['_score']
-                    };
-                } else {
-                    let searchFields = this._getSearchFields(null)
-                        .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
-                    const words = query.trim().split(/\s+/);
-                    const isMultiWord = words.length >= 2;
-
-                    const boostClauses = [];
-
-                    if (isMultiWord) {
-                        boostClauses.push({
-                            multi_match: {
-                                query: query,
-                                fields: ['title^5', 'abstract^2'],
-                                type: 'phrase',
-                                slop: 2,
-                                boost: this.searchConfig.phraseBoost
-                            }
-                        });
-                    }
-
-                    boostClauses.push({
-                        match: {
-                            subject_area: {
-                                query: query,
-                                boost: 2.0
-                            }
-                        }
-                    });
-
-                    boostClauses.push({
-                        match: {
-                            field_associated: {
-                                query: query,
-                                boost: 1.5
-                            }
-                        }
-                    });
-
-                    boostClauses.push({
-                        knn: {
-                            embedding: {
-                                vector: embedding,
-                                k: 100
-                            }
-                        }
-                    });
-
-                    const buildAuthorScopedMatch = (q) => {
-                        const w = q.trim().split(/\s+/);
-                        const isMulti = w.length >= 2;
-                        const minMatch = isMulti ? (w.length === 2 ? '2' : '2<75%') : '1';
-                        return {
-                            multi_match: {
-                                query: q,
-                                fields: searchFields,
-                                type: 'best_fields',
-                                tie_breaker: 0.3,
-                                fuzziness: 'AUTO',
-                                minimum_should_match: minMatch
-                            }
-                        };
-                    };
-                    const mustClauses = [
-                        buildAuthorScopedMatch(query),
-                        ...(refine_within ? [buildAuthorScopedMatch(refine_within)] : [])
-                    ];
-
-                    osQuery = {
-                        size: per_page,
-                        from,
-                        track_total_hits: true,
-                        _source: ['mongo_id'],
-                        query: {
-                            bool: {
-                                filter: [{ ids: { values: osIds } }],
-                                must: mustClauses,
-                                should: boostClauses
-                            }
-                        },
-                        sort: ['_score']
-                    };
                 }
+
+                // Handle refine_within for non-author-refine-narrow cases
+                if (refine_within && !authorRefineNarrow) {
+                    const refineSearchFields = this._getSearchFields(searchInNorm)
+                        .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+                    const refineClause =
+                        searchInNorm && searchInNorm.length > 0
+                            ? this._buildConstrainedSearchInClause(
+                                refine_within, searchInNorm,
+                                { fuzziness: 'AUTO' },
+                                refineFacultyIds, refineKerberosIds
+                            )
+                            : this._buildStrictBm25Must(refine_within, refineSearchFields);
+                    const mustArrays = [
+                        base.query?.bool?.must,
+                        base.query?.script_score?.query?.bool?.must,
+                        base.query?.function_score?.query?.bool?.must
+                    ].filter(Boolean);
+                    if (mustArrays.length) mustArrays[0].push(refineClause);
+                }
+
+                // Scope to this author's papers via OpenSearch-native filter
+                const filterTargets = [
+                    base.query?.bool?.filter,
+                    base.query?.script_score?.query?.bool?.filter,
+                    base.query?.function_score?.query?.bool?.filter
+                ].filter(Boolean);
+                for (const filterArr of filterTargets) {
+                    if (Array.isArray(filterArr)) filterArr.push(authorFilter);
+                }
+
+                delete base.aggs;
+                delete base.min_score;
+                osQuery = base;
             }
 
             this.logger.info({
                 author_id,
                 query,
-                osIdsCount: osIds.length,
+                totalAuthorPapers,
                 mode: isBasic ? 'basic' : 'advanced',
                 refine_within: !!refine_within,
                 search_in: searchInNorm
@@ -2309,7 +2177,7 @@ export default class SearchService {
             author: {
                 name: authorName,
                 author_id,
-                total_papers: osIds.length
+                total_papers: totalAuthorPapers
             },
             pagination: {
                 page,
@@ -2334,7 +2202,7 @@ export default class SearchService {
             author_id,
             authorName,
             query,
-            totalPapers: osIds.length,
+            totalPapers: totalAuthorPapers,
             matchedResults: total
         }, 'Author-scoped search complete');
 
