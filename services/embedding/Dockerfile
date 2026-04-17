@@ -19,7 +19,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements first for caching
 COPY requirements.txt .
 
-# Install Python dependencies
+# Install CPU-only PyTorch first (default PyPI torch is often CUDA-enabled, ~1-2GB+;
+# CPU wheel is much smaller and matches typical USE_GPU=false deployments).
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# Remaining deps (transformers will not pull a second torch if already satisfied)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
