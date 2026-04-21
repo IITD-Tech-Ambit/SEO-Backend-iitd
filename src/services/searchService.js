@@ -52,6 +52,166 @@ export default class SearchService {
                 normalized: 0.15  // For normalized 0-1 scale scores
             }
         };
+
+        // In-process cache for the full IITD Faculty scopus_id roster.
+        // Scopus ids on co-authors outside this set must never match the query,
+        // otherwise searching a non-IITD surname (e.g. "dhruv") surfaces a paper
+        // just because a non-affiliated co-author happens to be named that.
+        this._iitdScopusIdsCache = {
+            value: null,
+            loadedAt: 0,
+            ttlMs: 10 * 60 * 1000, // 10 minutes
+            inflight: null
+        };
+    }
+
+    /**
+     * Return the full list of IIT Delhi Faculty Scopus author ids.
+     * Cached in-memory for {@link _iitdScopusIdsCache.ttlMs} and additionally persisted
+     * to Redis for cross-process reuse. Safe under concurrent calls (de-duped via `inflight`).
+     *
+     * Returns [] only if Mongo returns nothing (fail-open would reintroduce the bug).
+     */
+    async _getAllFacultyScopusIds() {
+        const now = Date.now();
+        const cache = this._iitdScopusIdsCache;
+        if (cache.value && now - cache.loadedAt < cache.ttlMs) {
+            return cache.value;
+        }
+        if (cache.inflight) return cache.inflight;
+
+        const redisKey = 'iitd_faculty:scopus_ids:v1';
+        cache.inflight = (async () => {
+            try {
+                try {
+                    const cached = await this.redis.get(redisKey);
+                    if (cached) {
+                        const parsed = JSON.parse(cached);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            cache.value = parsed;
+                            cache.loadedAt = now;
+                            return parsed;
+                        }
+                    }
+                } catch (err) {
+                    this.logger.warn({ err: err?.message }, 'Redis read failed for iitd_faculty:scopus_ids');
+                }
+
+                const Faculty = this.mongoose.model('Faculty');
+                const rows = await Faculty.find(
+                    { scopus_id: { $exists: true, $ne: [] } },
+                    { scopus_id: 1, _id: 0 }
+                ).lean();
+                const ids = new Set();
+                for (const row of rows) {
+                    for (const sid of row.scopus_id || []) {
+                        const trimmed = sid == null ? '' : String(sid).trim();
+                        if (trimmed) ids.add(trimmed);
+                    }
+                }
+                const list = [...ids];
+                cache.value = list;
+                cache.loadedAt = Date.now();
+                try {
+                    await this.redis.setex(redisKey, 600, JSON.stringify(list));
+                } catch (err) {
+                    this.logger.warn({ err: err?.message }, 'Redis write failed for iitd_faculty:scopus_ids');
+                }
+                this.logger.info({ count: list.length }, 'Loaded IITD Faculty scopus_id roster');
+                return list;
+            } finally {
+                cache.inflight = null;
+            }
+        })();
+        return cache.inflight;
+    }
+
+    /**
+     * Synchronous accessor for the cached IITD Faculty Scopus roster.
+     * Returns `null` if the cache has not yet been warmed for the current request.
+     * Callers that build OpenSearch queries synchronously rely on this — the public
+     * entry points (search/authorScopedSearch/getAllFacultyForQuery/_bm25PreCheck)
+     * await {@link _getAllFacultyScopusIds} before invoking any query builder.
+     */
+    _currentIITDScopusIds() {
+        return this._iitdScopusIdsCache.value;
+    }
+
+    /**
+     * Build a nested author match clause restricted to IITD-affiliated authors.
+     * Co-author names whose scopus_id is not in the Faculty roster cannot contribute to matches.
+     *
+     * @param {string} query - free text
+     * @param {object} [opts] - { fuzziness, boost, extraAuthorScopusIds }
+     *   - fuzziness: pass 'AUTO' / 2 for advanced/fuzzy paths; omit for strict basic.
+     *   - boost: numeric boost for ranking.
+     *   - extraAuthorScopusIds: additional allowed scopus ids (e.g. anchor author in scoped search);
+     *     useful so picked authors always pass the roster gate even if they're off-roster.
+     */
+    /**
+     * Nested author match clause WITHOUT the IITD roster filter. Intended only for author-scoped
+     * searches where an anchor `authorFilter` (single IITD faculty) already restricts the
+     * candidate paper set. Must never be used for generic search, or non-IITD co-author names
+     * will surface in results.
+     */
+    _buildNonGatedAuthorMatchClause(query, { fuzziness } = {}) {
+        const terms = (query || '').trim().split(/\s+/).filter(Boolean);
+        if (!terms.length) return null;
+        const b = this.searchConfig.fieldBoosts;
+        const fuzz = fuzziness != null ? { fuzziness } : {};
+        return {
+            nested: {
+                path: 'authors',
+                score_mode: 'max',
+                query: {
+                    bool: {
+                        must: terms.map((term) => ({
+                            bool: {
+                                should: [
+                                    { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...fuzz } } },
+                                    { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...fuzz } } }
+                                ],
+                                minimum_should_match: 1
+                            }
+                        }))
+                    }
+                }
+            }
+        };
+    }
+
+    _buildIITDAuthorMatchClause(query, { fuzziness, boost, extraAuthorScopusIds = [], iitdScopusIds = null } = {}) {
+        const terms = (query || '').trim().split(/\s+/).filter(Boolean);
+        const roster = iitdScopusIds || this._currentIITDScopusIds();
+        if (!terms.length || !roster || roster.length === 0) return null;
+        const allowed = extraAuthorScopusIds?.length
+            ? [...new Set([...roster, ...extraAuthorScopusIds.map(String)])]
+            : roster;
+        const b = this.searchConfig.fieldBoosts;
+        const fuzz = fuzziness != null ? { fuzziness } : {};
+        const termShould = (term) => ({
+            bool: {
+                should: [
+                    { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...fuzz } } },
+                    { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...fuzz } } }
+                ],
+                minimum_should_match: 1
+            }
+        });
+        const nested = {
+            nested: {
+                path: 'authors',
+                score_mode: 'max',
+                query: {
+                    bool: {
+                        must: terms.map(termShould),
+                        filter: [{ terms: { 'authors.author_id': allowed } }]
+                    }
+                }
+            }
+        };
+        if (boost != null) nested.nested.boost = boost;
+        return nested;
     }
 
     /**
@@ -216,14 +376,22 @@ export default class SearchService {
 
     /**
      * Get optimized search fields with boosting
-     * 
+     *
      * Boost rationale:
      * - title^4: Highest - query terms in title = strong match
      * - title.exact^5: Exact title match = very strong
      * - subject_area^3: Field matches = domain relevance
-     * - author_names^2: Author search common use case
      * - field_associated^2.5: Department relevance
-     * Note: abstract removed - semantic search via embeddings handles this
+     *
+     * IMPORTANT: flat `author_names` / `author_name_variants` are intentionally
+     * EXCLUDED here. Those fields contain every co-author on a paper, including
+     * authors whose Scopus id is not in our Faculty roster. Matching on them leaks
+     * non-IITD authors into results (e.g. typing "dhruv" would match a non-IITD
+     * co-author). All author-name matching is routed through the nested
+     * `authors` field restricted to IITD Faculty scopus ids via
+     * {@link _buildIITDAuthorMatchClause} / {@link _buildConstrainedSearchInClause}.
+     *
+     * Note: abstract removed from explicit listing - semantic search via embeddings handles this
      */
     _getSearchFields(searchIn = null) {
         const b = this.searchConfig.fieldBoosts;
@@ -240,9 +408,6 @@ export default class SearchService {
             `abstract.standard^${b.abstract * 0.8}`,
             `subject_area^${b.subjectArea}`,
             `subject_area.ngram^${b.subjectAreaNgram}`,
-            `author_names^${b.authorName}`,
-            `author_names.ngram^${b.authorNameNgram}`,
-            `author_names.autocomplete^${b.authorName * 0.5}`,
             `field_associated^${b.fieldAssociated}`,
             `field_associated.ngram^${b.fieldAssociatedNgram}`
         ];
@@ -252,6 +417,9 @@ export default class SearchService {
         }
 
         // Field-specific search with optimized boosts
+        // `author` is intentionally an empty list here — the caller routes author-only
+        // search_in through _buildConstrainedSearchInClause which uses the nested
+        // authors path with an IITD Faculty scopus_id filter.
         const fieldMapping = {
             title: [
                 `title^${b.title}`,
@@ -263,13 +431,7 @@ export default class SearchService {
                 `abstract^${b.abstract * 1.5}`,
                 `abstract.standard^${b.abstract}`
             ],
-            author: [
-                `author_names^${b.authorName * 1.5}`,
-                `author_names.ngram^${b.authorNameNgram}`,
-                `author_names.autocomplete^${b.authorName * 0.5}`,
-                `author_name_variants^${b.authorVariants}`,
-                `author_name_variants.ngram^${b.authorVariantsNgram}`
-            ],
+            author: [],
             subject_area: [
                 `subject_area^${b.subjectArea * 1.5}`,
                 `subject_area.ngram^${b.subjectAreaNgram}`
@@ -414,8 +576,15 @@ export default class SearchService {
         }
         const fuzz = matchOpts.fuzziness != null ? { fuzziness: matchOpts.fuzziness } : {};
         const b = this.searchConfig.fieldBoosts;
+        const iitdScopusIds = this._currentIITDScopusIds();
+        // `authorScoped` is set by authorScopedSearch where an `authorFilter` already restricts
+        // results to a single IITD faculty's papers. Within that paper set it's valid to match
+        // free-text queries against non-IITD co-authors (e.g. Basu × "lund" where Lund is not IITD).
+        // In generic search (`authorScoped=false`) we must never match non-IITD co-authors.
+        const authorScoped = !!matchOpts.authorScoped;
 
-        // Author-only: Mongo-resolved Faculty.scopus_id + kerberos → terms; else nested authors only.
+        // Author-only: Mongo-resolved Faculty.scopus_id + kerberos → terms; else nested authors
+        // restricted to the IITD Faculty roster (never match non-affiliated co-authors).
         if (searchIn.length === 1 && searchIn[0] === 'author') {
             if ((facultyAuthorIds && facultyAuthorIds.length > 0) || (facultyKerberosIds && facultyKerberosIds.length > 0)) {
                 const should = [];
@@ -437,23 +606,33 @@ export default class SearchService {
                     bool: { should, minimum_should_match: 1 }
                 };
             }
+            // Faculty resolver returned nothing — fall back to a fuzzy nested author-name match.
+            // Outside an author-scoped context we HARD-FILTER candidates to authors whose
+            // scopus_id is in the IITD Faculty roster so non-affiliated co-authors
+            // (e.g. "Dhruv, V.K.") cannot cause matches.
+            const nestedBool = {
+                must: terms.map((term) => ({
+                    bool: {
+                        should: [
+                            { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...fuzz } } },
+                            { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...fuzz } } }
+                        ],
+                        minimum_should_match: 1
+                    }
+                }))
+            };
+            if (!authorScoped) {
+                if (!iitdScopusIds || iitdScopusIds.length === 0) {
+                    this.logger.warn({ query }, 'IITD scopus roster unavailable — returning no author matches to avoid leaking non-affiliated co-authors');
+                    return { match_none: {} };
+                }
+                nestedBool.filter = [{ terms: { 'authors.author_id': iitdScopusIds } }];
+            }
             return {
                 nested: {
                     path: 'authors',
                     score_mode: 'max',
-                    query: {
-                        bool: {
-                            must: terms.map((term) => ({
-                                bool: {
-                                    should: [
-                                        { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...fuzz } } },
-                                        { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...fuzz } } }
-                                    ],
-                                    minimum_should_match: 1
-                                }
-                            }))
-                        }
-                    }
+                    query: { bool: nestedBool }
                 }
             };
         }
@@ -478,30 +657,36 @@ export default class SearchService {
             }
         });
 
-        const authorTerm = (term) => ({
-            bool: {
-                should: [
-                    { match: { author_names: { query: term, boost: b.authorName * 1.5, ...fuzz } } },
-                    { match: { author_name_variants: { query: term, boost: b.authorVariants, ...fuzz } } },
-                    {
-                        nested: {
-                            path: 'authors',
-                            score_mode: 'max',
-                            query: {
-                                bool: {
-                                    should: [
-                                        { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...fuzz } } },
-                                        { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...fuzz } } }
-                                    ],
-                                    minimum_should_match: 1
-                                }
-                            }
-                        }
+        // Author term matches ONLY authors whose scopus_id is in the IITD Faculty roster unless
+        // authorScoped (anchor faculty already gates results). Flat author_names / author_name_variants
+        // are deliberately NOT used because they contain every co-author on a paper, including
+        // non-affiliated authors.
+        const authorTerm = (term) => {
+            const nestedBool = {
+                must: [{
+                    bool: {
+                        should: [
+                            { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...fuzz } } },
+                            { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...fuzz } } }
+                        ],
+                        minimum_should_match: 1
                     }
-                ],
-                minimum_should_match: 1
+                }]
+            };
+            if (!authorScoped) {
+                if (!iitdScopusIds || iitdScopusIds.length === 0) {
+                    return { match_none: {} };
+                }
+                nestedBool.filter = [{ terms: { 'authors.author_id': iitdScopusIds } }];
             }
-        });
+            return {
+                nested: {
+                    path: 'authors',
+                    score_mode: 'max',
+                    query: { bool: nestedBool }
+                }
+            };
+        };
 
         const subjectTerm = (term) => ({
             match: {
@@ -657,7 +842,7 @@ export default class SearchService {
      * Fuzziness is reserved for the fallback path only.
      * Supports refine_within for search-on-search narrowing
      */
-    _buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null, facultyAuthorIds = null, refineFacultyIds = null, authorRefineNarrow = false, facultyKerberosIds = null, refineKerberosIds = null) {
+    _buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null, facultyAuthorIds = null, refineFacultyIds = null, authorRefineNarrow = false, facultyKerberosIds = null, refineKerberosIds = null, { authorScoped = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         
@@ -671,20 +856,41 @@ export default class SearchService {
         const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
 
         // Primary MUST: constrained per search_in (author: Mongo ids or nested), else legacy cross_fields
+        // In default (all-fields) mode, we OR the text match with a nested author match.
+        // - Generic search: nested author match is IITD-Faculty restricted so "dhruv" (non-IITD)
+        //   cannot match; "basu" (IITD) still matches via the roster gate.
+        // - Author-scoped search (anchor author filter already in place): nested author match is
+        //   NOT IITD-restricted — within a single IITD faculty's corpus it's valid to match
+        //   non-IITD co-author names like "lund".
+        const wrapWithAuthorOr = (baseClause, q) => {
+            const authorClause = authorScoped
+                ? this._buildNonGatedAuthorMatchClause(q)
+                : this._buildIITDAuthorMatchClause(q);
+            if (!authorClause) return baseClause;
+            return {
+                bool: {
+                    should: [baseClause, authorClause],
+                    minimum_should_match: 1
+                }
+            };
+        };
+
+        const csiOpts = { authorScoped };
+
         let mustClauses;
         if (searchIn && searchIn.length > 0) {
             if (authorRefineNarrow && authorOnly && refineWithin?.trim()) {
-                mustClauses = [this._buildAuthorRefineNarrowMust(query, refineWithin, facultyAuthorIds, {}, facultyKerberosIds)];
+                mustClauses = [this._buildAuthorRefineNarrowMust(query, refineWithin, facultyAuthorIds, csiOpts, facultyKerberosIds)];
             } else {
-                mustClauses = [this._buildConstrainedSearchInClause(query, searchIn, {}, facultyAuthorIds, facultyKerberosIds)];
+                mustClauses = [this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds)];
                 if (refineWithin) {
-                    mustClauses.push(this._buildConstrainedSearchInClause(refineWithin, searchIn, {}, refineFacultyIds, refineKerberosIds));
+                    mustClauses.push(this._buildConstrainedSearchInClause(refineWithin, searchIn, csiOpts, refineFacultyIds, refineKerberosIds));
                 }
             }
         } else {
-            mustClauses = [this._buildCrossFieldsWithVariants(query, searchFields)];
+            mustClauses = [wrapWithAuthorOr(this._buildCrossFieldsWithVariants(query, searchFields), query)];
             if (refineWithin) {
-                mustClauses.push(this._buildCrossFieldsWithVariants(refineWithin, searchFields));
+                mustClauses.push(wrapWithAuthorOr(this._buildCrossFieldsWithVariants(refineWithin, searchFields), refineWithin));
             }
         }
 
@@ -753,7 +959,7 @@ export default class SearchService {
      * - Citation Count (desc)
      * - Publication Year (desc)
      */
-         _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null) {
+         _buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         // For advanced search fuzzy matching, n-gram fields generate too much noise. Filter them out.
@@ -814,13 +1020,23 @@ export default class SearchService {
             }
         });
 
+        const csiOpts = { fuzziness: 'AUTO', authorScoped };
         let bm25Must;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds);
+            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
         } else if (searchIn && searchIn.length > 0) {
-            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
+            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
-            bm25Must = this._buildStrictBm25Must(query, searchFields);
+            // Default (all-fields) advanced: OR the text BM25 match with a nested author match.
+            // Generic search uses the IITD-Faculty roster gate; author-scoped search drops the
+            // gate because the anchor filter already restricts candidates to a single IITD faculty.
+            const textBm25 = this._buildStrictBm25Must(query, searchFields);
+            const authorClause = authorScoped
+                ? this._buildNonGatedAuthorMatchClause(query, { fuzziness: 'AUTO' })
+                : this._buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
+            bm25Must = authorClause
+                ? { bool: { should: [textBm25, authorClause], minimum_should_match: 1 } }
+                : textBm25;
         }
 
         // Build sort clause
@@ -853,7 +1069,7 @@ export default class SearchService {
      * Build impact-weighted query using function_score
      * Combines relevance with citation count and recency
      */
-    _buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null) {
+    _buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         const searchFields = this._getSearchFields(searchIn)
@@ -888,13 +1104,20 @@ export default class SearchService {
             });
         }
 
+        const csiOpts = { fuzziness: 'AUTO', authorScoped };
         let bm25Must;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds);
+            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
         } else if (searchIn && searchIn.length > 0) {
-            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
+            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
-            bm25Must = this._buildStrictBm25Must(query, searchFields);
+            const textBm25 = this._buildStrictBm25Must(query, searchFields);
+            const authorClause = authorScoped
+                ? this._buildNonGatedAuthorMatchClause(query, { fuzziness: 'AUTO' })
+                : this._buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
+            bm25Must = authorClause
+                ? { bool: { should: [textBm25, authorClause], minimum_should_match: 1 } }
+                : textBm25;
         }
 
         return {
@@ -947,7 +1170,7 @@ export default class SearchService {
      * Build normalized hybrid query using script_score
      * Normalizes BM25 and k-NN scores for fair combination
      */
-    _buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null) {
+    _buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
         const searchFields = this._getSearchFields(searchIn)
@@ -960,13 +1183,20 @@ export default class SearchService {
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
 
+        const csiOpts = { fuzziness: 'AUTO', authorScoped };
         let bm25Must;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds);
+            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
         } else if (searchIn && searchIn.length > 0) {
-            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
+            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
-            bm25Must = this._buildStrictBm25Must(query, searchFields);
+            const textBm25 = this._buildStrictBm25Must(query, searchFields);
+            const authorClause = authorScoped
+                ? this._buildNonGatedAuthorMatchClause(query, { fuzziness: 'AUTO' })
+                : this._buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
+            bm25Must = authorClause
+                ? { bool: { should: [textBm25, authorClause], minimum_should_match: 1 } }
+                : textBm25;
         }
 
         // Boost-only clauses
@@ -1373,6 +1603,10 @@ export default class SearchService {
      */
     async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null }) {
         const searchInNorm = this._normalizeSearchIn(search_in);
+        // Warm the IITD Faculty scopus_id roster before building OpenSearch queries.
+        // All author-name matching is constrained to this roster to prevent leaking
+        // non-affiliated co-authors (e.g. a paper matching because of "Dhruv, V.K.").
+        await this._getAllFacultyScopusIds();
 
         // Pre-resolve kerberos for author_id filter so _buildFilters can create a union clause
         if (filters?.author_id && !filters._authorKerberos) {
@@ -1626,6 +1860,24 @@ export default class SearchService {
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
         const useAuthorRefine = authorRefineNarrow && authorOnly && refine_within?.trim();
 
+        // Default-all-fields pre-check must mirror the MUST clause used by _buildHybridQuery /
+        // _buildImpactQuery / _buildNormalizedHybridQuery: text match OR IITD-restricted author
+        // match. Flat `author_names` is intentionally excluded so pre-check cannot declare a
+        // non-IITD co-author name "matched" and trigger a full search that then returns zero.
+        const defaultPreCheckQuery = () => {
+            const textMatch = {
+                multi_match: {
+                    query: query,
+                    fields: ['title', 'abstract', 'subject_area', 'field_associated'],
+                    fuzziness: 'AUTO'
+                }
+            };
+            const iitdAuthor = this._buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
+            return iitdAuthor
+                ? { bool: { should: [textMatch, iitdAuthor], minimum_should_match: 1 } }
+                : textMatch;
+        };
+
         const bm25CheckQuery = useAuthorRefine
             ? {
                 size: 0,
@@ -1638,13 +1890,7 @@ export default class SearchService {
             }
             : {
                 size: 0,
-                query: {
-                    multi_match: {
-                        query: query,
-                        fields: ['title', 'abstract', 'author_names', 'subject_area', 'field_associated'],
-                        fuzziness: 'AUTO'
-                    }
-                }
+                query: defaultPreCheckQuery()
             };
 
         const response = await this.opensearch.search({
@@ -1686,11 +1932,18 @@ export default class SearchService {
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
         const useAuthorRefine = authorRefineNarrow && authorOnly && refine_within?.trim();
 
-        const fuzzyMust = useAuthorRefine
-            ? this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 2 }, facultyKerberosIds)
-            : search_in && search_in.length > 0
-            ? this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 2 }, facultyAuthorIds, facultyKerberosIds)
-            : this._buildStrictBm25Must(query, searchFields, { fuzziness: 2 });
+        let fuzzyMust;
+        if (useAuthorRefine) {
+            fuzzyMust = this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 2 }, facultyKerberosIds);
+        } else if (search_in && search_in.length > 0) {
+            fuzzyMust = this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 2 }, facultyAuthorIds, facultyKerberosIds);
+        } else {
+            const textBm25 = this._buildStrictBm25Must(query, searchFields, { fuzziness: 2 });
+            const iitdAuthor = this._buildIITDAuthorMatchClause(query, { fuzziness: 2 });
+            fuzzyMust = iitdAuthor
+                ? { bool: { should: [textBm25, iitdAuthor], minimum_should_match: 1 } }
+                : textBm25;
+        }
 
         const fallbackQuery = {
             size: per_page,
@@ -1920,6 +2173,8 @@ export default class SearchService {
      */
     async authorScopedSearch({ query, author_id, page = 1, per_page = 20, mode = 'advanced', refine_within = null, search_in = null }) {
         const searchInNorm = this._normalizeSearchIn(search_in);
+        // Warm IITD Faculty scopus_id roster so nested author matching can filter non-affiliated co-authors.
+        await this._getAllFacultyScopusIds();
         // Cache key
         const queryHash = crypto.createHash('sha256')
             .update(JSON.stringify({ query, author_id, page, per_page, mode, refine_within, search_in: searchInNorm }))
@@ -2021,15 +2276,12 @@ export default class SearchService {
             }
         }
 
-        // When search_in is author-only AND we couldn't resolve Faculty Scopus IDs for the query,
-        // text-matching the query against author name fields inside the clicked author's corpus
-        // often yields 0 hits (name tokens ≠ indexed strings).  Fall back to match_all only then.
-        // When Scopus IDs ARE resolved, use them as an exact terms filter so clicking a coworker
-        // correctly narrows to co-authored papers instead of showing the entire corpus.
-        const skipAuthorMustForScoped =
-            searchInNorm?.length === 1 && searchInNorm[0] === 'author' && !authorRefineNarrow
-            && (!facultyAuthorIds || facultyAuthorIds.length === 0)
-            && (!facultyKerberosIds || facultyKerberosIds.length === 0);
+        // Author-scoped search honours the user's query even when `search_in=['author']`
+        // and the text doesn't resolve to any IITD Faculty — `_buildConstrainedSearchInClause`
+        // already falls back to a nested `authors.author_name` match, which narrows the clicked
+        // author's corpus to co-authored papers (e.g. Basu × Lund). Previously this path
+        // overrode the must-clause with `match_all`, which silently returned the author's full
+        // lifetime corpus and masked zero-result queries.
 
         // Phase 2: Build query using the SAME builders as main search + author filter.
         // This ensures the paper count is consistent with getAllFacultyForQuery (People section).
@@ -2040,24 +2292,19 @@ export default class SearchService {
             let osQuery;
 
             if (isBasic) {
-                // Reuse _buildBasicQuery to guarantee identical matching logic
+                // Reuse _buildBasicQuery to guarantee identical matching logic.
+                // `authorScoped: true` tells the inner clause builders to skip the
+                // IITD Faculty roster gate on author-name matching: the anchor
+                // `authorFilter` applied below already restricts results to a single
+                // IITD faculty's papers, so a free-text query like "lund" is allowed
+                // to match non-IITD co-authors within that anchor's corpus.
                 const base = this._buildBasicQuery(
                     query, {}, page, per_page, 'relevance',
                     searchInNorm, refine_within,
                     facultyAuthorIds, refineFacultyIds, authorRefineNarrow,
-                    facultyKerberosIds, refineKerberosIds
+                    facultyKerberosIds, refineKerberosIds,
+                    { authorScoped: true }
                 );
-
-                // For author-only search_in where Faculty IDs couldn't be resolved,
-                // fall back to match_all (author name tokens don't match indexed strings).
-                if (skipAuthorMustForScoped) {
-                    base.query.bool.must = [{ match_all: {} }];
-                    if (refine_within) {
-                        base.query.bool.must.push(
-                            this._buildConstrainedSearchInClause(refine_within, searchInNorm, {}, refineFacultyIds, refineKerberosIds)
-                        );
-                    }
-                }
 
                 // Scope to this author's papers via OpenSearch-native filter
                 const filterClauses = base.query.bool.filter || [];
@@ -2071,26 +2318,9 @@ export default class SearchService {
                 const base = this._buildHybridQuery(
                     query, embedding, {}, page, per_page, 'relevance',
                     searchInNorm, facultyAuthorIds, authorRefineNarrow,
-                    refine_within, facultyKerberosIds
+                    refine_within, facultyKerberosIds,
+                    { authorScoped: true }
                 );
-
-                if (skipAuthorMustForScoped) {
-                    const mustArray = base.query?.bool?.must
-                        || base.query?.script_score?.query?.bool?.must
-                        || base.query?.function_score?.query?.bool?.must;
-                    if (mustArray) {
-                        mustArray.splice(0, mustArray.length, { match_all: {} });
-                        if (refine_within) {
-                            mustArray.push(
-                                this._buildConstrainedSearchInClause(
-                                    refine_within, searchInNorm,
-                                    { fuzziness: 'AUTO' },
-                                    refineFacultyIds, refineKerberosIds
-                                )
-                            );
-                        }
-                    }
-                }
 
                 // Handle refine_within for non-author-refine-narrow cases
                 if (refine_within && !authorRefineNarrow) {
@@ -2100,7 +2330,7 @@ export default class SearchService {
                         searchInNorm && searchInNorm.length > 0
                             ? this._buildConstrainedSearchInClause(
                                 refine_within, searchInNorm,
-                                { fuzziness: 'AUTO' },
+                                { fuzziness: 'AUTO', authorScoped: true },
                                 refineFacultyIds, refineKerberosIds
                             )
                             : this._buildStrictBm25Must(refine_within, refineSearchFields);
@@ -2407,6 +2637,7 @@ export default class SearchService {
      */
     async getAllFacultyForQuery(query, mode = 'advanced', search_in = null, refine_within = null) {
         const searchInNorm = this._normalizeSearchIn(search_in);
+        await this._getAllFacultyScopusIds();
         // Cache key
         const queryHash = crypto.createHash('sha256')
             .update(JSON.stringify({
