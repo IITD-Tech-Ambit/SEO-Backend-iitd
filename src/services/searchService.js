@@ -393,8 +393,36 @@ export default class SearchService {
      *
      * Note: abstract removed from explicit listing - semantic search via embeddings handles this
      */
-    _getSearchFields(searchIn = null) {
+    _getSearchFields(searchIn = null, { literalMatch = false } = {}) {
         const b = this.searchConfig.fieldBoosts;
+
+        // `literalMatch` (basic mode): match only the surface-form tokens. We drop
+        // the `english`-analyzed `title`/`abstract` root fields (Porter stemmer
+        // collapses e.g. communication↔community↔communicate), along with the
+        // character-level `.ngram`/`.autocomplete` sub-fields. The remaining
+        // `.standard` sub-fields use OpenSearch's `standard` analyzer which keeps
+        // tokens distinct. Morphological recall (e.g. "communications" → find
+        // "communication") is brought back by a low-weight SHOULD boost added
+        // explicitly in _buildBasicQuery.
+        if (literalMatch) {
+            const literalDefaultFields = [
+                `title.standard^${b.title * 1.25}`,
+                `abstract.standard^${b.abstract}`,
+                `subject_area^${b.subjectArea}`,
+                `field_associated^${b.fieldAssociated}`
+            ];
+            if (!searchIn || searchIn.length === 0) {
+                return literalDefaultFields;
+            }
+            const literalMapping = {
+                title: [`title.standard^${b.title * 1.5}`],
+                abstract: [`abstract.standard^${b.abstract * 1.5}`],
+                author: [],
+                subject_area: [`subject_area^${b.subjectArea * 1.5}`],
+                field: [`field_associated^${b.fieldAssociated * 1.5}`]
+            };
+            return searchIn.flatMap(f => literalMapping[f] || []).filter(Boolean);
+        }
 
         // Default comprehensive search with optimized weights
         // Includes .standard sub-fields for un-stemmed fuzzy matching
@@ -582,6 +610,11 @@ export default class SearchService {
         // free-text queries against non-IITD co-authors (e.g. Basu × "lund" where Lund is not IITD).
         // In generic search (`authorScoped=false`) we must never match non-IITD co-authors.
         const authorScoped = !!matchOpts.authorScoped;
+        // `literalMatch` (basic mode): match only against the un-stemmed `.standard`
+        // sub-fields so stem collisions like communication↔community cannot promote
+        // unrelated papers. Advanced mode leaves this false so Porter stems still
+        // supply morphological recall (e.g. "communicate" → "communication").
+        const literalMatch = !!matchOpts.literalMatch;
 
         // Author-only: Mongo-resolved Faculty.scopus_id + kerberos → terms; else nested authors
         // restricted to the IITD Faculty roster (never match non-affiliated co-authors).
@@ -637,25 +670,35 @@ export default class SearchService {
             };
         }
 
-        const titleTerm = (term) => ({
-            bool: {
-                should: [
-                    { match: { title: { query: term, boost: b.title, ...fuzz } } },
-                    { match: { 'title.standard': { query: term, boost: b.title * 0.8, ...fuzz } } }
-                ],
-                minimum_should_match: 1
+        const titleTerm = (term) => {
+            if (literalMatch) {
+                return { match: { 'title.standard': { query: term, boost: b.title * 1.5, ...fuzz } } };
             }
-        });
+            return {
+                bool: {
+                    should: [
+                        { match: { title: { query: term, boost: b.title, ...fuzz } } },
+                        { match: { 'title.standard': { query: term, boost: b.title * 0.8, ...fuzz } } }
+                    ],
+                    minimum_should_match: 1
+                }
+            };
+        };
 
-        const abstractTerm = (term) => ({
-            bool: {
-                should: [
-                    { match: { abstract: { query: term, boost: b.abstract * 1.2, ...fuzz } } },
-                    { match: { 'abstract.standard': { query: term, boost: b.abstract, ...fuzz } } }
-                ],
-                minimum_should_match: 1
+        const abstractTerm = (term) => {
+            if (literalMatch) {
+                return { match: { 'abstract.standard': { query: term, boost: b.abstract * 1.5, ...fuzz } } };
             }
-        });
+            return {
+                bool: {
+                    should: [
+                        { match: { abstract: { query: term, boost: b.abstract * 1.2, ...fuzz } } },
+                        { match: { 'abstract.standard': { query: term, boost: b.abstract, ...fuzz } } }
+                    ],
+                    minimum_should_match: 1
+                }
+            };
+        };
 
         // Author term matches ONLY authors whose scopus_id is in the IITD Faculty roster unless
         // authorScoped (anchor faculty already gates results). Flat author_names / author_name_variants
@@ -845,10 +888,12 @@ export default class SearchService {
     _buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null, facultyAuthorIds = null, refineFacultyIds = null, authorRefineNarrow = false, facultyKerberosIds = null, refineKerberosIds = null, { authorScoped = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this._buildFilters(filters);
-        
-        // Remove ngram and autocomplete fields to enforce exact word matching
-        const searchFields = this._getSearchFields(searchIn)
-            .filter(f => !f.includes('.ngram') && !f.includes('.autocomplete'));
+
+        // Literal-match fields: only un-stemmed `.standard` sub-fields for title /
+        // abstract. Prevents Porter-stem collisions (communication↔community).
+        // See _getSearchFields for details; morphological recall is restored
+        // below via a low-weight SHOULD boost on the stemmed root fields.
+        const searchFields = this._getSearchFields(searchIn, { literalMatch: true });
 
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
@@ -875,7 +920,7 @@ export default class SearchService {
             };
         };
 
-        const csiOpts = { authorScoped };
+        const csiOpts = { authorScoped, literalMatch: true };
 
         let mustClauses;
         if (searchIn && searchIn.length > 0) {
@@ -903,10 +948,27 @@ export default class SearchService {
             boostClauses.push({
                 multi_match: {
                     query: query,
-                    fields: ['title^5', 'abstract^2'],
+                    fields: ['title.standard^5', 'abstract.standard^2'],
                     type: 'phrase',
                     slop: 2,
                     boost: this.searchConfig.phraseBoost
+                }
+            });
+        }
+
+        // Soft morphology boost: touches the stemmed root fields at a very low
+        // weight so e.g. "communication" ranking is nudged by "communications"
+        // papers, but a stemmed-only match (like "community") can never beat a
+        // literal match. This is a RANKING signal only — the MUST clause above
+        // still filters on un-stemmed `.standard` sub-fields.
+        if (phraseOnTitleAbstract) {
+            boostClauses.push({
+                multi_match: {
+                    query: query,
+                    fields: ['title^1', 'abstract^0.5'],
+                    type: 'best_fields',
+                    tie_breaker: 0.3,
+                    boost: 0.3
                 }
             });
         }

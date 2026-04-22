@@ -203,6 +203,10 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 						"min_shingle_size": 2,
 						"max_shingle_size": 3,
 						"output_unigrams": true
+					},
+					"minimal_english_stemmer": {
+						"type": "stemmer",
+						"language": "minimal_english"
 					}
 				},
 				"analyzer": {
@@ -220,6 +224,11 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 						"type": "custom",
 						"tokenizer": "standard",
 						"filter": ["lowercase", "shingle_filter"]
+					},
+					"minimal_english_analyzer": {
+						"type": "custom",
+						"tokenizer": "standard",
+						"filter": ["lowercase", "minimal_english_stemmer"]
 					}
 				}
 			}
@@ -238,7 +247,7 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 					"exact": {"type": "keyword"},
 					"standard": {
 						"type": "text",
-						"analyzer": "standard"
+						"analyzer": "minimal_english_analyzer"
 					},
 					"autocomplete": {
 						"type": "text",
@@ -258,7 +267,7 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 				"fields": {
 					"standard": {
 						"type": "text",
-						"analyzer": "standard"
+						"analyzer": "minimal_english_analyzer"
 					},
 					"shingles": {
 						"type": "text",

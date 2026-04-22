@@ -814,6 +814,255 @@ test('N', 'edge: numeric query is handled', async () => {
     assert.equal(status, 200);
 });
 
+// ────────────────── Group O: Basic literal-match (no stemmer leaks) ──────────────────
+// Regression guard for the "Communication → community papers" bug fix. Basic
+// mode must use the un-stemmed `.standard` sub-fields of title/abstract so
+// Porter-stem collisions (communication↔community, inform↔information) cannot
+// promote off-topic results.
+
+const LITERAL_CASES = [
+    {
+        name: 'Communication',
+        query: 'Communication',
+        anchor: /communicat/i,
+        mustNotBeSoleMatchFor: /communit/i,
+    },
+    {
+        name: 'information',
+        query: 'information',
+        anchor: /informati/i,          // information, informational, informative
+        mustNotBeSoleMatchFor: /inform(?!ati)/i,   // inform / informed / informal
+    },
+    {
+        name: 'optimize',
+        query: 'optimize',
+        anchor: /optim(?:iz|is)/i,    // optimize/optimise/optimization
+        mustNotBeSoleMatchFor: /optim(?:al|um)\b/i, // optimal/optimum as pure collisions
+    },
+    {
+        name: 'production',
+        query: 'production',
+        anchor: /produc(?:tion|ed|ing|tive)/i,
+        mustNotBeSoleMatchFor: /\bproduct(?:s)?\b/i,
+    },
+];
+
+for (const tc of LITERAL_CASES) {
+    test('O', `basic literal-only: "${tc.name}" — top-20 all contain anchor token`, async () => {
+        const { body } = await api('/api/v1/search', {
+            query: tc.query, mode: 'basic', page: 1, per_page: 20,
+        });
+        assert.ok(body.pagination.total > 0, `precondition: "${tc.name}" must have results`);
+        const offenders = body.results.filter((r) => {
+            const text = ((r.title || '') + ' ' + (r.abstract || '')).toLowerCase();
+            const hasAnchor = tc.anchor.test(text);
+            const hasCollision = tc.mustNotBeSoleMatchFor.test(text);
+            return !hasAnchor && hasCollision;
+        });
+        assert.equal(offenders.length, 0,
+            `basic "${tc.name}" leaked ${offenders.length} stem-collision result(s): ` +
+            offenders.slice(0, 3).map((o) => short(o.title)).join(' | '));
+    });
+}
+
+test('O', 'basic literal-only: "Communication" — zero community-only papers in top-30', async () => {
+    const LIT = /communicat/i;
+    const COM = /communit/i;
+    const { body } = await api('/api/v1/search', {
+        query: 'Communication', mode: 'basic', page: 1, per_page: 30,
+    });
+    const communityOnly = body.results.filter((r) => {
+        const text = ((r.title || '') + ' ' + (r.abstract || '')).toLowerCase();
+        return !LIT.test(text) && COM.test(text);
+    });
+    assert.equal(communityOnly.length, 0,
+        `community-only leak: ${communityOnly.map((r) => short(r.title)).join(' | ')}`);
+});
+
+test('O', 'basic literal-only: advanced mode still uses stemmer (control — total differs from basic)', async () => {
+    const basic = await api('/api/v1/search', { query: 'Communication', mode: 'basic',    page: 1, per_page: 5 });
+    const adv   = await api('/api/v1/search', { query: 'Communication', mode: 'advanced', page: 1, per_page: 5 });
+    // Advanced retains stemming (recall-oriented), so it should return strictly
+    // more results than basic. If they ever converge, the basic gate regressed.
+    assert.ok(adv.body.pagination.total > basic.body.pagination.total,
+        `advanced (${adv.body.pagination.total}) should exceed basic (${basic.body.pagination.total})`);
+});
+
+test('O', 'basic literal-only: soft morphology — "communications" retrieves communication papers', async () => {
+    // Plural ↔ singular must still cross-retrieve via the low-boost stemmed
+    // SHOULD clause in _buildBasicQuery; otherwise strictness is too harsh.
+    const { body } = await api('/api/v1/search', {
+        query: 'communications', mode: 'basic', page: 1, per_page: 10,
+    });
+    assert.ok(body.pagination.total > 0);
+    const anyLiteralCommunication = body.results.some((r) =>
+        /\bcommunication\b/i.test((r.title || '') + ' ' + (r.abstract || '')));
+    assert.ok(anyLiteralCommunication,
+        'expected at least one "communication" (singular) paper retrievable from a "communications" query');
+});
+
+test('O', 'basic literal-only: author search still works (nested path, not affected by stemmer change)', async () => {
+    const { body } = await api('/api/v1/search', {
+        query: 'basu', mode: 'basic', page: 1, per_page: 5, search_in: ['author'],
+    });
+    assert.ok(body.pagination.total > 0, 'Basu author search must still return papers');
+});
+
+test('O', 'basic literal-only: search_in=["title"] matches literally', async () => {
+    const { body } = await api('/api/v1/search', {
+        query: 'Communication', mode: 'basic', page: 1, per_page: 10, search_in: ['title'],
+    });
+    for (const r of body.results) {
+        assert.ok(/communicat/i.test(r.title || ''),
+            `title-search result "${short(r.title)}" missing literal "communicat*"`);
+    }
+});
+
+test('O', 'basic literal-only: search_in=["abstract"] matches literally', async () => {
+    const { body } = await api('/api/v1/search', {
+        query: 'Communication', mode: 'basic', page: 1, per_page: 10, search_in: ['abstract'],
+    });
+    for (const r of body.results) {
+        assert.ok(/communicat/i.test(r.abstract || ''),
+            `abstract-search result "${short(r.title)}" missing literal "communicat*"`);
+    }
+});
+
+test('O', 'basic literal-only: refine_within keeps literal semantics', async () => {
+    // Base "Communication", refined within "wireless" — every result must contain
+    // both literal "communicat*" and literal "wireless" in title or abstract.
+    const { body } = await api('/api/v1/search', {
+        query: 'Communication', refine_within: 'wireless',
+        mode: 'basic', page: 1, per_page: 10,
+    });
+    assert.ok(body.pagination.total > 0);
+    for (const r of body.results) {
+        const text = ((r.title || '') + ' ' + (r.abstract || '')).toLowerCase();
+        assert.ok(/communicat/i.test(text), `refine: missing communicat in "${short(r.title)}"`);
+        assert.ok(/wireless/i.test(text),   `refine: missing wireless in "${short(r.title)}"`);
+    }
+});
+
+test('O', 'basic literal-only: multi-word "wireless communication" phrase boost still literal', async () => {
+    const { body } = await api('/api/v1/search', {
+        query: 'wireless communication', mode: 'basic', page: 1, per_page: 10,
+    });
+    assert.ok(body.pagination.total > 0);
+    for (const r of body.results) {
+        const text = ((r.title || '') + ' ' + (r.abstract || '')).toLowerCase();
+        assert.ok(/communicat/i.test(text) && /wireless/i.test(text),
+            `multi-word basic leak: "${short(r.title)}"`);
+    }
+});
+
+test('O', 'basic literal-only: author-scope Basu + "lund" still bypasses gate and narrows', async () => {
+    const { body } = await api('/api/v1/search/author-scope', {
+        query: 'lund', author_id: AUTHOR_ID,
+        page: 1, per_page: 5, mode: 'basic', search_in: ['author'],
+    });
+    assert.ok(body.pagination.total >= 1,
+        'author-scope bypass must still allow non-IITD co-author matches');
+    assert.ok(body.pagination.total < body.author.total_papers,
+        'and must narrow vs full corpus');
+});
+
+test('O', 'basic literal-only: quantitative — "Communication" top-20 precision ≥ 95%', async () => {
+    const { body } = await api('/api/v1/search', {
+        query: 'Communication', mode: 'basic', page: 1, per_page: 20,
+    });
+    const literal = body.results.filter((r) =>
+        /communicat/i.test(((r.title || '') + ' ' + (r.abstract || '')))).length;
+    const precision = literal / body.results.length;
+    assert.ok(precision >= 0.95,
+        `precision regressed to ${(precision * 100).toFixed(1)}% — expected >= 95%`);
+});
+
+// ────────────────── Group P: minimal_english morphology (plurals collapse, stems don't) ──────────────────
+// Basic mode now indexes title/abstract through a custom `minimal_english_analyzer`
+// on the `.standard` sub-field. This analyzer collapses regular plurals
+// (communication↔communications, battery↔batteries) but preserves distinct
+// roots (communication vs community, inform vs information, optimize vs optimal).
+
+async function basicQueryIds(query) {
+    const { body } = await api('/api/v1/search', { query, mode: 'basic', page: 1, per_page: 50 });
+    return {
+        total: body.pagination.total,
+        ids: new Set(body.results.map((r) => r.scopus_id || r.mongo_id || r._id)),
+        titles: body.results.map((r) => (r.title || '').trim()),
+    };
+}
+
+const COLLAPSE_PAIRS = [
+    ['communication', 'communications'],
+    ['battery', 'batteries'],
+    ['optimization', 'optimizations'],
+    ['network', 'networks'],
+];
+
+for (const [a, b] of COLLAPSE_PAIRS) {
+    test('P', `morphology: "${a}" ≡ "${b}" — same totals and near-identical top-50`, async () => {
+        const left  = await basicQueryIds(a);
+        const right = await basicQueryIds(b);
+        assert.equal(left.total, right.total,
+            `totals must match: ${a}=${left.total} vs ${b}=${right.total}`);
+        const overlap = [...left.ids].filter((id) => right.ids.has(id)).length;
+        assert.ok(overlap >= 48,
+            `top-50 overlap ${overlap}/50 — expected >= 48`);
+    });
+}
+
+const DISTINCT_PAIRS = [
+    ['communication', 'community'],
+    ['inform',        'information'],
+    ['optimize',      'optimal'],
+    ['production',    'product'],
+];
+
+for (const [a, b] of DISTINCT_PAIRS) {
+    test('P', `morphology: "${a}" ≠ "${b}" — different result sets (no over-stemming)`, async () => {
+        const left  = await basicQueryIds(a);
+        const right = await basicQueryIds(b);
+        // Require their totals are not lock-stepped AND top-50 overlap is small.
+        assert.notEqual(left.total, right.total,
+            `distinct roots must not have identical totals: ${a}=${left.total} vs ${b}=${right.total}`);
+        const overlap = [...left.ids].filter((id) => right.ids.has(id)).length;
+        assert.ok(overlap < 25,
+            `top-50 overlap ${overlap}/50 is too high for "${a}" vs "${b}"`);
+    });
+}
+
+test('P', 'morphology: "Communication" basic — still 0 community-only papers in top-30', async () => {
+    const { body } = await api('/api/v1/search', {
+        query: 'Communication', mode: 'basic', page: 1, per_page: 30,
+    });
+    const leaks = body.results.filter((r) => {
+        const t = ((r.title || '') + ' ' + (r.abstract || '')).toLowerCase();
+        return !/communicat/i.test(t) && /communit/i.test(t);
+    });
+    assert.equal(leaks.length, 0,
+        `leaks: ${leaks.slice(0, 3).map((r) => short(r.title)).join(' | ')}`);
+});
+
+test('P', 'morphology: plural-only title retrievable via singular query (soft morphology recall)', async () => {
+    // "MIMO communications" or similar plural-form titles must now appear in
+    // the result set for query="communication" — the whole point of upgrading
+    // the analyzer. We confirm by asking for both and checking intersection.
+    const sing = await api('/api/v1/search', { query: 'communication',  mode: 'basic', page: 1, per_page: 100 });
+    const plur = await api('/api/v1/search', { query: 'communications', mode: 'basic', page: 1, per_page: 100 });
+    const singIds = new Set(sing.body.results.map((r) => r.scopus_id || r.mongo_id || r._id));
+    const plurIds = new Set(plur.body.results.map((r) => r.scopus_id || r.mongo_id || r._id));
+    const overlap = [...plurIds].filter((id) => singIds.has(id)).length;
+    assert.ok(overlap >= 95,
+        `expected almost-complete overlap, got ${overlap}/100`);
+});
+
+test('P', 'morphology: advanced mode unchanged — uses Porter via `title` root, recalls much more', async () => {
+    const basic    = await api('/api/v1/search', { query: 'Communication', mode: 'basic',    page: 1, per_page: 5 });
+    const advanced = await api('/api/v1/search', { query: 'Communication', mode: 'advanced', page: 1, per_page: 5 });
+    assert.ok(advanced.body.pagination.total > basic.body.pagination.total * 1.5,
+        `advanced (${advanced.body.pagination.total}) should vastly exceed basic (${basic.body.pagination.total})`);
+});
+
 // ────────────────── Main ──────────────────
 
 async function main() {
