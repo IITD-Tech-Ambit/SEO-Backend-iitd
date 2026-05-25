@@ -54,6 +54,7 @@ class HealthResponse(BaseModel):
     is_loaded: bool
     specter_model: str
     device: str
+    in_flight: int = 0
 
 
 # ── Global state ─────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ class ModelState:
     tokenizer = None
     device = None
     pool = None  # NodePool instance when running in gateway mode
+    in_flight = 0  # standalone: concurrent /embed requests (informational; consumed by gateways)
 
 
 state = ModelState()
@@ -193,35 +195,38 @@ async def embed(request: EmbedRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     start_time = time.time()
+    state.in_flight += 1
+    try:
+        inputs = state.tokenizer(
+            request.texts,
+            padding=True,
+            truncation=True,
+            max_length=config.MAX_LENGTH,
+            return_tensors="pt",
+        )
 
-    inputs = state.tokenizer(
-        request.texts,
-        padding=True,
-        truncation=True,
-        max_length=config.MAX_LENGTH,
-        return_tensors="pt",
-    )
+        if state.device in ("cuda", "mps"):
+            inputs = {k: v.to(state.device) for k, v in inputs.items()}
 
-    if state.device in ("cuda", "mps"):
-        inputs = {k: v.to(state.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = state.model(**inputs)
 
-    with torch.no_grad():
-        outputs = state.model(**inputs)
+        embeddings = outputs.last_hidden_state.mean(dim=1)
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        embeddings_list = embeddings.cpu().tolist()
 
-    embeddings = outputs.last_hidden_state.mean(dim=1)
-    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-    embeddings_list = embeddings.cpu().tolist()
+        took_ms = (time.time() - start_time) * 1000
 
-    took_ms = (time.time() - start_time) * 1000
+        if config.LOG_LEVEL == "DEBUG":
+            logger.debug(f"Generated {len(embeddings_list)} embeddings in {took_ms:.1f}ms")
 
-    if config.LOG_LEVEL == "DEBUG":
-        logger.debug(f"Generated {len(embeddings_list)} embeddings in {took_ms:.1f}ms")
-
-    return EmbedResponse(
-        embeddings=embeddings_list,
-        took_ms=took_ms,
-        dimension=embeddings.shape[1],
-    )
+        return EmbedResponse(
+            embeddings=embeddings_list,
+            took_ms=took_ms,
+            dimension=embeddings.shape[1],
+        )
+    finally:
+        state.in_flight = max(0, state.in_flight - 1)
 
 
 @app.get("/health")
@@ -243,6 +248,7 @@ async def health():
         is_loaded=state.model is not None,
         specter_model=config.MODEL_NAME,
         device=state.device or "unknown",
+        in_flight=state.in_flight,
     )
 
 
