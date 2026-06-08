@@ -372,10 +372,10 @@ class NodePool:
                 )
 
         merged_embeddings: List[List[float]] = []
-        dimension = 768
+        dimension = config.EMBED_DIM
         for result in final_results:
             merged_embeddings.extend(result["embeddings"])
-            dimension = result.get("dimension", 768)
+            dimension = result.get("dimension", config.EMBED_DIM)
 
         took_ms = (time.time() - start_time) * 1000
         return {

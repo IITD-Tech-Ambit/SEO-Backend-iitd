@@ -1,5 +1,5 @@
 """
-SPECTER2 Embedding Service
+Embedding Service (BGE-M3)
 FastAPI service for generating scientific document embeddings.
 
 Runs in two modes depending on the BACKEND_NODES env var:
@@ -44,7 +44,7 @@ class EmbedRequest(BaseModel):
 class EmbedResponse(BaseModel):
     embeddings: List[List[float]]
     took_ms: float
-    dimension: int = 768
+    dimension: int = config.EMBED_DIM
 
 
 class HealthResponse(BaseModel):
@@ -155,8 +155,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="SPECTER2 Embedding Service",
-    description="Generate scientific document embeddings using SPECTER2",
+    title="Embedding Service (BGE-M3)",
+    description="Generate scientific document embeddings using BGE-M3",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -169,7 +169,7 @@ async def embed(request: EmbedRequest):
     """
     Generate embeddings for a batch of texts.
 
-    For best results, format input as: "title [SEP] abstract"
+    For best results, format document input as: "title\nabstract"
 
     In gateway mode the batch is scattered across all healthy GPU nodes
     and the results are merged back in order.
@@ -211,8 +211,18 @@ async def embed(request: EmbedRequest):
         with torch.no_grad():
             outputs = state.model(**inputs)
 
-        embeddings = outputs.last_hidden_state.mean(dim=1)
-        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        if config.POOLING == "mean":
+            # Mean pooling over non-padding tokens.
+            mask = inputs["attention_mask"].unsqueeze(-1).type_as(outputs.last_hidden_state)
+            summed = (outputs.last_hidden_state * mask).sum(dim=1)
+            counts = mask.sum(dim=1).clamp(min=1e-9)
+            embeddings = summed / counts
+        else:
+            # CLS pooling — BGE-M3 dense embedding uses the [CLS] token.
+            embeddings = outputs.last_hidden_state[:, 0]
+
+        if config.NORMALIZE:
+            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
         embeddings_list = embeddings.cpu().tolist()
 
         took_ms = (time.time() - start_time) * 1000
@@ -257,7 +267,7 @@ async def root():
     """Root endpoint with service info"""
     mode = "gateway" if state.pool is not None else "standalone"
     return {
-        "service": "SPECTER2 Embedding Service",
+        "service": "Embedding Service (BGE-M3)",
         "version": "1.0.0",
         "mode": mode,
         "endpoints": {

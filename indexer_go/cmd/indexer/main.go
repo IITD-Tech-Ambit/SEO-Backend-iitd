@@ -22,13 +22,17 @@ Commands:
   run             Run both phases sequentially
   status          Show cache status
   clean           Clear cache
-  create-index    Create OpenSearch index
+  create-index    Create single concrete OpenSearch index (no alias)
+  delete-index    Remove alias + legacy indices; prepare for one concrete index
   reindex-full    Full reindex: delete index, recreate, clear IDs, run both phases
+  index-authors   Build the authors_suggest index from MongoDB faculties (typeahead)
 
 Options:
   --limit N       Limit number of documents (0 = all, default: 0)
   --reindex-all   Reindex all documents (ignore existing IDs)
   --workers N     Number of parallel workers (0 = use config, default: 0)
+  --recreate      (index-authors) Delete + recreate the authors_suggest index first
+  --no-paper-count (index-authors) Skip deriving paper_count from research_documents
   --quiet         Minimal output
 
 Examples:
@@ -48,10 +52,12 @@ func main() {
 
 	// Parse flags manually for simplicity
 	var (
-		limit      int
-		reindexAll bool
-		workers    int
-		quiet      bool
+		limit        int
+		reindexAll   bool
+		workers      int
+		quiet        bool
+		recreate     bool
+		noPaperCount bool
 	)
 
 	for i := 2; i < len(os.Args); i++ {
@@ -68,6 +74,10 @@ func main() {
 				fmt.Sscanf(os.Args[i+1], "%d", &workers)
 				i++
 			}
+		case "--recreate":
+			recreate = true
+		case "--no-paper-count":
+			noPaperCount = true
 		case "--quiet":
 			quiet = true
 		case "--help", "-h":
@@ -133,8 +143,14 @@ func main() {
 	case "create-index":
 		createIndex(ctx, cfg, quiet)
 
+	case "delete-index":
+		deleteIndex(ctx, cfg, quiet)
+
 	case "reindex-full":
 		runReindexFull(ctx, cfg, quiet)
+
+	case "index-authors":
+		runIndexAuthors(ctx, cfg, recreate, !noPaperCount, quiet)
 
 	case "help", "--help", "-h":
 		fmt.Print(usage)
@@ -218,6 +234,21 @@ func cleanCache(cfg *config.Config, quiet bool) {
 	}
 }
 
+// Delete index: Needs OpenSearch only (removes alias + research_documents*)
+func deleteIndex(ctx context.Context, cfg *config.Config, quiet bool) {
+	idx, err := indexer.NewForPhase2(cfg, quiet)
+	if err != nil {
+		fmt.Printf("Error: Failed to initialize: %v\n", err)
+		os.Exit(1)
+	}
+	defer idx.Close()
+
+	if err := idx.DeleteIndex(ctx); err != nil {
+		fmt.Printf("Error: Failed to delete index: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 // Create index: Needs OpenSearch only
 func createIndex(ctx context.Context, cfg *config.Config, quiet bool) {
 	idx, err := indexer.NewForPhase2(cfg, quiet)
@@ -229,6 +260,21 @@ func createIndex(ctx context.Context, cfg *config.Config, quiet bool) {
 
 	if err := idx.CreateIndex(ctx); err != nil {
 		fmt.Printf("Error: Failed to create index: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// Index authors: Needs MongoDB + OpenSearch (Phase2-style deps)
+func runIndexAuthors(ctx context.Context, cfg *config.Config, recreate, withPaperCounts, quiet bool) {
+	idx, err := indexer.NewForPhase2(cfg, quiet)
+	if err != nil {
+		fmt.Printf("Error: Failed to initialize: %v\n", err)
+		os.Exit(1)
+	}
+	defer idx.Close()
+
+	if err := idx.IndexAuthors(ctx, recreate, withPaperCounts); err != nil {
+		fmt.Printf("Error: Index authors failed: %v\n", err)
 		os.Exit(1)
 	}
 }

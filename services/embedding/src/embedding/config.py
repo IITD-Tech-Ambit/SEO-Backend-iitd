@@ -5,9 +5,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Model configuration
-MODEL_NAME = os.getenv("MODEL_NAME", "allenai/specter2_base")
-MAX_LENGTH = int(os.getenv("MAX_LENGTH", "512"))
+MODEL_NAME = os.getenv("MODEL_NAME", "BAAI/bge-m3")
+MAX_LENGTH = int(os.getenv("MAX_LENGTH", "1024"))
 MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "600"))
+
+# Output embedding dimensionality (BGE-M3 dense = 1024; SPECTER2 = 768).
+# Reported in responses/health and used as the fallback when a backend omits it.
+EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))
+
+# Pooling strategy for the token embeddings: "cls" (BGE-M3 dense) or "mean".
+POOLING = os.getenv("POOLING", "cls").lower()
+
+# L2-normalize the output embeddings (required for cosine / inner-product kNN).
+NORMALIZE = os.getenv("NORMALIZE", "true").lower() != "false"
 
 # Server configuration
 HOST = os.getenv("HOST", "0.0.0.0")

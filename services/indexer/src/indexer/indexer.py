@@ -74,8 +74,8 @@ class BatchIndexer:
         
     def build_embedding_text(self, doc: Dict[str, Any]) -> str:
         """
-        Build text for embedding using SPECTER2 format
-        Format: title [SEP] abstract
+        Build text for embedding (BGE-M3).
+        Format: title\nabstract  (no separator token / instruction needed)
         """
         title = doc.get("title", "").strip()
         abstract = doc.get("abstract", "").strip()
@@ -85,7 +85,7 @@ class BatchIndexer:
         if not abstract:
             return title
             
-        return f"{title} [SEP] {abstract}"
+        return f"{title}\n{abstract}"
     
     def get_embeddings(self, texts: List[str]) -> Optional[List[List[float]]]:
         """
@@ -428,7 +428,7 @@ def create_index_if_not_exists(os_client: OpenSearch):
                 },
                 "embedding": {
                     "type": "knn_vector",
-                    "dimension": 768,
+                    "dimension": 1024,
                     "method": {
                         "name": "hnsw",
                         "space_type": "cosinesimil",

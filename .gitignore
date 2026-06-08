@@ -66,6 +66,7 @@ indexer_go/bin/
 !requirements*.txt
 .ipynb_checkpoints/
 .cache/
+.cache1/
 
 # ==================== DOCKER ====================
 # Local Docker volume data

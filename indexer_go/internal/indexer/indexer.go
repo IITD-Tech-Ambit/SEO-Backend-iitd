@@ -727,9 +727,9 @@ func (idx *Indexer) ClearMongoIDs(ctx context.Context) error {
 func (idx *Indexer) ReindexFull(ctx context.Context) error {
 	idx.cli.StartPhase("Full Reindex")
 
-	idx.cli.Step(1, 5, "Deleting existing index")
+	idx.cli.Step(1, 5, "Deleting legacy aliases and indices (single index target)")
 	if err := idx.DeleteIndex(ctx); err != nil {
-		idx.cli.Warning(fmt.Sprintf("Delete failed (may not exist): %v", err))
+		return fmt.Errorf("delete existing index/alias: %w", err)
 	}
 
 	idx.cli.Step(2, 5, "Creating new index")
