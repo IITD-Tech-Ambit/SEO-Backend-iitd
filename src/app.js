@@ -136,6 +136,11 @@ async function start() {
 
         fastify.log.info(`Search API running on http://${config.host}:${config.port}`);
 
+        // PM2 cluster mode with wait_ready expects this signal or it will kill/restart workers.
+        if (typeof process.send === 'function') {
+            process.send('ready');
+        }
+
     } catch (error) {
         fastify.log.error(error);
         process.exit(1);

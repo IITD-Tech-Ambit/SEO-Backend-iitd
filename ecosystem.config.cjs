@@ -2,7 +2,8 @@ module.exports = {
   apps: [{
     name: 'search-api',
     script: 'src/app.js',
-    instances: 'max',
+    // One worker per CPU; set INSTANCES=1 in env to force a single process.
+    instances: process.env.INSTANCES || 'max',
     exec_mode: 'cluster',
     max_memory_restart: '500M',
     env: {
@@ -15,6 +16,7 @@ module.exports = {
     log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
     listen_timeout: 10000,
     kill_timeout: 5000,
+    // Requires process.send('ready') after fastify.listen — see src/app.js
     wait_ready: true,
     autorestart: true,
     max_restarts: 10,
