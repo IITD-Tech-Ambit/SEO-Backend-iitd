@@ -78,3 +78,4 @@ embedding_cache/
 *.tgz
 .eslintcache
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+/indexer_go/.cache1
