@@ -8,6 +8,8 @@ Runs in two modes depending on the BACKEND_NODES env var:
               and merges the results.
 """
 
+import asyncio
+import os
 import time
 import logging
 import warnings
@@ -65,6 +67,9 @@ class ModelState:
     device = None
     pool = None  # NodePool instance when running in gateway mode
     in_flight = 0  # standalone: concurrent /embed requests (informational; consumed by gateways)
+    # One forward pass at a time: torch already parallelizes a single pass across
+    # all CPU cores, so concurrent passes would just thrash caches and RAM.
+    infer_lock = asyncio.Lock()
 
 
 state = ModelState()
@@ -96,6 +101,67 @@ def get_device():
         return "cpu"
 
 
+# ── Model loading (offline-first) ────────────────────────────────────
+
+def _load_model_and_tokenizer():
+    """
+    Load tokenizer + model, preferring the local HuggingFace cache.
+
+    HF_OFFLINE=true  -> never touch the network (fail if not cached).
+    HF_OFFLINE=false -> normal behavior (network allowed).
+    HF_OFFLINE=auto  -> try local cache first; fall back to download only
+                        if the model is not cached.
+    """
+    from transformers import AutoTokenizer, AutoModel
+
+    if config.HF_OFFLINE == "true":
+        attempts = [True]
+    elif config.HF_OFFLINE == "false":
+        attempts = [False]
+    else:  # auto
+        attempts = [True, False]
+
+    last_err = None
+    for local_only in attempts:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                config.MODEL_NAME, local_files_only=local_only
+            )
+            model = AutoModel.from_pretrained(
+                config.MODEL_NAME, local_files_only=local_only
+            )
+            logger.info(
+                "Loaded %s from %s",
+                config.MODEL_NAME,
+                "local cache (no network)" if local_only else "hub (downloaded)",
+            )
+            return tokenizer, model
+        except OSError as e:
+            last_err = e
+            if local_only and len(attempts) > 1:
+                logger.info("Model not in local cache, falling back to download...")
+                continue
+            raise
+    raise last_err
+
+
+def _tune_cpu_threads():
+    """Pin torch thread pools for single-model CPU serving."""
+    threads = config.TORCH_THREADS if config.TORCH_THREADS > 0 else (os.cpu_count() or 1)
+    try:
+        torch.set_num_threads(threads)
+        torch.set_num_interop_threads(max(1, config.TORCH_INTEROP_THREADS))
+    except RuntimeError:
+        # set_num_interop_threads can only be called once / before parallel work
+        pass
+    logger.info(
+        "Torch threads: intra-op=%d, inter-op=%d (cpus=%s)",
+        torch.get_num_threads(),
+        config.TORCH_INTEROP_THREADS,
+        os.cpu_count(),
+    )
+
+
 # ── Lifespan ─────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -115,15 +181,16 @@ async def lifespan(app: FastAPI):
     else:
         # Standalone mode -- load model locally
         logger.info(f"Starting in STANDALONE mode, loading model: {config.MODEL_NAME}")
-        from transformers import AutoTokenizer, AutoModel
 
         start_time = time.time()
 
         state.device = get_device()
         logger.info(f"Using device: {state.device}")
 
-        state.tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME)
-        state.model = AutoModel.from_pretrained(config.MODEL_NAME)
+        if state.device == "cpu":
+            _tune_cpu_threads()
+
+        state.tokenizer, state.model = _load_model_and_tokenizer()
 
         if state.device in ("cuda", "mps"):
             state.model = state.model.to(state.device)
@@ -140,7 +207,7 @@ async def lifespan(app: FastAPI):
         if state.device in ("cuda", "mps"):
             dummy_input = {k: v.to(state.device) for k, v in dummy_input.items()}
 
-        with torch.no_grad():
+        with torch.inference_mode():
             state.model(**dummy_input)
 
         load_time = time.time() - start_time
@@ -160,6 +227,61 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+# ── Inference (standalone mode) ──────────────────────────────────────
+
+def _pool_and_normalize(last_hidden_state, attention_mask):
+    if config.POOLING == "mean":
+        # Mean pooling over non-padding tokens.
+        mask = attention_mask.unsqueeze(-1).type_as(last_hidden_state)
+        summed = (last_hidden_state * mask).sum(dim=1)
+        counts = mask.sum(dim=1).clamp(min=1e-9)
+        embeddings = summed / counts
+    else:
+        # CLS pooling — BGE-M3 dense embedding uses the [CLS] token.
+        embeddings = last_hidden_state[:, 0]
+
+    if config.NORMALIZE:
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+    return embeddings
+
+
+def _encode(texts: List[str]) -> List[List[float]]:
+    """
+    Synchronous batched inference, tuned for CPU:
+      - processes EMBED_SUB_BATCH texts per forward pass (bounds peak RAM:
+        activations scale with batch x sequence length),
+      - sorts texts by length so each sub-batch pads to a similar length
+        (less wasted compute on pad tokens), restoring original order after,
+      - uses torch.inference_mode() (cheaper than no_grad).
+    """
+    sub = max(1, config.EMBED_SUB_BATCH)
+    order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+    results: List[Optional[List[float]]] = [None] * len(texts)
+
+    for start in range(0, len(order), sub):
+        idxs = order[start:start + sub]
+        batch = [texts[i] for i in idxs]
+
+        inputs = state.tokenizer(
+            batch,
+            padding=True,
+            truncation=True,
+            max_length=config.MAX_LENGTH,
+            return_tensors="pt",
+        )
+        if state.device in ("cuda", "mps"):
+            inputs = {k: v.to(state.device) for k, v in inputs.items()}
+
+        with torch.inference_mode():
+            outputs = state.model(**inputs)
+
+        embeddings = _pool_and_normalize(outputs.last_hidden_state, inputs["attention_mask"])
+        for j, i in enumerate(idxs):
+            results[i] = embeddings[j].cpu().tolist()
+
+    return results
 
 
 # ── Endpoints ────────────────────────────────────────────────────────
@@ -197,33 +319,10 @@ async def embed(request: EmbedRequest):
     start_time = time.time()
     state.in_flight += 1
     try:
-        inputs = state.tokenizer(
-            request.texts,
-            padding=True,
-            truncation=True,
-            max_length=config.MAX_LENGTH,
-            return_tensors="pt",
-        )
-
-        if state.device in ("cuda", "mps"):
-            inputs = {k: v.to(state.device) for k, v in inputs.items()}
-
-        with torch.no_grad():
-            outputs = state.model(**inputs)
-
-        if config.POOLING == "mean":
-            # Mean pooling over non-padding tokens.
-            mask = inputs["attention_mask"].unsqueeze(-1).type_as(outputs.last_hidden_state)
-            summed = (outputs.last_hidden_state * mask).sum(dim=1)
-            counts = mask.sum(dim=1).clamp(min=1e-9)
-            embeddings = summed / counts
-        else:
-            # CLS pooling — BGE-M3 dense embedding uses the [CLS] token.
-            embeddings = outputs.last_hidden_state[:, 0]
-
-        if config.NORMALIZE:
-            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-        embeddings_list = embeddings.cpu().tolist()
+        # Serialize forward passes (one at a time uses all cores) and run them
+        # off the event loop so /health stays responsive during inference.
+        async with state.infer_lock:
+            embeddings_list = await asyncio.to_thread(_encode, request.texts)
 
         took_ms = (time.time() - start_time) * 1000
 
@@ -233,7 +332,7 @@ async def embed(request: EmbedRequest):
         return EmbedResponse(
             embeddings=embeddings_list,
             took_ms=took_ms,
-            dimension=embeddings.shape[1],
+            dimension=len(embeddings_list[0]) if embeddings_list else config.EMBED_DIM,
         )
     finally:
         state.in_flight = max(0, state.in_flight - 1)
