@@ -26,6 +26,20 @@ PORT = int(os.getenv("PORT", os.getenv("PORT2", "8000")))
 # GPU/CPU configuration
 USE_GPU = os.getenv("USE_GPU", "auto").lower()  # "auto", "true", "false"
 
+# --- CPU inference tuning ---
+# Torch intra-op threads (0 = use all available cores).
+TORCH_THREADS = int(os.getenv("TORCH_THREADS", "0"))
+# Torch inter-op threads (parallel op queues). 1 is best for a single-model server.
+TORCH_INTEROP_THREADS = int(os.getenv("TORCH_INTEROP_THREADS", "1"))
+
+# Internal sub-batch size for one forward pass. Bounds peak activation memory:
+# a request of MAX_BATCH_SIZE texts is processed EMBED_SUB_BATCH at a time.
+EMBED_SUB_BATCH = int(os.getenv("EMBED_SUB_BATCH", "8"))
+
+# Offline-first model loading: try the local HuggingFace cache before any
+# network call. "true" = hard offline (never touch the network).
+HF_OFFLINE = os.getenv("HF_OFFLINE", "auto").lower()  # "auto", "true", "false"
+
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
