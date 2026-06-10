@@ -101,8 +101,10 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8001
-      - MODEL_NAME=allenai/specter2_base
-      - MAX_LENGTH=512
+      - MODEL_NAME=BAAI/bge-m3
+      - MAX_LENGTH=1024
+      - EMBED_DIM=1024
+      - POOLING=cls
       - BATCH_SIZE=32
     volumes:
       - embedding-cache:/app/.cache

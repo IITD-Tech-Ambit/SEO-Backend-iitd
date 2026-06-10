@@ -45,6 +45,7 @@ type Document struct {
 type Client struct {
 	client     *mongo.Client
 	collection *mongo.Collection
+	db         *mongo.Database
 	cfg        *config.Config
 }
 
@@ -80,7 +81,8 @@ func NewClient(cfg *config.Config) (*Client, error) {
 
 	log.Printf("  Database: %s, Collection: %s", dbName, cfg.MongoCollection)
 
-	collection := client.Database(dbName).Collection(cfg.MongoCollection)
+	db := client.Database(dbName)
+	collection := db.Collection(cfg.MongoCollection)
 
 	// Debug: count all documents
 	count, _ := collection.CountDocuments(ctx, bson.M{})
@@ -89,6 +91,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	return &Client{
 		client:     client,
 		collection: collection,
+		db:         db,
 		cfg:        cfg,
 	}, nil
 }

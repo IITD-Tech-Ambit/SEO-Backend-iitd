@@ -1,5 +1,5 @@
 """
-SPECTER2 Embedding Service
+Embedding Service (BGE-M3)
 FastAPI service for generating scientific document embeddings.
 
 Runs in two modes depending on the BACKEND_NODES env var:
@@ -44,7 +44,7 @@ class EmbedRequest(BaseModel):
 class EmbedResponse(BaseModel):
     embeddings: List[List[float]]
     took_ms: float
-    dimension: int = 768
+    dimension: int = config.EMBED_DIM
 
 
 class HealthResponse(BaseModel):
@@ -54,6 +54,7 @@ class HealthResponse(BaseModel):
     is_loaded: bool
     specter_model: str
     device: str
+    in_flight: int = 0
 
 
 # ── Global state ─────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ class ModelState:
     tokenizer = None
     device = None
     pool = None  # NodePool instance when running in gateway mode
+    in_flight = 0  # standalone: concurrent /embed requests (informational; consumed by gateways)
 
 
 state = ModelState()
@@ -153,8 +155,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="SPECTER2 Embedding Service",
-    description="Generate scientific document embeddings using SPECTER2",
+    title="Embedding Service (BGE-M3)",
+    description="Generate scientific document embeddings using BGE-M3",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -167,7 +169,7 @@ async def embed(request: EmbedRequest):
     """
     Generate embeddings for a batch of texts.
 
-    For best results, format input as: "title [SEP] abstract"
+    For best results, format document input as: "title\nabstract"
 
     In gateway mode the batch is scattered across all healthy GPU nodes
     and the results are merged back in order.
@@ -193,35 +195,48 @@ async def embed(request: EmbedRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     start_time = time.time()
+    state.in_flight += 1
+    try:
+        inputs = state.tokenizer(
+            request.texts,
+            padding=True,
+            truncation=True,
+            max_length=config.MAX_LENGTH,
+            return_tensors="pt",
+        )
 
-    inputs = state.tokenizer(
-        request.texts,
-        padding=True,
-        truncation=True,
-        max_length=config.MAX_LENGTH,
-        return_tensors="pt",
-    )
+        if state.device in ("cuda", "mps"):
+            inputs = {k: v.to(state.device) for k, v in inputs.items()}
 
-    if state.device in ("cuda", "mps"):
-        inputs = {k: v.to(state.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = state.model(**inputs)
 
-    with torch.no_grad():
-        outputs = state.model(**inputs)
+        if config.POOLING == "mean":
+            # Mean pooling over non-padding tokens.
+            mask = inputs["attention_mask"].unsqueeze(-1).type_as(outputs.last_hidden_state)
+            summed = (outputs.last_hidden_state * mask).sum(dim=1)
+            counts = mask.sum(dim=1).clamp(min=1e-9)
+            embeddings = summed / counts
+        else:
+            # CLS pooling — BGE-M3 dense embedding uses the [CLS] token.
+            embeddings = outputs.last_hidden_state[:, 0]
 
-    embeddings = outputs.last_hidden_state.mean(dim=1)
-    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-    embeddings_list = embeddings.cpu().tolist()
+        if config.NORMALIZE:
+            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        embeddings_list = embeddings.cpu().tolist()
 
-    took_ms = (time.time() - start_time) * 1000
+        took_ms = (time.time() - start_time) * 1000
 
-    if config.LOG_LEVEL == "DEBUG":
-        logger.debug(f"Generated {len(embeddings_list)} embeddings in {took_ms:.1f}ms")
+        if config.LOG_LEVEL == "DEBUG":
+            logger.debug(f"Generated {len(embeddings_list)} embeddings in {took_ms:.1f}ms")
 
-    return EmbedResponse(
-        embeddings=embeddings_list,
-        took_ms=took_ms,
-        dimension=embeddings.shape[1],
-    )
+        return EmbedResponse(
+            embeddings=embeddings_list,
+            took_ms=took_ms,
+            dimension=embeddings.shape[1],
+        )
+    finally:
+        state.in_flight = max(0, state.in_flight - 1)
 
 
 @app.get("/health")
@@ -243,6 +258,7 @@ async def health():
         is_loaded=state.model is not None,
         specter_model=config.MODEL_NAME,
         device=state.device or "unknown",
+        in_flight=state.in_flight,
     )
 
 
@@ -251,7 +267,7 @@ async def root():
     """Root endpoint with service info"""
     mode = "gateway" if state.pool is not None else "standalone"
     return {
-        "service": "SPECTER2 Embedding Service",
+        "service": "Embedding Service (BGE-M3)",
         "version": "1.0.0",
         "mode": mode,
         "endpoints": {

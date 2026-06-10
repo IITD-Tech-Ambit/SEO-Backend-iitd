@@ -120,10 +120,11 @@ func (c *Client) doRequest(ctx context.Context, texts []string) ([][]float32, er
 	return result.Embeddings, nil
 }
 
-// BuildEmbeddingText creates the text for embedding using SPECTER2 format
+// BuildEmbeddingText creates the text for embedding (BGE-M3): title and abstract
+// joined by a newline. BGE-M3 needs no special separator token or instruction.
 func BuildEmbeddingText(title, abstract string) string {
 	if abstract == "" {
 		return title
 	}
-	return title + " [SEP] " + abstract
+	return title + "\n" + abstract
 }

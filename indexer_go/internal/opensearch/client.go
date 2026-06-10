@@ -96,10 +96,14 @@ func (c *Client) BulkIndex(ctx context.Context, docs []OSDocument) (map[string]s
 	var buf bytes.Buffer
 	for _, doc := range docs {
 		// Action line
+		indexMeta := map[string]interface{}{
+			"_index": c.cfg.OpenSearchIndex,
+		}
+		if doc.MongoID != "" {
+			indexMeta["_id"] = doc.MongoID
+		}
 		action := map[string]interface{}{
-			"index": map[string]interface{}{
-				"_index": c.cfg.OpenSearchIndex,
-			},
+			"index": indexMeta,
 		}
 		actionBytes, _ := json.Marshal(action)
 		buf.Write(actionBytes)
@@ -150,242 +154,23 @@ func (c *Client) BulkIndex(ctx context.Context, docs []OSDocument) (map[string]s
 	return idMap, nil
 }
 
-// CreateIndex creates the OpenSearch index with enhanced mappings
-// Features:
-// - Custom BM25 parameters (k1=1.8, b=0.6) tuned for academic text
-// - Shingle analyzer for phrase matching
-// - Nested author mapping with name variants
-// - Subject area count for interdisciplinary filtering
+// CreateIndex ensures a single concrete index named OPENSEARCH_INDEX (no alias).
 func (c *Client) CreateIndex(ctx context.Context) error {
-	// Check if index exists
-	res, err := c.client.Indices.Exists([]string{c.cfg.OpenSearchIndex})
+	exists, err := c.concreteIndexExists(ctx)
 	if err != nil {
 		return fmt.Errorf("check index exists: %w", err)
 	}
-	res.Body.Close()
-
-	if res.StatusCode == 200 {
-		fmt.Printf("Index %s already exists\n", c.cfg.OpenSearchIndex)
+	if exists {
+		fmt.Printf("Index %s already exists (concrete)\n", c.cfg.OpenSearchIndex)
 		return nil
 	}
 
-	mapping := `{
-		"settings": {
-			"index": {
-				"knn": true,
-				"knn.algo_param.ef_search": 300,
-				"number_of_shards": 3,
-				"number_of_replicas": 1,
-				"max_ngram_diff": 8,
-				"max_shingle_diff": 2
-			},
-			"similarity": {
-				"custom_bm25": {
-					"type": "BM25",
-					"k1": 1.8,
-					"b": 0.6
-				}
-			},
-			"analysis": {
-				"filter": {
-					"ngram_filter": {
-						"type": "ngram",
-						"min_gram": 2,
-						"max_gram": 4
-					},
-					"edge_ngram_filter": {
-						"type": "edge_ngram",
-						"min_gram": 2,
-						"max_gram": 10
-					},
-					"shingle_filter": {
-						"type": "shingle",
-						"min_shingle_size": 2,
-						"max_shingle_size": 3,
-						"output_unigrams": true
-					},
-					"minimal_english_stemmer": {
-						"type": "stemmer",
-						"language": "minimal_english"
-					}
-				},
-				"analyzer": {
-					"ngram_analyzer": {
-						"type": "custom",
-						"tokenizer": "standard",
-						"filter": ["lowercase", "ngram_filter"]
-					},
-					"edge_ngram_analyzer": {
-						"type": "custom",
-						"tokenizer": "standard",
-						"filter": ["lowercase", "edge_ngram_filter"]
-					},
-					"shingle_analyzer": {
-						"type": "custom",
-						"tokenizer": "standard",
-						"filter": ["lowercase", "shingle_filter"]
-					},
-					"minimal_english_analyzer": {
-						"type": "custom",
-						"tokenizer": "standard",
-						"filter": ["lowercase", "minimal_english_stemmer"]
-					}
-				}
-			}
-		},
-		"mappings": {
-			"properties": {
-				"mongo_id": {
-					"type": "keyword",
-					"doc_values": true
-				},
-				"title": {
-				"type": "text",
-				"analyzer": "english",
-				"similarity": "custom_bm25",
-				"fields": {
-					"exact": {"type": "keyword"},
-					"standard": {
-						"type": "text",
-						"analyzer": "minimal_english_analyzer"
-					},
-					"autocomplete": {
-						"type": "text",
-						"analyzer": "edge_ngram_analyzer",
-						"search_analyzer": "standard"
-					},
-					"shingles": {
-						"type": "text",
-						"analyzer": "shingle_analyzer"
-					}
-				}
-			},
-			"abstract": {
-				"type": "text",
-				"analyzer": "english",
-				"similarity": "custom_bm25",
-				"fields": {
-					"standard": {
-						"type": "text",
-						"analyzer": "minimal_english_analyzer"
-					},
-					"shingles": {
-						"type": "text",
-						"analyzer": "shingle_analyzer"
-					}
-				}
-			},
-				"authors": {
-					"type": "nested",
-					"properties": {
-						"author_id": {"type": "keyword"},
-						"author_name": {
-							"type": "text",
-							"analyzer": "standard",
-							"fields": {
-								"keyword": {"type": "keyword"},
-								"ngram": {
-									"type": "text",
-									"analyzer": "ngram_analyzer"
-								}
-							}
-						},
-						"author_name_variants": {
-							"type": "text",
-							"analyzer": "standard",
-							"fields": {
-								"keyword": {"type": "keyword"},
-								"ngram": {
-									"type": "text",
-									"analyzer": "ngram_analyzer"
-								}
-							}
-						},
-						"author_position": {"type": "integer"}
-					}
-				},
-				"author_names": {
-					"type": "text",
-					"analyzer": "standard",
-					"fields": {
-						"keyword": {"type": "keyword"},
-						"ngram": {
-							"type": "text",
-							"analyzer": "ngram_analyzer"
-						},
-						"autocomplete": {
-							"type": "text",
-							"analyzer": "edge_ngram_analyzer",
-							"search_analyzer": "standard"
-						}
-					}
-				},
-				"author_name_variants": {
-					"type": "text",
-					"analyzer": "standard",
-					"fields": {
-						"keyword": {"type": "keyword"},
-						"ngram": {
-							"type": "text",
-							"analyzer": "ngram_analyzer"
-						}
-					}
-				},
-				"author_ids": {
-					"type": "keyword"
-				},
-				"expert_id": {"type": "keyword"},
-				"publication_year": {"type": "integer"},
-				"field_associated": {
-					"type": "text",
-					"analyzer": "standard",
-					"fields": {
-						"keyword": {"type": "keyword"},
-						"ngram": {
-							"type": "text",
-							"analyzer": "ngram_analyzer"
-						}
-					}
-				},
-				"document_type": {"type": "keyword"},
-				"subject_area": {
-					"type": "text",
-					"analyzer": "standard",
-					"fields": {
-						"keyword": {"type": "keyword"},
-						"ngram": {
-							"type": "text",
-							"analyzer": "ngram_analyzer"
-						}
-					}
-				},
-				"subject_area_count": {"type": "integer"},
-				"citation_count": {"type": "integer"},
-				"reference_count": {"type": "integer"},
-				"kerberos": {"type": "keyword"},
-				"embedding": {
-					"type": "knn_vector",
-					"dimension": 768,
-					"method": {
-						"name": "hnsw",
-						"space_type": "innerproduct",
-						"engine": "faiss",
-						"parameters": {
-							"ef_construction": 512,
-							"m": 32
-						}
-					}
-				}
-			}
-		}
-	}`
-
 	createReq := opensearchapi.IndicesCreateRequest{
 		Index: c.cfg.OpenSearchIndex,
-		Body:  strings.NewReader(mapping),
+		Body:  strings.NewReader(indexMappingJSON),
 	}
 
-	res, err = createReq.Do(ctx, c.client)
+	res, err := createReq.Do(ctx, c.client)
 	if err != nil {
 		return fmt.Errorf("create index: %w", err)
 	}
@@ -395,23 +180,56 @@ func (c *Client) CreateIndex(ctx context.Context) error {
 		return fmt.Errorf("create index error: %s", res.String())
 	}
 
-	fmt.Printf("Created index %s with enhanced mapping\n", c.cfg.OpenSearchIndex)
+	fmt.Printf("Created concrete index %s (no alias)\n", c.cfg.OpenSearchIndex)
 	return nil
 }
 
-// DeleteIndex deletes the OpenSearch index (for reindexing)
+// DeleteIndex removes legacy aliases and deletes all research_documents* concrete indices
+// so reindex-full leaves exactly one target index name for CreateIndex.
 func (c *Client) DeleteIndex(ctx context.Context) error {
-	res, err := c.client.Indices.Delete([]string{c.cfg.OpenSearchIndex})
+	name := c.cfg.OpenSearchIndex
+
+	// Only remove alias when it actually exists (skip for concrete-only setup).
+	backing, err := c.aliasBackingIndices(ctx, name)
 	if err != nil {
-		return fmt.Errorf("delete index: %w", err)
+		return fmt.Errorf("lookup alias %s: %w", name, err)
 	}
-	defer res.Body.Close()
-
-	if res.IsError() && res.StatusCode != 404 {
-		return fmt.Errorf("delete index error: %s", res.String())
+	if len(backing) > 0 {
+		if err := c.removeAlias(ctx, name, backing); err != nil {
+			return fmt.Errorf("remove alias %s: %w", name, err)
+		}
+		fmt.Printf("Removed alias %s from: %s\n", name, strings.Join(backing, ", "))
 	}
 
-	fmt.Printf("Deleted index %s\n", c.cfg.OpenSearchIndex)
+	toDelete, err := c.collectIndicesToRemove(ctx)
+	if err != nil {
+		return fmt.Errorf("collect indices to remove: %w", err)
+	}
+
+	if len(toDelete) > 0 {
+		if err := c.deleteConcreteIndices(ctx, toDelete); err != nil {
+			return fmt.Errorf("delete concrete indices: %w", err)
+		}
+		fmt.Printf("Deleted concrete indices: %s\n", strings.Join(toDelete, ", "))
+	}
+
+	// Verify: no alias and no concrete index with that name.
+	backing, err = c.aliasBackingIndices(ctx, name)
+	if err != nil {
+		return err
+	}
+	if len(backing) > 0 {
+		return fmt.Errorf("alias %s still points at %v after delete", name, backing)
+	}
+	exists, err := c.concreteIndexExists(ctx)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("index %s still exists after delete", name)
+	}
+
+	fmt.Printf("OpenSearch ready for single index %s (aliases and legacy indices removed)\n", name)
 	return nil
 }
 

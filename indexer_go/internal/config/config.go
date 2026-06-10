@@ -18,11 +18,12 @@ type Config struct {
 	MongoBulkDelayMs  int // Delay between bulk writes
 
 	// OpenSearch
-	OpenSearchHosts       []string
-	OpenSearchUser        string
-	OpenSearchPassword    string
-	OpenSearchIndex       string
-	OpenSearchVerifyCerts bool
+	OpenSearchHosts        []string
+	OpenSearchUser         string
+	OpenSearchPassword     string
+	OpenSearchIndex        string
+	OpenSearchAuthorsIndex string
+	OpenSearchVerifyCerts  bool
 
 	// Embedding Service
 	EmbeddingServiceURL    string
@@ -63,8 +64,9 @@ func Load() *Config {
 		OpenSearchHosts:       strings.Split(getEnv("OPENSEARCH_HOSTS", "https://localhost:9200"), ","),
 		OpenSearchUser:        getEnv("OPENSEARCH_USER", "admin"),
 		OpenSearchPassword:    getEnv("OPENSEARCH_PASSWORD", "admin"),
-		OpenSearchIndex:       getEnv("OPENSEARCH_INDEX", "research_documents"),
-		OpenSearchVerifyCerts: getEnv("OPENSEARCH_VERIFY_CERTS", "false") == "true",
+		OpenSearchIndex:        getEnv("OPENSEARCH_INDEX", "research_documents"),
+		OpenSearchAuthorsIndex: getEnv("OPENSEARCH_AUTHORS_INDEX", "authors_suggest"),
+		OpenSearchVerifyCerts:  getEnv("OPENSEARCH_VERIFY_CERTS", "false") == "true",
 
 		// Embedding
 		EmbeddingServiceURL:    getEnv("EMBEDDING_SERVICE_URL", "http://localhost:8001"),

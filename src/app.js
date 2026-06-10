@@ -9,6 +9,7 @@ import opensearchPlugin from './plugins/opensearch.js';
 import redisPlugin from './plugins/redis.js';
 import EmbeddingService from './services/embeddingService.js';
 import SearchService from './services/searchService.js';
+import SuggestService from './services/suggestService.js';
 import searchRoutes from './routes/search.js';
 import documentRoutes from './routes/documents.js';
 
@@ -92,6 +93,12 @@ function initializeServices() {
     // Search service
     const searchService = new SearchService(fastify, config);
     fastify.decorate('searchService', searchService);
+
+    // Suggest service (blended typeahead). Kick off the faculty token-set loader
+    // used as an intent signal (refreshes periodically inside the service).
+    const suggestService = new SuggestService(fastify, config);
+    suggestService.init();
+    fastify.decorate('suggestService', suggestService);
 }
 
 // Register routes

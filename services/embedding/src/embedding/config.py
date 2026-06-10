@@ -5,9 +5,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Model configuration
-MODEL_NAME = os.getenv("MODEL_NAME", "allenai/specter2_base")
-MAX_LENGTH = int(os.getenv("MAX_LENGTH", "512"))
+MODEL_NAME = os.getenv("MODEL_NAME", "BAAI/bge-m3")
+MAX_LENGTH = int(os.getenv("MAX_LENGTH", "1024"))
 MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "600"))
+
+# Output embedding dimensionality (BGE-M3 dense = 1024; SPECTER2 = 768).
+# Reported in responses/health and used as the fallback when a backend omits it.
+EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))
+
+# Pooling strategy for the token embeddings: "cls" (BGE-M3 dense) or "mean".
+POOLING = os.getenv("POOLING", "cls").lower()
+
+# L2-normalize the output embeddings (required for cosine / inner-product kNN).
+NORMALIZE = os.getenv("NORMALIZE", "true").lower() != "false"
 
 # Server configuration
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -34,3 +44,26 @@ CIRCUIT_BREAKER_RECOVERY_S = int(os.getenv("CIRCUIT_BREAKER_RECOVERY_S", "30"))
 
 # Batches smaller than this go to a single node; larger batches are scattered across all healthy nodes.
 SCATTER_MIN_BATCH = int(os.getenv("SCATTER_MIN_BATCH", "16"))
+
+# --- Dynamic load balancing tunables ---
+# Max concurrent in-flight requests to a single backend node (per gateway process).
+# Set roughly to "uvicorn workers on that backend + 1 pipelined".
+MAX_INFLIGHT_PER_NODE = int(os.getenv("MAX_INFLIGHT_PER_NODE", "2"))
+
+# Latency normalizer for capacity scoring (ms). A node responding at this latency
+# with one in-flight request gets weight ~1.0.
+LATENCY_BASE_MS = float(os.getenv("LATENCY_BASE_MS", "100"))
+
+# Floor used when a node has no observed latency yet (cold start).
+LATENCY_FLOOR_MS = float(os.getenv("LATENCY_FLOOR_MS", "50"))
+
+# Minimum share a healthy node must receive in weighted scatter (fraction).
+# Prevents starvation of slow-but-up nodes; also keeps latency EMA fresh.
+MIN_NODE_WEIGHT = float(os.getenv("MIN_NODE_WEIGHT", "0.1"))
+
+# Max texts sent to a half-open (circuit recovery probe) node in scatter.
+HALF_OPEN_PROBE_TEXTS = int(os.getenv("HALF_OPEN_PROBE_TEXTS", "4"))
+
+# When acquiring a per-node semaphore for scatter chunks, skip this node and try
+# the next-best after this timeout (seconds). 0 = pure try-acquire (no wait).
+NODE_ACQUIRE_TIMEOUT_S = float(os.getenv("NODE_ACQUIRE_TIMEOUT_S", "0"))

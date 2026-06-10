@@ -24,7 +24,8 @@ export default {
         ssl: {
             rejectUnauthorized: false
         },
-        indexName: process.env.OPENSEARCH_INDEX || 'research_documents'
+        indexName: process.env.OPENSEARCH_INDEX || 'research_documents',
+        authorsSuggestIndex: process.env.OPENSEARCH_AUTHORS_INDEX || 'authors_suggest'
     },
 
     // Redis
@@ -48,6 +49,32 @@ export default {
         opensearch: 10000,  // 10s for search query
         mongodb: 5000,      // 5s for document hydration
         total: 15000        // 15s total request timeout
+    },
+
+    // Typeahead / suggest (blended autocomplete)
+    suggest: {
+        minPrefix: 2,           // queries shorter than this return empty groups
+        defaultLimit: 8,
+        maxLimit: 15,
+        authorsSize: 6,         // OpenSearch size for the authors_suggest query
+        papersSize: 6,          // OpenSearch size for the research_documents query
+        // Per-source budget; a slow source yields partial groups. The p95<50ms target in
+        // the design assumes OpenSearch co-located with the API. Here OpenSearch is remote
+        // (network RTT alone is ~100ms+), so this is set higher; lower it when co-located.
+        perSourceTimeoutMs: parseInt(process.env.SUGGEST_SOURCE_TIMEOUT_MS || '1200'),
+        lruMax: 2000,           // hot-prefix in-process cache entries
+        lruTtlMs: 60000,        // in-process cache TTL
+        redisTtl: 60,           // Redis cache TTL (seconds)
+        tokenRefreshMs: 600000, // faculty token-set refresh interval (~10 min)
+        // Intent engine weights (tunable; no ML). Higher => stronger pull to that intent.
+        // Retrieval confidence is weighted highest because it is grounded in actual matches
+        // (and the paper score includes abstract), so a strong topic beats a surname collision.
+        intentWeights: {
+            nameTokenMatch: 0.30,   // query token(s) present in faculty token set (prefix-aware)
+            nameShape: 0.12,        // 1-3 tokens / initials pattern => author-ish
+            retrievalConfidence: 0.60, // normalized top-author vs top-paper score
+            topicSignal: 0.35,      // stopwords / length / trailing connectors => paper
+        }
     },
 
     // Search defaults
