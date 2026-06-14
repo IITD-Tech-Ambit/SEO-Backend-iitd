@@ -77,24 +77,6 @@ export default {
         }
     },
 
-    // Chat / RAG (Groq LLM)
-    chat: {
-        groqApiKey: process.env.GROQ_API_KEY || '',
-        groqBaseUrl: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
-        groqModel: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
-        // Cheap/fast model used to condense follow-up questions into standalone queries
-        condenseModel: process.env.GROQ_CONDENSE_MODEL || 'llama-3.1-8b-instant',
-        topK: parseInt(process.env.CHAT_TOP_K || '8'),
-        maxHistoryTurns: parseInt(process.env.CHAT_MAX_HISTORY_TURNS || '6'),
-        maxMessageLength: 2000,
-        llmTimeoutMs: parseInt(process.env.CHAT_LLM_TIMEOUT_MS || '60000'),
-        maxAnswerTokens: parseInt(process.env.CHAT_MAX_ANSWER_TOKENS || '1024'),
-        rateLimit: {
-            windowSec: parseInt(process.env.CHAT_RATE_WINDOW_SEC || '60'),
-            maxRequests: parseInt(process.env.CHAT_RATE_MAX_REQUESTS || '20')
-        }
-    },
-
     // Search defaults
     search: {
         defaultPageSize: 20,

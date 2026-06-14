@@ -10,12 +10,8 @@ import redisPlugin from './plugins/redis.js';
 import EmbeddingService from './services/embeddingService.js';
 import SearchService from './services/searchService.js';
 import SuggestService from './services/suggestService.js';
-import RagService from './services/ragService.js';
-import LlmService from './services/llmService.js';
-import ChatToolsService from './services/chatToolsService.js';
 import searchRoutes from './routes/search.js';
 import documentRoutes from './routes/documents.js';
-import chatRoutes from './routes/chat.js';
 
 // Import MongoDB models
 import './models/index.js';
@@ -103,19 +99,6 @@ function initializeServices() {
     const suggestService = new SuggestService(fastify, config);
     suggestService.init();
     fastify.decorate('suggestService', suggestService);
-
-    // RAG chatbot services (retrieval + Groq LLM)
-    const ragService = new RagService(fastify, config);
-    fastify.decorate('ragService', ragService);
-
-    const llmService = new LlmService(config, fastify.log);
-    fastify.decorate('llmService', llmService);
-    fastify.decorate('chatToolsService', new ChatToolsService(fastify, config));
-    fastify.decorate('chatConfig', config.chat);
-
-    if (!llmService.isConfigured) {
-        fastify.log.warn('GROQ_API_KEY is not set - /api/v1/chat will return 503');
-    }
 }
 
 // Register routes
@@ -129,7 +112,6 @@ async function registerRoutes() {
         await instance.register(documentRoutes, {
             searchService: fastify.searchService
         });
-        await instance.register(chatRoutes);
     }, { prefix: '/api/v1' });
 
     // Root health check
