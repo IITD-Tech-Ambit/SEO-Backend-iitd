@@ -4,6 +4,7 @@ import sensible from '@fastify/sensible';
 import 'dotenv/config';
 
 import config from './config/index.js';
+import metricsPlugin from './plugins/metrics.js';
 import mongodbPlugin from './plugins/mongodb.js';
 import opensearchPlugin from './plugins/opensearch.js';
 import redisPlugin from './plugins/redis.js';
@@ -68,6 +69,9 @@ async function registerPlugins() {
 
     // Sensible (adds httpErrors, etc.)
     await fastify.register(sensible);
+
+    // Prometheus metrics (RED + domain) on a dedicated internal port
+    await fastify.register(metricsPlugin);
 
     // MongoDB
     await fastify.register(mongodbPlugin, config.mongodb);
@@ -135,11 +139,6 @@ async function start() {
         });
 
         fastify.log.info(`Search API running on http://${config.host}:${config.port}`);
-
-        // PM2 cluster mode with wait_ready expects this signal or it will kill/restart workers.
-        if (typeof process.send === 'function') {
-            process.send('ready');
-        }
 
     } catch (error) {
         fastify.log.error(error);

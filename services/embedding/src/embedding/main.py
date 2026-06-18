@@ -25,6 +25,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, ConfigDict
 
 from . import config
+from .metrics import (
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_IN_FLIGHT,
+    EMBEDDING_INFERENCE_SECONDS,
+    EMBEDDING_REQUESTS_TOTAL,
+    setup_metrics,
+)
 
 # Configure logging based on environment
 log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
@@ -228,6 +235,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Prometheus instrumentation: HTTP RED middleware + GET /metrics
+setup_metrics(app)
+
 
 # ── Inference (standalone mode) ──────────────────────────────────────
 
@@ -299,18 +309,28 @@ async def embed(request: EmbedRequest):
     if not request.texts:
         raise HTTPException(status_code=400, detail="Empty texts list")
 
+    EMBEDDING_BATCH_SIZE.observe(len(request.texts))
+
     # ── Gateway mode: scatter-gather ──
     if state.pool is not None:
+        EMBEDDING_IN_FLIGHT.inc()
+        gw_start = time.time()
         try:
             result = await state.pool.scatter_gather(request.texts)
+            EMBEDDING_REQUESTS_TOTAL.labels("gateway", "success").inc()
             return EmbedResponse(**result)
         except RuntimeError as e:
+            EMBEDDING_REQUESTS_TOTAL.labels("gateway", "error").inc()
             raise HTTPException(status_code=502, detail=str(e))
         except Exception as e:
+            EMBEDDING_REQUESTS_TOTAL.labels("gateway", "error").inc()
             raise HTTPException(
                 status_code=503,
                 detail=f"All backend nodes unavailable: {e}",
             )
+        finally:
+            EMBEDDING_INFERENCE_SECONDS.observe(time.time() - gw_start)
+            EMBEDDING_IN_FLIGHT.dec()
 
     # ── Standalone mode: local inference ──
     if state.model is None:
@@ -318,6 +338,7 @@ async def embed(request: EmbedRequest):
 
     start_time = time.time()
     state.in_flight += 1
+    EMBEDDING_IN_FLIGHT.inc()
     try:
         # Serialize forward passes (one at a time uses all cores) and run them
         # off the event loop so /health stays responsive during inference.
@@ -325,6 +346,8 @@ async def embed(request: EmbedRequest):
             embeddings_list = await asyncio.to_thread(_encode, request.texts)
 
         took_ms = (time.time() - start_time) * 1000
+        EMBEDDING_INFERENCE_SECONDS.observe(took_ms / 1000)
+        EMBEDDING_REQUESTS_TOTAL.labels("standalone", "success").inc()
 
         if config.LOG_LEVEL == "DEBUG":
             logger.debug(f"Generated {len(embeddings_list)} embeddings in {took_ms:.1f}ms")
@@ -334,8 +357,12 @@ async def embed(request: EmbedRequest):
             took_ms=took_ms,
             dimension=len(embeddings_list[0]) if embeddings_list else config.EMBED_DIM,
         )
+    except Exception:
+        EMBEDDING_REQUESTS_TOTAL.labels("standalone", "error").inc()
+        raise
     finally:
         state.in_flight = max(0, state.in_flight - 1)
+        EMBEDDING_IN_FLIGHT.dec()
 
 
 @app.get("/health")

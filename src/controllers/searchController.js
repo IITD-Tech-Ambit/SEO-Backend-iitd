@@ -25,6 +25,13 @@ export async function search(request, reply) {
 
         const tookMs = Date.now() - startTime;
 
+        const metrics = request.server.metrics;
+        if (metrics) {
+            metrics.searchRequests.labels('search').inc();
+            if (result.cacheHit) metrics.searchCacheHits.inc();
+            metrics.searchStage.labels('total').observe(tookMs / 1000);
+        }
+
         return {
             ...result,
             meta: {
