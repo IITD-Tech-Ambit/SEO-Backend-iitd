@@ -1,6 +1,10 @@
 """
-Embedding Service (BGE-M3)
+Embedding Service
 FastAPI service for generating scientific document embeddings.
+
+Supports two inference backends configured by EMBED_BACKEND env var:
+  - "onnx" (default): optimum + onnxruntime (INT8-friendly, lower memory)
+  - "torch": transformers + PyTorch (original path)
 
 Runs in two modes depending on the BACKEND_NODES env var:
   - Standalone (default): loads the model locally and serves /embed.
@@ -16,15 +20,19 @@ import warnings
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-# Suppress external library deprecation warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
 warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 
-import torch
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, ConfigDict
 
 from . import config
+
+_USE_ONNX = config.EMBED_BACKEND == "onnx"
+
+if not _USE_ONNX:
+    import torch
 
 # Configure logging based on environment
 log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
@@ -49,6 +57,29 @@ class EmbedResponse(BaseModel):
     dimension: int = config.EMBED_DIM
 
 
+class RerankRequest(BaseModel):
+    query: str = Field(..., min_length=1, description="The query to rerank against")
+    documents: List[str] = Field(
+        ...,
+        min_length=1,
+        max_length=config.RERANK_MAX_CANDIDATES,
+        description=f"Documents to rerank (max {config.RERANK_MAX_CANDIDATES})",
+    )
+    top_n: Optional[int] = Field(
+        None, ge=1, description="Return only top N results (default: all)"
+    )
+
+
+class RerankResult(BaseModel):
+    index: int
+    score: float
+
+
+class RerankResponse(BaseModel):
+    results: List[RerankResult]
+    took_ms: float
+
+
 class HealthResponse(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
@@ -71,6 +102,12 @@ class ModelState:
     # all CPU cores, so concurrent passes would just thrash caches and RAM.
     infer_lock = asyncio.Lock()
 
+    # Cross-encoder reranker (lazy-loaded on first /rerank call)
+    reranker_session = None
+    reranker_tokenizer = None
+    reranker_loaded = False
+    reranker_lock = asyncio.Lock()
+
 
 state = ModelState()
 
@@ -82,7 +119,9 @@ def _is_gateway_mode() -> bool:
 # ── Device selection (standalone mode) ───────────────────────────────
 
 def get_device():
-    """Determine device based on configuration and availability"""
+    """Determine device based on configuration and availability."""
+    if _USE_ONNX:
+        return "cpu"  # ONNX Runtime handles its own CPU/GPU provider selection
     if config.USE_GPU == "false":
         return "cpu"
     elif config.USE_GPU == "true":
@@ -103,22 +142,101 @@ def get_device():
 
 # ── Model loading (offline-first) ────────────────────────────────────
 
+def _onnx_cache_dir(model_name: str) -> str:
+    """Filesystem path for persisted ONNX export of a HuggingFace model id."""
+    safe = model_name.replace("/", "--")
+    return os.path.join(config.ONNX_CACHE_DIR, safe)
+
+
+def _onnx_artifacts_exist(model_dir: str) -> bool:
+    """True if a prior export was saved to model_dir."""
+    if not os.path.isdir(model_dir):
+        return False
+    for name in os.listdir(model_dir):
+        if name.endswith(".onnx"):
+            return True
+    return False
+
+
+def _ort_session_options():
+    """Build ONNX Runtime session options with thread limits from config."""
+    import onnxruntime as ort
+    opts = ort.SessionOptions()
+    if config.ORT_NUM_THREADS > 0:
+        opts.intra_op_num_threads = config.ORT_NUM_THREADS
+        opts.inter_op_num_threads = 1
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    return opts
+
+
+def _load_onnx_from_cache_or_export(model_cls, model_name: str, label: str):
+    """
+    Load an ONNX optimum model:
+      1. From persistent local ONNX cache (fast restarts)
+      2. One-time export from HF + save_pretrained to local cache
+    """
+    from transformers import AutoTokenizer
+
+    session_opts = _ort_session_options()
+    local_onnx_dir = _onnx_cache_dir(model_name)
+
+    if _onnx_artifacts_exist(local_onnx_dir):
+        logger.info("ONNX cache hit: %s", label)
+        tokenizer = AutoTokenizer.from_pretrained(local_onnx_dir)
+        model = model_cls.from_pretrained(
+            local_onnx_dir, export=False, session_options=session_opts
+        )
+        return tokenizer, model
+
+    if config.HF_OFFLINE == "true":
+        local_attempts = [True]
+    elif config.HF_OFFLINE == "false":
+        local_attempts = [False]
+    else:
+        local_attempts = [True, False]
+
+    last_err = None
+    for local_only in local_attempts:
+        try:
+            logger.info("ONNX cache miss: %s — exporting (one-time)...", label)
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name, local_files_only=local_only
+            )
+            model = model_cls.from_pretrained(
+                model_name, export=True, local_files_only=local_only,
+                session_options=session_opts,
+            )
+            os.makedirs(local_onnx_dir, exist_ok=True)
+            model.save_pretrained(local_onnx_dir)
+            tokenizer.save_pretrained(local_onnx_dir)
+            logger.info("ONNX cache saved: %s", label)
+            return tokenizer, model
+        except OSError as e:
+            last_err = e
+            if local_only and len(local_attempts) > 1:
+                logger.info("HF cache miss: %s — downloading...", label)
+                continue
+            raise
+    raise last_err
+
+
 def _load_model_and_tokenizer():
     """
     Load tokenizer + model, preferring the local HuggingFace cache.
-
-    HF_OFFLINE=true  -> never touch the network (fail if not cached).
-    HF_OFFLINE=false -> normal behavior (network allowed).
-    HF_OFFLINE=auto  -> try local cache first; fall back to download only
-                        if the model is not cached.
     """
+    if _USE_ONNX:
+        from optimum.onnxruntime import ORTModelForFeatureExtraction
+        return _load_onnx_from_cache_or_export(
+            ORTModelForFeatureExtraction, config.MODEL_NAME, config.MODEL_NAME
+        )
+
     from transformers import AutoTokenizer, AutoModel
 
     if config.HF_OFFLINE == "true":
         attempts = [True]
     elif config.HF_OFFLINE == "false":
         attempts = [False]
-    else:  # auto
+    else:
         attempts = [True, False]
 
     last_err = None
@@ -130,16 +248,12 @@ def _load_model_and_tokenizer():
             model = AutoModel.from_pretrained(
                 config.MODEL_NAME, local_files_only=local_only
             )
-            logger.info(
-                "Loaded %s from %s",
-                config.MODEL_NAME,
-                "local cache (no network)" if local_only else "hub (downloaded)",
-            )
+            logger.info("HF cache hit: %s (PyTorch)", config.MODEL_NAME)
             return tokenizer, model
         except OSError as e:
             last_err = e
             if local_only and len(attempts) > 1:
-                logger.info("Model not in local cache, falling back to download...")
+                logger.info("HF cache miss: %s — downloading...", config.MODEL_NAME)
                 continue
             raise
     raise last_err
@@ -147,12 +261,15 @@ def _load_model_and_tokenizer():
 
 def _tune_cpu_threads():
     """Pin torch thread pools for single-model CPU serving."""
+    if _USE_ONNX:
+        threads = config.ORT_NUM_THREADS if config.ORT_NUM_THREADS > 0 else (os.cpu_count() or 1)
+        logger.info("ORT threads: %d of %d cores", threads, os.cpu_count() or 0)
+        return
     threads = config.TORCH_THREADS if config.TORCH_THREADS > 0 else (os.cpu_count() or 1)
     try:
         torch.set_num_threads(threads)
         torch.set_num_interop_threads(max(1, config.TORCH_INTEROP_THREADS))
     except RuntimeError:
-        # set_num_interop_threads can only be called once / before parallel work
         pass
     logger.info(
         "Torch threads: intra-op=%d, inter-op=%d (cpus=%s)",
@@ -180,7 +297,8 @@ async def lifespan(app: FastAPI):
         logger.info("Gateway ready")
     else:
         # Standalone mode -- load model locally
-        logger.info(f"Starting in STANDALONE mode, loading model: {config.MODEL_NAME}")
+        logger.info("Starting in STANDALONE mode (%s), loading model: %s",
+                     "ONNX" if _USE_ONNX else "PyTorch", config.MODEL_NAME)
 
         start_time = time.time()
 
@@ -192,26 +310,53 @@ async def lifespan(app: FastAPI):
 
         state.tokenizer, state.model = _load_model_and_tokenizer()
 
-        if state.device in ("cuda", "mps"):
-            state.model = state.model.to(state.device)
-
-        state.model.eval()
-
-        logger.info("Warming up model...")
-        dummy_input = state.tokenizer(
-            ["warmup text"],
-            return_tensors="pt",
-            truncation=True,
-            max_length=config.MAX_LENGTH,
-        )
-        if state.device in ("cuda", "mps"):
-            dummy_input = {k: v.to(state.device) for k, v in dummy_input.items()}
-
-        with torch.inference_mode():
+        if _USE_ONNX:
+            logger.info("Warming up embedding model...")
+            dummy_input = state.tokenizer(
+                ["warmup text"],
+                return_tensors="np",
+                truncation=True,
+                max_length=config.MAX_LENGTH,
+            )
             state.model(**dummy_input)
+        else:
+            if state.device in ("cuda", "mps"):
+                state.model = state.model.to(state.device)
+            state.model.eval()
+
+            logger.info("Warming up model...")
+            dummy_input = state.tokenizer(
+                ["warmup text"],
+                return_tensors="pt",
+                truncation=True,
+                max_length=config.MAX_LENGTH,
+            )
+            if state.device in ("cuda", "mps"):
+                dummy_input = {k: v.to(state.device) for k, v in dummy_input.items()}
+
+            with torch.inference_mode():
+                state.model(**dummy_input)
 
         load_time = time.time() - start_time
-        logger.info(f"Model loaded in {load_time:.2f}s")
+        logger.info("Embedding model ready in %.2fs", load_time)
+
+        if config.RERANK_ENABLED:
+            rerank_start = time.time()
+            try:
+                state.reranker_tokenizer, state.reranker_session = (
+                    await asyncio.to_thread(_load_reranker)
+                )
+                await asyncio.to_thread(
+                    _rerank_sync,
+                    "warmup query",
+                    ["warmup document one", "warmup document two"],
+                )
+                state.reranker_loaded = True
+                rerank_time = time.time() - rerank_start
+                logger.info("Reranker ready in %.2fs", rerank_time)
+            except Exception as e:
+                logger.error("Failed to load reranker at startup: %s", e)
+                raise
 
     yield
 
@@ -231,15 +376,30 @@ app = FastAPI(
 
 # ── Inference (standalone mode) ──────────────────────────────────────
 
-def _pool_and_normalize(last_hidden_state, attention_mask):
+def _pool_and_normalize_np(last_hidden_state, attention_mask):
+    """Numpy-based pooling and normalization for ONNX backend."""
     if config.POOLING == "mean":
-        # Mean pooling over non-padding tokens.
+        mask = attention_mask[:, :, np.newaxis].astype(last_hidden_state.dtype)
+        summed = (last_hidden_state * mask).sum(axis=1)
+        counts = mask.sum(axis=1).clip(min=1e-9)
+        embeddings = summed / counts
+    else:
+        embeddings = last_hidden_state[:, 0]
+
+    if config.NORMALIZE:
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True).clip(min=1e-9)
+        embeddings = embeddings / norms
+    return embeddings
+
+
+def _pool_and_normalize_torch(last_hidden_state, attention_mask):
+    """Torch-based pooling and normalization for PyTorch backend."""
+    if config.POOLING == "mean":
         mask = attention_mask.unsqueeze(-1).type_as(last_hidden_state)
         summed = (last_hidden_state * mask).sum(dim=1)
         counts = mask.sum(dim=1).clamp(min=1e-9)
         embeddings = summed / counts
     else:
-        # CLS pooling — BGE-M3 dense embedding uses the [CLS] token.
         embeddings = last_hidden_state[:, 0]
 
     if config.NORMALIZE:
@@ -249,12 +409,8 @@ def _pool_and_normalize(last_hidden_state, attention_mask):
 
 def _encode(texts: List[str]) -> List[List[float]]:
     """
-    Synchronous batched inference, tuned for CPU:
-      - processes EMBED_SUB_BATCH texts per forward pass (bounds peak RAM:
-        activations scale with batch x sequence length),
-      - sorts texts by length so each sub-batch pads to a similar length
-        (less wasted compute on pad tokens), restoring original order after,
-      - uses torch.inference_mode() (cheaper than no_grad).
+    Synchronous batched inference.
+    Sorts by length for uniform sub-batch padding, restoring original order after.
     """
     sub = max(1, config.EMBED_SUB_BATCH)
     order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
@@ -264,22 +420,35 @@ def _encode(texts: List[str]) -> List[List[float]]:
         idxs = order[start:start + sub]
         batch = [texts[i] for i in idxs]
 
-        inputs = state.tokenizer(
-            batch,
-            padding=True,
-            truncation=True,
-            max_length=config.MAX_LENGTH,
-            return_tensors="pt",
-        )
-        if state.device in ("cuda", "mps"):
-            inputs = {k: v.to(state.device) for k, v in inputs.items()}
-
-        with torch.inference_mode():
+        if _USE_ONNX:
+            inputs = state.tokenizer(
+                batch, padding=True, truncation=True,
+                max_length=config.MAX_LENGTH, return_tensors="np",
+            )
             outputs = state.model(**inputs)
+            hidden = outputs.last_hidden_state
+            if not isinstance(hidden, np.ndarray):
+                hidden = np.array(hidden)
+            attn = inputs["attention_mask"]
+            if not isinstance(attn, np.ndarray):
+                attn = np.array(attn)
+            embeddings = _pool_and_normalize_np(hidden, attn)
+            for j, i in enumerate(idxs):
+                results[i] = embeddings[j].tolist()
+        else:
+            inputs = state.tokenizer(
+                batch, padding=True, truncation=True,
+                max_length=config.MAX_LENGTH, return_tensors="pt",
+            )
+            if state.device in ("cuda", "mps"):
+                inputs = {k: v.to(state.device) for k, v in inputs.items()}
 
-        embeddings = _pool_and_normalize(outputs.last_hidden_state, inputs["attention_mask"])
-        for j, i in enumerate(idxs):
-            results[i] = embeddings[j].cpu().tolist()
+            with torch.inference_mode():
+                outputs = state.model(**inputs)
+
+            embeddings = _pool_and_normalize_torch(outputs.last_hidden_state, inputs["attention_mask"])
+            for j, i in enumerate(idxs):
+                results[i] = embeddings[j].cpu().tolist()
 
     return results
 
@@ -338,6 +507,80 @@ async def embed(request: EmbedRequest):
         state.in_flight = max(0, state.in_flight - 1)
 
 
+# ── Reranker (ONNX cross-encoder, loaded at startup) ─────────────────
+
+def _load_reranker():
+    """Load the cross-encoder reranker from ONNX cache (export only on first boot)."""
+    from optimum.onnxruntime import ORTModelForSequenceClassification
+
+    return _load_onnx_from_cache_or_export(
+        ORTModelForSequenceClassification,
+        config.RERANK_MODEL_NAME,
+        config.RERANK_MODEL_NAME,
+    )
+
+
+def _rerank_sync(query: str, documents: List[str]) -> List[float]:
+    """Run cross-encoder scoring in a thread. Returns raw logit scores."""
+    import numpy as np
+
+    tokenizer = state.reranker_tokenizer
+    model = state.reranker_session
+    sub = max(1, config.RERANK_SUB_BATCH)
+    all_scores: List[float] = []
+
+    for start in range(0, len(documents), sub):
+        batch_docs = documents[start:start + sub]
+        pairs = [[query, doc] for doc in batch_docs]
+        inputs = tokenizer(
+            pairs,
+            padding=True,
+            truncation=True,
+            max_length=config.RERANK_MAX_LENGTH,
+            return_tensors="np",
+        )
+        outputs = model(**inputs)
+        logits = outputs.logits
+        if hasattr(logits, 'numpy'):
+            logits = logits.numpy()
+        scores = logits.squeeze(-1).tolist()
+        if isinstance(scores, float):
+            scores = [scores]
+        all_scores.extend(scores)
+
+    return all_scores
+
+
+@app.post("/rerank", response_model=RerankResponse)
+async def rerank(request: RerankRequest):
+    """Rerank documents against a query using the cross-encoder model."""
+    if not config.RERANK_ENABLED:
+        raise HTTPException(status_code=404, detail="Reranking is disabled")
+
+    if not state.reranker_loaded:
+        raise HTTPException(status_code=503, detail="Reranker not loaded")
+
+    start_time = time.time()
+
+    # Run cross-encoder inference off the event loop
+    async with state.reranker_lock:
+        scores = await asyncio.to_thread(
+            _rerank_sync, request.query, request.documents
+        )
+
+    # Build results sorted by score descending
+    indexed_scores = [
+        RerankResult(index=i, score=s) for i, s in enumerate(scores)
+    ]
+    indexed_scores.sort(key=lambda r: r.score, reverse=True)
+
+    if request.top_n is not None:
+        indexed_scores = indexed_scores[: request.top_n]
+
+    took_ms = (time.time() - start_time) * 1000
+    return RerankResponse(results=indexed_scores, took_ms=took_ms)
+
+
 @app.get("/health")
 async def health():
     """Health check endpoint"""
@@ -353,7 +596,9 @@ async def health():
         }
 
     return HealthResponse(
-        status="healthy" if state.model is not None else "loading",
+        status="healthy" if state.model is not None and (
+            not config.RERANK_ENABLED or state.reranker_loaded
+        ) else "loading",
         is_loaded=state.model is not None,
         specter_model=config.MODEL_NAME,
         device=state.device or "unknown",
@@ -365,14 +610,19 @@ async def health():
 async def root():
     """Root endpoint with service info"""
     mode = "gateway" if state.pool is not None else "standalone"
+    endpoints = {
+        "embed": "POST /embed",
+        "health": "GET /health",
+    }
+    if config.RERANK_ENABLED:
+        endpoints["rerank"] = "POST /rerank"
     return {
         "service": "Embedding Service (BGE-M3)",
         "version": "1.0.0",
         "mode": mode,
-        "endpoints": {
-            "embed": "POST /embed",
-            "health": "GET /health",
-        },
+        "reranker_enabled": config.RERANK_ENABLED,
+        "reranker_loaded": state.reranker_loaded,
+        "endpoints": endpoints,
     }
 
 

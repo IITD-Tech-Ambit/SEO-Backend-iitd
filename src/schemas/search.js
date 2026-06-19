@@ -70,7 +70,9 @@ export const searchRequestSchema = {
         page: {
             type: 'integer',
             minimum: 1,
-            default: 1
+            maximum: 500,
+            default: 1,
+            description: 'Page number. Capped to prevent exceeding OpenSearch max_result_window (10000).'
         },
         per_page: {
             type: 'integer',
@@ -122,7 +124,8 @@ export const searchResponseSchema = {
                     link: { type: 'string' },
                     document_eid: { type: 'string' },
                     document_scopus_id: { type: 'string' },
-                    open_search_id: { type: 'string' }
+                    open_search_id: { type: 'string' },
+                    rerank_score: { type: 'number', description: 'Cross-encoder rerank score (present when reranking is applied)' }
                 }
             }
         },
@@ -247,6 +250,7 @@ export const authorScopedSearchRequestSchema = {
         page: {
             type: 'integer',
             minimum: 1,
+            maximum: 500,
             default: 1
         },
         per_page: {

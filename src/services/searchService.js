@@ -45,13 +45,21 @@ export default class SearchService {
             phraseBoost: 2.5,
             citationFactor: 0.3,
             recencyScale: 5,
-            // Minimum score thresholds to filter low-confidence results
+            // Minimum score thresholds to filter low-confidence results.
+            // Lowered after adding the vector-recall arm: pure-kNN candidates
+            // have zero BM25 component, so their normalized scores are lower.
+            // Re-tune against the eval harness after model changes.
             minScore: {
-                hybrid: 0.5,      // For BM25 + k-NN hybrid queries
-                impact: 0.5,      // For function_score impact queries  
-                normalized: 0.15  // For normalized 0-1 scale scores
+                hybrid: 0.3,
+                impact: 0.3,
+                normalized: 0.12,
+                normalizedAuthorScoped: 1.20
             }
         };
+
+        this.candidateK = config.search?.candidateK || 50;
+        this.rerankEnabled = config.search?.rerankEnabled ?? true;
+        this.rerankConfig = config.reranker || {};
 
         // In-process cache for the full IITD Faculty scopus_id roster.
         // Scopus ids on co-authors outside this set must never match the query,
@@ -261,27 +269,6 @@ export default class SearchService {
         const unique = [...new Set(searchIn.filter((f) => allowed.has(f)))];
         unique.sort();
         return unique.length ? unique : null;
-    }
-
-    /**
-     * Generate cache key for search results
-     * Normalizes filters to ensure consistent caching
-     */
-    _getCacheKey(query, filters, sort, page, perPage, searchIn = null) {
-        const normalizedFilters = filters ? Object.fromEntries(
-            Object.entries(filters).filter(([_, v]) => v !== undefined && v !== null && v !== '')
-        ) : {};
-
-        const payload = JSON.stringify({
-            query,
-            filters: normalizedFilters,
-            sort,
-            page,
-            perPage,
-            searchIn: searchIn || 'default'
-        });
-        const hash = crypto.createHash('sha256').update(payload).digest('hex').slice(0, 16);
-        return `search:${hash}`;
     }
 
     /**
@@ -1072,36 +1059,33 @@ export default class SearchService {
             });
         }
 
-        // k-NN vector search as BOOST ONLY (improves ranking, doesn't expand result set)
-        boostClauses.push({
-            knn: {
-                embedding: {
-                    vector: embedding,
-                    k: 100
-                }
-            }
-        });
-
         const csiOpts = { fuzziness: 'AUTO', authorScoped };
-        let bm25Must;
+        let bm25Clause;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
+            bm25Clause = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
         } else if (searchIn && searchIn.length > 0) {
-            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
+            bm25Clause = this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
-            // Default (all-fields) advanced: OR the text BM25 match with a nested author match.
-            // Generic search uses the IITD-Faculty roster gate; author-scoped search drops the
-            // gate because the anchor filter already restricts candidates to a single IITD faculty.
             const textBm25 = this._buildStrictBm25Must(query, searchFields);
             const authorClause = authorScoped
                 ? this._buildNonGatedAuthorMatchClause(query, { fuzziness: 'AUTO' })
                 : this._buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
-            bm25Must = authorClause
+            bm25Clause = authorClause
                 ? { bool: { should: [textBm25, authorClause], minimum_should_match: 1 } }
                 : textBm25;
         }
 
-        // Build sort clause
+        // Recall wrapper: either BM25 OR kNN can surface a candidate.
+        // This is true hybrid retrieval — vectors introduce semantically relevant
+        // docs even when they share no lexical tokens with the query.
+        const knnRecall = { knn: { embedding: { vector: embedding, k: 100 } } };
+        const recallGate = {
+            bool: {
+                should: [bm25Clause, knnRecall],
+                minimum_should_match: 1
+            }
+        };
+
         let sortClause = ['_score'];
         if (sort === 'date') {
             sortClause = [{ publication_year: 'desc' }, '_score'];
@@ -1116,7 +1100,7 @@ export default class SearchService {
             _source: ['mongo_id'],
             query: {
                 bool: {
-                    must: [bm25Must],
+                    must: [recallGate],
                     should: boostClauses,
                     filter: filterClauses
                 }
@@ -1167,32 +1151,40 @@ export default class SearchService {
         }
 
         const csiOpts = { fuzziness: 'AUTO', authorScoped };
-        let bm25Must;
+        let bm25Clause;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
+            bm25Clause = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
         } else if (searchIn && searchIn.length > 0) {
-            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
+            bm25Clause = this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
             const textBm25 = this._buildStrictBm25Must(query, searchFields);
             const authorClause = authorScoped
                 ? this._buildNonGatedAuthorMatchClause(query, { fuzziness: 'AUTO' })
                 : this._buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
-            bm25Must = authorClause
+            bm25Clause = authorClause
                 ? { bool: { should: [textBm25, authorClause], minimum_should_match: 1 } }
                 : textBm25;
         }
 
+        const knnRecall = { knn: { embedding: { vector: embedding, k: 100 } } };
+        const recallGate = {
+            bool: {
+                should: [bm25Clause, knnRecall],
+                minimum_should_match: 1
+            }
+        };
+
         return {
             size: perPage,
             from,
-            track_total_hits: true,  // Get accurate total count
-            min_score: this.searchConfig.minScore.impact,  // Filter low-confidence results
+            track_total_hits: true,
+            min_score: this.searchConfig.minScore.impact,
             _source: ['mongo_id'],
             query: {
                 function_score: {
                     query: {
                         bool: {
-                            must: [bm25Must],
+                            must: [recallGate],
                             should: boostClauses,
                             filter: filterClauses
                         }
@@ -1229,8 +1221,19 @@ export default class SearchService {
     }
 
     /**
-     * Build normalized hybrid query using script_score
-     * Normalizes BM25 and k-NN scores for fair combination
+     * Build normalized hybrid query using function_score.
+     *
+     * OpenSearch with FAISS engine does NOT support Painless cosineSimilarity()
+     * (vectors are stored natively, not as Lucene doc-values). Instead we use
+     * the k-NN plugin's own "knn" script language via a function_score function
+     * to inject vector similarity into the final score alongside BM25.
+     *
+     * Scoring: function_score(boost_mode=replace) =>
+     *   bm25Weight * sigmoid(BM25) + vectorWeight * knn_score
+     *
+     * The BM25 normalization (sigmoid) is done in a painless script_score
+     * function, while the kNN score comes from the native knn script_score
+     * function. function_score's score_mode=sum adds them together.
      */
     _buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false } = {}) {
         const from = (page - 1) * perPage;
@@ -1245,23 +1248,39 @@ export default class SearchService {
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
 
-        const csiOpts = { fuzziness: 'AUTO', authorScoped };
-        let bm25Must;
+        // Author-scoped search uses fuzziness AUTO (same as regular search) since the
+        // higher min_score threshold filters out weak kNN-only matches that would otherwise
+        // flood results from the same domain.
+        const fuzzSetting = { fuzziness: 'AUTO' };
+        const csiOpts = { ...fuzzSetting, authorScoped };
+        let bm25Clause;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Must = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
+            bm25Clause = this._buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
         } else if (searchIn && searchIn.length > 0) {
-            bm25Must = this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
+            bm25Clause = this._buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
-            const textBm25 = this._buildStrictBm25Must(query, searchFields);
+            const textBm25 = this._buildStrictBm25Must(query, searchFields, fuzzSetting);
             const authorClause = authorScoped
-                ? this._buildNonGatedAuthorMatchClause(query, { fuzziness: 'AUTO' })
+                ? this._buildNonGatedAuthorMatchClause(query, fuzzSetting)
                 : this._buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
-            bm25Must = authorClause
+            bm25Clause = authorClause
                 ? { bool: { should: [textBm25, authorClause], minimum_should_match: 1 } }
                 : textBm25;
         }
 
-        // Boost-only clauses
+        const knnRecall = { knn: { embedding: { vector: embedding, k: 100 } } };
+        // For author-scoped search, allow EITHER BM25 or kNN to recall results.
+        // Previously BM25 was mandatory (`must`), which excluded semantically relevant
+        // papers that use different terminology (e.g. "photovoltaic" missing papers about
+        // "solar"). A higher min_score for author-scoped search (applied below) filters
+        // out weak kNN-only matches that are truly tangential.
+        const recallGate = {
+            bool: {
+                should: [bm25Clause, knnRecall],
+                minimum_should_match: 1
+            }
+        };
+
         const boostClauses = [];
         if (searchAllFields || searchIn.includes('subject_area')) {
             boostClauses.push({
@@ -1286,35 +1305,46 @@ export default class SearchService {
         return {
             size: perPage,
             from,
-            track_total_hits: true,  // Get accurate total count
-            min_score: this.searchConfig.minScore.normalized,  // Filter low-confidence results (0-1 scale)
+            track_total_hits: true,
+            min_score: authorScoped
+                ? this.searchConfig.minScore.normalizedAuthorScoped
+                : this.searchConfig.minScore.normalized,
             _source: ['mongo_id'],
             query: {
-                script_score: {
+                function_score: {
                     query: {
                         bool: {
-                            must: [bm25Must],
+                            must: [recallGate],
                             should: boostClauses,
                             filter: filterClauses
                         }
                     },
-                    script: {
-                        source: `
-                            // Normalize BM25 score (typically 0-20) to 0-1 range
-                            double bm25 = _score / (1.0 + _score);
-                            
-                            // k-NN cosine similarity (returns -1 to 1, normalize to 0-1)
-                            double knn = (cosineSimilarity(params.queryVector, 'embedding') + 1.0) / 2.0;
-                            
-                            // Weighted combination
-                            return params.bm25Weight * bm25 + params.vectorWeight * knn;
-                        `,
-                        params: {
-                            queryVector: embedding,
-                            bm25Weight: weights.bm25,
-                            vectorWeight: weights.vector
+                    functions: [
+                        {
+                            script_score: {
+                                script: {
+                                    source: `${weights.bm25} * (_score / (1.0 + _score))`,
+                                    lang: 'painless'
+                                }
+                            }
+                        },
+                        {
+                            script_score: {
+                                script: {
+                                    source: 'knn_score',
+                                    lang: 'knn',
+                                    params: {
+                                        field: 'embedding',
+                                        query_value: embedding,
+                                        space_type: 'cosinesimil'
+                                    }
+                                }
+                            },
+                            weight: weights.vector
                         }
-                    }
+                    ],
+                    score_mode: 'sum',
+                    boost_mode: 'replace'
                 }
             },
             aggs: this._getAggregations()
@@ -1571,7 +1601,6 @@ export default class SearchService {
                 ? Faculty.find({ scopus_id: { $in: authorIds } })
                     .populate('department', 'name')
                     .select('firstName lastName email expert_id department scopus_id')
-                    .limit(50)
                     .lean()
                 : [],
             kerberosArr.length > 0
@@ -1800,23 +1829,38 @@ export default class SearchService {
         // ── ADVANCED MODE: Hybrid BM25 + k-NN ──
         this.logger.info({ query, mode }, 'Running ADVANCED (hybrid) search');
 
-        // Generate query embedding
         const embedding = await this.embeddingService.embedQuery(query);
 
-        // Pre-check: Run BM25 query WITH fuzziness to catch near-matches (typos)
-        const bm25Matches = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
-
-        // If no BM25 matches even with fuzziness, try fuzzy fallback
-        if (bm25Matches === 0) {
-            this.logger.info({ query }, 'No BM25 matches even with fuzziness, attempting fuzzy fallback');
-            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
+        // BM25 pre-check gate: if no document matches the query via BM25 (even with
+        // fuzziness AUTO), skip the hybrid kNN search entirely. Without this gate,
+        // the kNN arm of the recall gate always finds nearest-neighbor documents —
+        // even for complete gibberish — producing irrelevant results.
+        const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
+        if (bm25HitCount === 0) {
+            this.logger.info({ query }, 'BM25 pre-check returned 0 hits — skipping hybrid search (no lexical relevance)');
+            const suggestions = await this._getSuggestions(query);
+            return {
+                results: [],
+                related_faculty: [],
+                suggestions,
+                facets: {},
+                pagination: { page, per_page, total: 0, total_pages: 0 },
+                mode: 'advanced',
+                message: suggestions.length > 0
+                    ? 'No results found. Did you mean one of the suggestions?'
+                    : 'No results found. Try different keywords.',
+                cacheHit: false
+            };
         }
 
-        // Build query based on sort option
+        // Build query based on sort option.
+        // 'relevance' and 'normalized' both use _buildNormalizedHybridQuery (script_score)
+        // so BM25 and kNN are on comparable 0-1 scales. 'date' and 'citations' use
+        // _buildHybridQuery because primary ordering is by field, not score.
         let osQuery;
         if (sort === 'impact') {
             osQuery = this._buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
-        } else if (sort === 'normalized') {
+        } else if (sort === 'relevance' || sort === 'normalized') {
             osQuery = this._buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
         } else {
             osQuery = this._buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
@@ -1845,12 +1889,40 @@ export default class SearchService {
             this.logger.info({ refine_within }, 'Added refine_within constraint to advanced query');
         }
 
+        // Determine if reranking is applicable for this query.
+        // Rerank only for relevance/normalized sorts in advanced mode, within the candidate window.
+        const rerankApplicable = this.rerankEnabled
+            && (sort === 'relevance' || sort === 'normalized');
+        const rerankEligible = rerankApplicable
+            && (page - 1) * per_page < this.candidateK;
+
+        // Pages beyond the reranked window get un-reranked raw results which are often
+        // poorly ordered. Cap pagination to the reranked window to prevent this.
+        if (rerankApplicable && !rerankEligible) {
+            return {
+                results: [],
+                related_faculty: [],
+                suggestions: [],
+                facets: {},
+                pagination: { page, per_page, total: this.candidateK, total_pages: Math.ceil(this.candidateK / per_page) },
+                mode: 'advanced',
+                cacheHit: false
+            };
+        }
+
+        if (rerankEligible) {
+            osQuery.size = this.candidateK;
+            osQuery.from = 0;
+        }
+
         this.logger.info({ 
             opensearchQuery: JSON.stringify(osQuery.query, null, 2),
             sort: osQuery.sort,
             minScore: osQuery.min_score,
             mode: 'advanced',
-            refine_within: !!refine_within
+            refine_within: !!refine_within,
+            rerankEligible,
+            candidateK: rerankEligible ? this.candidateK : undefined
         }, 'OpenSearch query being executed');
 
         const osResponse = await this.opensearch.search({
@@ -1861,11 +1933,35 @@ export default class SearchService {
         const hits = osResponse.body.hits.hits;
         const total = osResponse.body.hits.total.value;
 
+        // If primary search returned 0 results, try fuzzy fallback
+        if (total === 0) {
+            this.logger.info({ query }, 'Primary search returned 0 results, attempting fuzzy fallback');
+            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
+        }
+
         // Hydrate from MongoDB
-        const results = await this._hydrateFromMongoDB(hits);
+        let results = await this._hydrateFromMongoDB(hits);
         await this._applyFacultyDisplayNamesForBasicSearch(results);
 
-        // Extract related faculty from results
+        // Rerank if eligible, then paginate within the reranked window
+        if (rerankEligible && results.length > 0) {
+            const reranked = await this._rerankResults(query, results);
+            results = reranked.results;
+
+            if (reranked.reranked) {
+                this.logger.info({
+                    candidatesReranked: results.length,
+                    page, per_page
+                }, 'Reranked candidates, slicing page window');
+            }
+
+            // Paginate within the reranked window
+            const start = (page - 1) * per_page;
+            const end = start + per_page;
+            results = results.slice(start, end);
+        }
+
+        // Extract related faculty from the page results
         const related_faculty = await this._extractRelatedFaculty(results);
 
         // Generate "did you mean?" suggestions for low-result queries
@@ -1874,7 +1970,6 @@ export default class SearchService {
             suggestions = await this._getSuggestions(query);
         }
 
-        // Build response
         const response = {
             results,
             related_faculty,
@@ -1883,17 +1978,11 @@ export default class SearchService {
             pagination: {
                 page,
                 per_page,
-                total,
-                total_pages: Math.ceil(total / per_page)
+                total: rerankEligible ? Math.min(total, this.candidateK) : total,
+                total_pages: Math.ceil((rerankEligible ? Math.min(total, this.candidateK) : total) / per_page)
             },
             mode: 'advanced'
         };
-
-        // If primary search returned 0 results, try fuzzy fallback
-        if (total === 0) {
-            this.logger.info({ query }, 'Primary search returned 0 results, attempting fuzzy fallback');
-            return await this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
-        }
 
         // Cache results
         try {
@@ -1915,49 +2004,118 @@ export default class SearchService {
     }
 
     /**
-     * BM25 pre-check: count how many documents match with fuzziness
-     * Used to decide whether to attempt a fuzzy fallback
+     * Rerank a set of hydrated results using the cross-encoder.
+     * Handles per-doc Redis score caching so only cache-misses are sent to /rerank.
+     * Returns the full candidate list reordered by rerank score.
+     * On error, returns the original list unchanged (graceful fallback).
+     */
+    async _rerankResults(query, results) {
+        const modelVersion = this.rerankConfig.modelVersion || 'bge-reranker-base-v1';
+        const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 12);
+        const ttl = this.rerankConfig.scoreCacheTTL || 3600;
+
+        const documents = results.map(r => {
+            const title = r.title || '';
+            const abstract = r.abstract || '';
+            return `${title}\n${abstract}`.slice(0, 1200);
+        });
+
+        // Check Redis for cached per-doc rerank scores
+        const cacheKeys = results.map(r => `rerank:${modelVersion}:${queryHash}:${r.mongo_id}`);
+        let cachedScores;
+        try {
+            cachedScores = await this.redis.mget(...cacheKeys);
+        } catch {
+            cachedScores = new Array(cacheKeys.length).fill(null);
+        }
+
+        const missingIndices = [];
+        const missingDocs = [];
+        const scores = new Array(results.length);
+
+        for (let i = 0; i < results.length; i++) {
+            if (cachedScores[i] != null) {
+                scores[i] = parseFloat(cachedScores[i]);
+            } else {
+                missingIndices.push(i);
+                missingDocs.push(documents[i]);
+            }
+        }
+
+        if (missingDocs.length > 0) {
+            try {
+                const rerankResults = await this.embeddingService.rerank(query, missingDocs);
+
+                // rerankResults is sorted by score desc — map back using the original index
+                const scoreByRerankIndex = {};
+                for (const rr of rerankResults) {
+                    scoreByRerankIndex[rr.index] = rr.score;
+                }
+
+                const pipeline = this.redis.pipeline();
+                for (let j = 0; j < missingIndices.length; j++) {
+                    const origIdx = missingIndices[j];
+                    const score = scoreByRerankIndex[j] ?? 0;
+                    scores[origIdx] = score;
+                    pipeline.setex(cacheKeys[origIdx], ttl, String(score));
+                }
+                pipeline.exec().catch(err =>
+                    this.logger.warn({ err }, 'Redis rerank score cache write failed')
+                );
+            } catch (err) {
+                this.logger.warn({ err: err.message }, 'Reranker failed, keeping first-stage order');
+                return { results, reranked: false };
+            }
+        }
+
+        // Reorder by rerank score descending
+        const indexed = results.map((r, i) => ({ result: r, score: scores[i] }));
+        indexed.sort((a, b) => b.score - a.score);
+
+        return {
+            results: indexed.map(x => ({ ...x.result, rerank_score: x.score })),
+            reranked: true
+        };
+    }
+
+    /**
+     * BM25 pre-check: count how many documents have ANY lexical overlap with the query.
+     * Used as a gate before hybrid search (prevents kNN-only results for gibberish)
+     * and to decide whether to attempt a fuzzy fallback.
+     *
+     * Intentionally lenient (OR across terms, no fuzziness) so that legitimate
+     * queries with partial vocabulary overlap still pass. The bar is: does at least
+     * one query token appear in at least one document? If not, the query has zero
+     * lexical relevance and kNN nearest-neighbors would be noise.
      */
     async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null, facultyKerberosIds = null) {
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
         const useAuthorRefine = authorRefineNarrow && authorOnly && refine_within?.trim();
 
-        // Default-all-fields pre-check must mirror the MUST clause used by _buildHybridQuery /
-        // _buildImpactQuery / _buildNormalizedHybridQuery: text match OR IITD-restricted author
-        // match. Flat `author_names` is intentionally excluded so pre-check cannot declare a
-        // non-IITD co-author name "matched" and trigger a full search that then returns zero.
-        const defaultPreCheckQuery = () => {
+        let preCheckClause;
+        if (useAuthorRefine) {
+            preCheckClause = this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds);
+        } else if (search_in && search_in.length > 0) {
+            preCheckClause = this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
+        } else {
+            // No fuzziness, default OR operator: at least one token must appear verbatim.
+            // This blocks gibberish ("asdasdasd") while allowing partial-vocab queries
+            // ("solar panels efficiency" passes because "solar" and "efficiency" match).
             const textMatch = {
                 multi_match: {
                     query: query,
-                    fields: ['title', 'abstract', 'subject_area', 'field_associated'],
-                    fuzziness: 'AUTO'
+                    fields: ['title', 'abstract', 'subject_area', 'field_associated']
                 }
             };
             const iitdAuthor = this._buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
-            return iitdAuthor
+            preCheckClause = iitdAuthor
                 ? { bool: { should: [textMatch, iitdAuthor], minimum_should_match: 1 } }
                 : textMatch;
-        };
-
-        const bm25CheckQuery = useAuthorRefine
-            ? {
-                size: 0,
-                query: this._buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds)
-            }
-            : search_in && search_in.length > 0
-            ? {
-                size: 0,
-                query: this._buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds)
-            }
-            : {
-                size: 0,
-                query: defaultPreCheckQuery()
-            };
+        }
 
         const response = await this.opensearch.search({
             index: this.indexName,
-            body: bm25CheckQuery
+            body: { size: 0, query: preCheckClause }
         });
 
         return response.body.hits.total.value;
@@ -2007,6 +2165,11 @@ export default class SearchService {
                 : textBm25;
         }
 
+        // Fuzzy fallback requires a BM25 match (must) — kNN only boosts ranking.
+        // The BM25 pre-check gate already blocks queries with zero lexical matches,
+        // so this path only fires for queries that had some fuzzy BM25 overlap.
+        const knnBoost = { knn: { embedding: { vector: embedding, k: 50 } } };
+
         const fallbackQuery = {
             size: per_page,
             from,
@@ -2015,16 +2178,7 @@ export default class SearchService {
             query: {
                 bool: {
                     must: [fuzzyMust],
-                    should: [
-                        {
-                            knn: {
-                                embedding: {
-                                    vector: embedding,
-                                    k: 50
-                                }
-                            }
-                        }
-                    ],
+                    should: [knnBoost],
                     filter: filterClauses
                 }
             },
@@ -2376,9 +2530,12 @@ export default class SearchService {
                 osQuery = base;
             } else {
                 const embedding = await this.embeddingService.embedQuery(query);
-                // Reuse _buildHybridQuery to guarantee identical matching logic
-                const base = this._buildHybridQuery(
-                    query, embedding, {}, page, per_page, 'relevance',
+                // Use _buildNormalizedHybridQuery (not _buildHybridQuery) to guarantee
+                // BM25 and kNN scores are on comparable 0-1 scales via function_score.
+                // _buildHybridQuery uses raw scores where BM25 (10-50) dwarfs kNN (0-1),
+                // making semantic similarity effectively useless.
+                const base = this._buildNormalizedHybridQuery(
+                    query, embedding, {}, page, per_page,
                     searchInNorm, facultyAuthorIds, authorRefineNarrow,
                     refine_within, facultyKerberosIds,
                     { authorScoped: true }
@@ -2415,7 +2572,6 @@ export default class SearchService {
                 }
 
                 delete base.aggs;
-                delete base.min_score;
                 osQuery = base;
             }
 
@@ -2752,7 +2908,9 @@ export default class SearchService {
             body._source = false;
             body.aggs = facultyAggs;
             if (mode === 'advanced') {
-                body.min_score = this.searchConfig.minScore.impact;
+                // Use the same threshold as authorScopedSearch so the per-faculty
+                // paper_count matches what the user sees when clicking a faculty member.
+                body.min_score = this.searchConfig.minScore.normalizedAuthorScoped;
             } else {
                 delete body.min_score;
             }
@@ -2779,13 +2937,16 @@ export default class SearchService {
             osQuery = patchFacultyAggBody(base);
         } else {
             const embedding = await this.embeddingService.embedQuery(query);
-            let base = this._buildHybridQuery(
+            // Use _buildNormalizedHybridQuery (not _buildHybridQuery) to guarantee
+            // BM25 and kNN scores are on comparable 0-1 scales via function_score.
+            // This ensures the document set matches the main search endpoint, fixing
+            // paper count inconsistencies in the People sidebar.
+            let base = this._buildNormalizedHybridQuery(
                 query,
                 embedding,
                 emptyFilters,
                 1,
                 1,
-                'relevance',
                 searchInNorm,
                 facultyAuthorIds,
                 authorRefineNarrow,

@@ -45,6 +45,9 @@ type Config struct {
 
 	// Cache (for two-phase indexing)
 	CacheDir string
+
+	// Test dump directory — when --test is used, corpus + golden set are written here
+	TestDumpDir string
 }
 
 // Load reads configuration from environment variables
@@ -88,6 +91,9 @@ func Load() *Config {
 
 		// Cache
 		CacheDir: getEnv("CACHE_DIR", ".cache"),
+
+		// Test dump
+		TestDumpDir: getEnv("TEST_DUMP_DIR", "../tests/fixtures"),
 	}
 }
 

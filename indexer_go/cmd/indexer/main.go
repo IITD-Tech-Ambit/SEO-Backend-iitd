@@ -11,34 +11,36 @@ import (
 	"github.com/sudarshan/indexer/internal/indexer"
 )
 
-const usage = `Research Document Indexer - Two Phase Architecture
+const usage = `Research Document Indexer - Streaming Pipeline Architecture
 
 Usage:
   indexer <command> [options]
 
 Commands:
-  phase1          Run Phase 1: Fetch documents and generate embeddings (cached)
-  phase2          Run Phase 2: Index to OpenSearch and update MongoDB (from cache)
-  run             Run both phases sequentially
+  run             Streaming pipeline: embed → index concurrently via channels
+  phase1          Phase 1 only: fetch + embed to cache (for large resumable runs)
+  phase2          Phase 2 only: index from cache to OpenSearch
   status          Show cache status
   clean           Clear cache
   create-index    Create single concrete OpenSearch index (no alias)
   delete-index    Remove alias + legacy indices; prepare for one concrete index
-  reindex-full    Full reindex: delete index, recreate, clear IDs, run both phases
+  reindex-full    Full reindex: delete, recreate, clear IDs, stream pipeline
   index-authors   Build the authors_suggest index from MongoDB faculties (typeahead)
 
 Options:
   --limit N       Limit number of documents (0 = all, default: 0)
   --reindex-all   Reindex all documents (ignore existing IDs)
   --workers N     Number of parallel workers (0 = use config, default: 0)
+  --test          Dump indexed docs to test_corpus.json + golden_set_corpus.json after run
   --recreate      (index-authors) Delete + recreate the authors_suggest index first
   --no-paper-count (index-authors) Skip deriving paper_count from research_documents
   --quiet         Minimal output
 
 Examples:
-  indexer phase1 --limit 1000     # Fetch and embed first 1000 docs
-  indexer phase2                   # Index cached embeddings to OpenSearch
+  indexer run --limit 1000 --test  # Index 1000 docs and dump test corpus
   indexer run --reindex-all        # Full run, reindex everything
+  indexer phase1 --limit 5000      # Cache embeddings only (resumable)
+  indexer phase2                   # Index from cache (after phase1)
   indexer status                   # Check cache status
 `
 
@@ -58,6 +60,7 @@ func main() {
 		quiet        bool
 		recreate     bool
 		noPaperCount bool
+		testDump     bool
 	)
 
 	for i := 2; i < len(os.Args); i++ {
@@ -74,6 +77,8 @@ func main() {
 				fmt.Sscanf(os.Args[i+1], "%d", &workers)
 				i++
 			}
+		case "--test":
+			testDump = true
 		case "--recreate":
 			recreate = true
 		case "--no-paper-count":
@@ -102,7 +107,7 @@ func main() {
 	if !quiet {
 		fmt.Println()
 		fmt.Println("============================================================")
-		fmt.Println(" Research Document Indexer (Go) - Two Phase Architecture")
+		fmt.Println(" Research Document Indexer (Go) - Streaming Pipeline")
 		fmt.Println("============================================================")
 		fmt.Printf(" Index:    %s\n", cfg.OpenSearchIndex)
 		fmt.Printf(" Workers:  %d\n", cfg.NumWorkers)
@@ -132,7 +137,7 @@ func main() {
 		runPhase2(ctx, cfg, quiet)
 
 	case "run":
-		runBoth(ctx, cfg, limit, reindexAll, quiet)
+		runBoth(ctx, cfg, limit, reindexAll, testDump, quiet)
 
 	case "status":
 		showStatus(cfg, quiet)
@@ -193,7 +198,7 @@ func runPhase2(ctx context.Context, cfg *config.Config, quiet bool) {
 }
 
 // Run both: Needs everything
-func runBoth(ctx context.Context, cfg *config.Config, limit int, reindexAll, quiet bool) {
+func runBoth(ctx context.Context, cfg *config.Config, limit int, reindexAll, testDump, quiet bool) {
 	idx, err := indexer.New(cfg, quiet)
 	if err != nil {
 		fmt.Printf("Error: Failed to initialize: %v\n", err)
@@ -204,6 +209,13 @@ func runBoth(ctx context.Context, cfg *config.Config, limit int, reindexAll, qui
 	if err := idx.RunBothPhases(ctx, limit, reindexAll); err != nil {
 		fmt.Printf("Error: Indexing failed: %v\n", err)
 		os.Exit(1)
+	}
+
+	if testDump {
+		if err := idx.DumpTestCorpus(); err != nil {
+			fmt.Printf("Error: Test corpus dump failed: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 

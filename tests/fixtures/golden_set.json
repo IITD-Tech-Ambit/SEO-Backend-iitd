@@ -1,0 +1,234 @@
+{
+  "version": 1,
+  "description": "Golden set for search relevance evaluation. Each entry maps a query to known-relevant mongo_ids with graded relevance (3=perfect, 2=highly relevant, 1=marginally relevant). Populate with real mongo_ids from the test index.",
+  "queries": [
+    {
+      "id": "topical-ml-1",
+      "query": "deep learning for image classification",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Multi-word topical query; expects ML/CV papers"
+    },
+    {
+      "id": "topical-nlp-1",
+      "query": "natural language processing transformers",
+      "type": "topical",
+      "relevant": {},
+      "notes": "NLP topical query"
+    },
+    {
+      "id": "synonym-1",
+      "query": "neural network optimization techniques",
+      "type": "synonym",
+      "relevant": {
+        "69dec9f54e2d2a5b77ece1f3": 2
+      },
+      "notes": "Should find papers about 'training methods', 'gradient descent', etc. — tests vector recall [AUTO: top 1 results added as grade 2 — review and adjust grades]"
+    },
+    {
+      "id": "paraphrase-1",
+      "query": "methods to reduce pollution in rivers",
+      "type": "paraphrase",
+      "relevant": {},
+      "notes": "Paraphrase query — papers may use 'water treatment', 'effluent removal', etc. Critical test for vector-recall arm (bug #1 fix)"
+    },
+    {
+      "id": "paraphrase-2",
+      "query": "improving crop yield using modern techniques",
+      "type": "paraphrase",
+      "relevant": {},
+      "notes": "Paraphrase — papers may use 'precision agriculture', 'fertilizer optimization'"
+    },
+    {
+      "id": "author-1",
+      "query": "Sharma",
+      "type": "author",
+      "relevant": {
+        "69dec9f54e2d2a5b77ece1be": 2,
+        "69dec9f54e2d2a5b77ece1d9": 2,
+        "69dec9f54e2d2a5b77ece1c4": 2,
+        "69dec9f54e2d2a5b77ece1da": 2,
+        "69dec9f54e2d2a5b77ece1db": 2
+      },
+      "notes": "Author name search — should find papers by IITD faculty named Sharma [AUTO: top 5 results added as grade 2 — review and adjust grades]"
+    },
+    {
+      "id": "author-2",
+      "query": "Kumar materials science",
+      "type": "author-topic",
+      "relevant": {},
+      "notes": "Author + topic combined query"
+    },
+    {
+      "id": "topical-energy-1",
+      "query": "solar cell efficiency perovskite",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Specific topic in materials/energy"
+    },
+    {
+      "id": "topical-bio-1",
+      "query": "protein folding prediction",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Bioinformatics/structural biology query"
+    },
+    {
+      "id": "topical-infra-1",
+      "query": "reinforced concrete structural analysis",
+      "type": "topical",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdee1": 2,
+        "69dec9f34e2d2a5b77ecdf2a": 2,
+        "69dec9f34e2d2a5b77ecdef3": 2
+      },
+      "notes": "Civil engineering query [AUTO: top 3 results added as grade 2 — review and adjust grades]"
+    },
+    {
+      "id": "typo-1",
+      "query": "machne lerning clasification",
+      "type": "typo",
+      "relevant": {},
+      "notes": "Typo query — tests fuzzy fallback + vector recall"
+    },
+    {
+      "id": "topical-iot-1",
+      "query": "internet of things smart city",
+      "type": "topical",
+      "relevant": {},
+      "notes": "IoT / smart systems query"
+    },
+    {
+      "id": "topical-chem-1",
+      "query": "catalytic conversion of carbon dioxide",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Chemistry / environment query"
+    },
+    {
+      "id": "synonym-2",
+      "query": "heart disease risk prediction",
+      "type": "synonym",
+      "relevant": {},
+      "notes": "Medical — papers may use 'cardiovascular', 'coronary', 'cardiac risk assessment'"
+    },
+    {
+      "id": "topical-math-1",
+      "query": "graph theory combinatorics",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Math / theoretical CS query"
+    },
+    {
+      "id": "topical-wireless-1",
+      "query": "5G MIMO antenna design",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Electrical engineering query"
+    },
+    {
+      "id": "paraphrase-3",
+      "query": "ways to make buildings earthquake resistant",
+      "type": "paraphrase",
+      "relevant": {},
+      "notes": "Paraphrase — papers may say 'seismic retrofitting', 'structural resilience'"
+    },
+    {
+      "id": "topical-quantum-1",
+      "query": "quantum computing error correction",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Physics / CS query"
+    },
+    {
+      "id": "topical-robotics-1",
+      "query": "autonomous vehicle path planning",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Robotics / AI query"
+    },
+    {
+      "id": "single-word-1",
+      "query": "nanotechnology",
+      "type": "single-word",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdec1": 2,
+        "69dec9f34e2d2a5b77ecdec6": 2,
+        "69dec9f34e2d2a5b77ecdec5": 2
+      },
+      "notes": "Single broad topic — tests recall breadth [AUTO: top 3 results added as grade 2 — review and adjust grades]"
+    },
+    {
+      "id": "topical-security-1",
+      "query": "adversarial attacks on machine learning models",
+      "type": "topical",
+      "relevant": {},
+      "notes": "AI security query"
+    },
+    {
+      "id": "topical-env-1",
+      "query": "microplastics in drinking water",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Environmental science query"
+    },
+    {
+      "id": "synonym-3",
+      "query": "renewable power storage batteries",
+      "type": "synonym",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0a6": 2
+      },
+      "notes": "Synonym — papers may use 'energy storage', 'lithium-ion', 'grid-scale' [AUTO: top 1 results added as grade 2 — review and adjust grades]"
+    },
+    {
+      "id": "topical-mech-1",
+      "query": "turbulence modeling computational fluid dynamics",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Mechanical engineering query"
+    },
+    {
+      "id": "topical-textile-1",
+      "query": "smart textile wearable sensors",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Interdisciplinary query"
+    },
+    {
+      "id": "paraphrase-4",
+      "query": "teaching machines to understand human emotions",
+      "type": "paraphrase",
+      "relevant": {},
+      "notes": "Paraphrase for 'sentiment analysis', 'affective computing', 'emotion recognition'"
+    },
+    {
+      "id": "topical-privacy-1",
+      "query": "differential privacy federated learning",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Privacy-preserving ML query"
+    },
+    {
+      "id": "topical-drug-1",
+      "query": "drug delivery nanoparticles",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Biomedical / pharma query"
+    },
+    {
+      "id": "topical-network-1",
+      "query": "software defined networking load balancing",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Networking / systems query"
+    },
+    {
+      "id": "topical-climate-1",
+      "query": "climate change impact on agriculture in India",
+      "type": "topical",
+      "relevant": {},
+      "notes": "Regional topic with geographic context"
+    }
+  ]
+}

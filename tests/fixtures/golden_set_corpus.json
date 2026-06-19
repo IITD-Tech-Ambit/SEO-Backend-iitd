@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "description": "Golden set aligned to the test corpus. Source doc is grade 3.",
+  "corpus_documents": 1000,
+  "exported_at": "2026-06-18T22:49:23Z",
+  "queries": [
+    {
+      "id": "corpus-01",
+      "query": "Groundwater markets, irrigation efficiency and",
+      "type": "title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecde9d",
+      "source_title": "Groundwater markets, irrigation efficiency and sustainability: A study from North India",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecde9d": 3
+      },
+      "notes": "Auto-generated (Book Chapter, 2012)"
+    },
+    {
+      "id": "corpus-02",
+      "query": "J.V. Medicine",
+      "type": "author",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdea0",
+      "source_title": "Using a discrete choice experiment to elicit the demand for a nutritious food: Willingness-to-pay for orange maize in rural Zambia",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdea0": 3
+      },
+      "notes": "Auto-generated (Article, 2012)"
+    },
+    {
+      "id": "corpus-03",
+      "query": "Business, Management and Accounting",
+      "type": "field",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdea1",
+      "source_title": "Local network externalities and market segmentation",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdea1": 3
+      },
+      "notes": "Auto-generated (Article, 2009)"
+    },
+    {
+      "id": "corpus-04",
+      "query": "Millers, commission agents and collusion",
+      "type": "title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdea2",
+      "source_title": "Millers, commission agents and collusion in grain markets: Evidence from basmati auctions in North India",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdea2": 3
+      },
+      "notes": "Auto-generated (Article, 2008)"
+    },
+    {
+      "id": "corpus-05",
+      "query": "A. Agricultural and Biological Sciences",
+      "type": "author",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdea4",
+      "source_title": "Buyer collusion and efficiency of government intervention in wheat markets in northern India: An asymmetric structural auctions analysis",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdea4": 3
+      },
+      "notes": "Auto-generated (Article, 2004)"
+    },
+    {
+      "id": "corpus-06",
+      "query": "Computer Science",
+      "type": "field",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdea6",
+      "source_title": "Leveling Up Leadership: Emerging Voices and Evolving Practices in the Games \u0026 Play Community",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdea6": 3
+      },
+      "notes": "Auto-generated (Conference Paper, 2025)"
+    },
+    {
+      "id": "corpus-07",
+      "query": "Theory as Design Material: How",
+      "type": "title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdea7",
+      "source_title": "Theory as Design Material: How Design Researchers Use Design Skills to Explore the Malleability of Theory",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdea7": 3
+      },
+      "notes": "Auto-generated (Article, 2025)"
+    },
+    {
+      "id": "corpus-08",
+      "query": "B. Engineering",
+      "type": "author",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdea9",
+      "source_title": "Impact of Body Language on Design Students—A Case Study at an Indian University Classroom",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdea9": 3
+      },
+      "notes": "Auto-generated (Conference Paper, 2025)"
+    },
+    {
+      "id": "corpus-09",
+      "query": "Mathematics",
+      "type": "field",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdeac",
+      "source_title": "Designing Pachi: A Verbal Language Learning Application for Children with Hearing Impairment in India",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdeac": 3
+      },
+      "notes": "Auto-generated (Conference Paper, 2024)"
+    },
+    {
+      "id": "corpus-10",
+      "query": "Eliciting Willingness-to-Pay through Multiple Experimental",
+      "type": "title",
+      "source_mongo_id": "69dec9f24e2d2a5b77ecde98",
+      "source_title": "Eliciting Willingness-to-Pay through Multiple Experimental Procedures: Evidence from Lab-in-the-Field in Rural Ghana",
+      "relevant": {
+        "69dec9f24e2d2a5b77ecde98": 3
+      },
+      "notes": "Auto-generated (Article, 2018)"
+    },
+    {
+      "id": "corpus-11",
+      "query": "A. Decision Sciences",
+      "type": "author",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdead",
+      "source_title": "Facilitating Use of Existing Knowledge in Research-Through-Design: A Case Study with Design Students",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdead": 3
+      },
+      "notes": "Auto-generated (Conference Paper, 2023)"
+    },
+    {
+      "id": "corpus-12",
+      "query": "Chemistry",
+      "type": "field",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdeb2",
+      "source_title": "Triplet Energy Migration in Cytoskeletal Polymers",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdeb2": 3
+      },
+      "notes": "Auto-generated (Article, 2025)"
+    },
+    {
+      "id": "corpus-13",
+      "query": "Stop Clickbait: Detecting and preventing",
+      "type": "title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdfe0",
+      "source_title": "Stop Clickbait: Detecting and preventing clickbaits in online news media",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdfe0": 3
+      },
+      "notes": "Auto-generated (Conference Paper, 2016)"
+    },
+    {
+      "id": "corpus-14",
+      "query": "M. Energy",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece116",
+      "source_title": "Optimal coordination of directional over-current relays using Teaching Learning-Based Optimization (TLBO) algorithm",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece116": 3
+      },
+      "notes": "Auto-generated (Article, 2013)"
+    },
+    {
+      "id": "corpus-15",
+      "query": "Engineering",
+      "type": "field",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdfab",
+      "source_title": "Joining technologies for automotive battery systems manufacturing",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdfab": 3
+      },
+      "notes": "Auto-generated (Article, 2018)"
+    }
+  ]
+}

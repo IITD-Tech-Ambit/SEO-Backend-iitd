@@ -75,6 +75,10 @@ redis_data/
 opensearch_data/
 embedding_cache/
 
+# ==================== TEST FIXTURES (generated) ====================
+# Regenerate via: node tests/scripts/dump_test_corpus.mjs
+tests/fixtures/test_corpus.json
+
 # ==================== MISC ====================
 *.tgz
 .eslintcache
