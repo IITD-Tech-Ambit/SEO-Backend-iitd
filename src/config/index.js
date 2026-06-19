@@ -40,7 +40,8 @@ export default {
     // Embedding Service
     embeddingService: {
         url: process.env.EMBEDDING_SERVICE_URL || 'http://localhost:8000',
-        timeout: 10000
+        timeout: 10000,
+        rerankTimeout: parseInt(process.env.RERANK_TIMEOUT_MS || '800')
     },
 
     // Timeouts
@@ -84,6 +85,15 @@ export default {
         hybridWeights: {
             bm25: 0.4,
             vector: 0.6
-        }
+        },
+        candidateK: parseInt(process.env.CANDIDATE_K || '50'),
+        rerankEnabled: (process.env.RERANK_ENABLED || 'true').toLowerCase() === 'true'
+    },
+
+    // Reranker
+    reranker: {
+        timeout: parseInt(process.env.RERANK_TIMEOUT_MS || '800'),
+        modelVersion: process.env.RERANK_MODEL_VERSION || 'bge-reranker-base-v1',
+        scoreCacheTTL: parseInt(process.env.RERANK_CACHE_TTL || '3600')
     }
 };

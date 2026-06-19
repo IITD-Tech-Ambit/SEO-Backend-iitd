@@ -5,13 +5,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Model configuration
-MODEL_NAME = os.getenv("MODEL_NAME", "BAAI/bge-m3")
-MAX_LENGTH = int(os.getenv("MAX_LENGTH", "1024"))
+MODEL_NAME = os.getenv("MODEL_NAME", "BAAI/bge-base-en-v1.5")
+MAX_LENGTH = int(os.getenv("MAX_LENGTH", "512"))
 MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "600"))
 
-# Output embedding dimensionality (BGE-M3 dense = 1024; SPECTER2 = 768).
-# Reported in responses/health and used as the fallback when a backend omits it.
-EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))
+# Output embedding dimensionality (BGE-base = 768; BGE-M3 dense = 1024).
+EMBED_DIM = int(os.getenv("EMBED_DIM", "768"))
+
+# Backend for the embedding model: "onnx" (optimum + onnxruntime) or "torch" (transformers + pytorch).
+EMBED_BACKEND = os.getenv("EMBED_BACKEND", "onnx").lower()
+
+# Persistent directory for exported ONNX artifacts (survives restarts; avoids re-export).
+_default_onnx_cache = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    ".cache",
+    "onnx",
+)
+ONNX_CACHE_DIR = os.getenv("ONNX_CACHE_DIR", _default_onnx_cache)
 
 # Pooling strategy for the token embeddings: "cls" (BGE-M3 dense) or "mean".
 POOLING = os.getenv("POOLING", "cls").lower()
@@ -27,7 +37,9 @@ PORT = int(os.getenv("PORT", os.getenv("PORT2", "8000")))
 USE_GPU = os.getenv("USE_GPU", "auto").lower()  # "auto", "true", "false"
 
 # --- CPU inference tuning ---
-# Torch intra-op threads (0 = use all available cores).
+# ONNX Runtime intra-op threads (0 = use OMP_NUM_THREADS or all cores).
+ORT_NUM_THREADS = int(os.getenv("OMP_NUM_THREADS", "0"))
+# Torch intra-op threads (0 = use all available cores). Only used with EMBED_BACKEND=torch.
 TORCH_THREADS = int(os.getenv("TORCH_THREADS", "0"))
 # Torch inter-op threads (parallel op queues). 1 is best for a single-model server.
 TORCH_INTEROP_THREADS = int(os.getenv("TORCH_INTEROP_THREADS", "1"))
@@ -42,6 +54,13 @@ HF_OFFLINE = os.getenv("HF_OFFLINE", "auto").lower()  # "auto", "true", "false"
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# --- Cross-encoder reranker configuration ---
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
+RERANK_MODEL_NAME = os.getenv("RERANK_MODEL_NAME", "BAAI/bge-reranker-base")
+RERANK_MAX_LENGTH = int(os.getenv("RERANK_MAX_LENGTH", "320"))
+RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "100"))
+RERANK_SUB_BATCH = int(os.getenv("RERANK_SUB_BATCH", "16"))
 
 # --- Load Balancer / Gateway configuration ---
 # Comma-separated list of backend node URLs. Empty = standalone mode (load model locally).

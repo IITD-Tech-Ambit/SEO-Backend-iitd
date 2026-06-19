@@ -206,9 +206,9 @@ const indexMappingJSON = `{
 				"citation_count": {"type": "integer"},
 				"reference_count": {"type": "integer"},
 				"kerberos": {"type": "keyword"},
-				"embedding": {
-					"type": "knn_vector",
-					"dimension": 1024,
+			"embedding": {
+				"type": "knn_vector",
+				"dimension": 768,
 					"method": {
 						"name": "hnsw",
 						"space_type": "innerproduct",

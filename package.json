@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "test": "node --test tests/"
+    "test": "node --test tests/regression_search.test.mjs tests/perf_search.test.mjs tests/author_scope_search.test.mjs",
+    "test:eval": "node tests/eval/eval_harness.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",

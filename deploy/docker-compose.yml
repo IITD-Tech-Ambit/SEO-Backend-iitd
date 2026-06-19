@@ -1,0 +1,232 @@
+version: '3.8'
+
+services:
+  # ==================== INFRASTRUCTURE ====================
+  
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  opensearch:
+    image: opensearchproject/opensearch:2.11.1
+    container_name: opensearch
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    environment:
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch-node1
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q 'status.*green\\|status.*yellow'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ==================== SERVICES ====================
+
+  embedding:
+    build:
+      context: ./SEO-Backend-iitd/services/embedding
+      dockerfile: Dockerfile
+      args:
+        - HTTP_PROXY=http://proxy22.iitd.ac.in:3128
+        - HTTPS_PROXY=http://proxy22.iitd.ac.in:3128
+    container_name: embedding
+    restart: unless-stopped
+    ports:
+      -  "8000:8000"
+    env_file:
+      - ./docker/proxy.env
+      - ./SEO-Backend-iitd/services/embedding/.env.docker
+    volumes:
+      - embedding_cache:/app/.cache
+    networks:
+      - app-network
+    depends_on:
+      - redis
+
+  backend:
+    build:
+      context: ./research-ambit-main
+      dockerfile: Dockerfile
+      args:
+        - HTTP_PROXY=http://proxy22.iitd.ac.in:3128
+        - HTTPS_PROXY=http://proxy22.iitd.ac.in:3128
+    container_name: backend
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      # PM2 cluster workers (ecosystem.config.cjs); unset = one per CPU core
+      - INSTANCES=2
+    env_file:
+      - ./docker/proxy.env
+      - ./research-ambit-main/.env.docker
+    networks:
+      - app-network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  search-api:
+    build:
+      context: ./SEO-Backend-iitd
+      dockerfile: Dockerfile
+      args:
+        - HTTP_PROXY=http://proxy22.iitd.ac.in:3128
+        - HTTPS_PROXY=http://proxy22.iitd.ac.in:3128
+    container_name: search-api
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+    environment:
+      # PM2 cluster workers (ecosystem.config.cjs); unset = one per CPU core
+      - INSTANCES=2
+    env_file:
+      - ./docker/proxy.env
+      - ./SEO-Backend-iitd/.env.docker
+    networks:
+      - app-network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      embedding:
+        condition: service_started
+
+  chatbot:
+    build:
+      context: ./chatbot-service
+      dockerfile: Dockerfile
+      args:
+        - HTTP_PROXY=http://proxy22.iitd.ac.in:3128
+        - HTTPS_PROXY=http://proxy22.iitd.ac.in:3128
+    container_name: chatbot
+    ports:
+      - "3003:3003"
+    restart: unless-stopped
+    env_file:
+      - ./docker/proxy.env
+      - ./chatbot-service/.env.docker
+    networks:
+      - app-network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      embedding:
+        condition: service_started
+      search-api:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./tech-ambit-explorer
+      dockerfile: Dockerfile
+      args:
+        - HTTP_PROXY=http://proxy22.iitd.ac.in:3128
+        - HTTPS_PROXY=http://proxy22.iitd.ac.in:3128
+        - VITE_API_URL=/api
+        - VITE_SEARCH_API_URL=/search/api/v1
+        - VITE_CHAT_API_URL=/chat-api/api/v1
+    container_name: frontend
+    restart: unless-stopped
+    networks:
+      - app-network
+    depends_on:
+      - backend
+      - search-api
+      - chatbot
+
+  # ==================== REVERSE PROXY ====================
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      - app-network
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
+      search-api:
+        condition: service_healthy
+      chatbot:
+        condition: service_started
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  redis_data:
+  opensearch_data:
+  embedding_cache:

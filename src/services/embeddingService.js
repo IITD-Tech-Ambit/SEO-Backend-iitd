@@ -8,6 +8,7 @@ export default class EmbeddingService {
     constructor(config, redis, redisTTL, logger) {
         this.baseUrl = config.url;
         this.timeout = config.timeout;
+        this.rerankTimeout = config.rerankTimeout || 800;
         this.redis = redis;
         this.redisTTL = redisTTL;
         this.logger = logger;
@@ -112,6 +113,43 @@ export default class EmbeddingService {
 
             if (error.name === 'AbortError') {
                 throw new Error('Embedding service timeout');
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Rerank documents against a query via the cross-encoder endpoint.
+     * Returns [{ index, score }] sorted by score descending.
+     * Throws on timeout/error — callers should catch and fall back to first-stage order.
+     */
+    async rerank(query, documents, topN = null) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), this.rerankTimeout);
+
+        try {
+            const body = { query, documents };
+            if (topN != null) body.top_n = topN;
+
+            const response = await fetch(`${this.baseUrl}/rerank`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                throw new Error(`Rerank service error: ${response.status}`);
+            }
+
+            const data = await response.json();
+            return data.results;
+        } catch (error) {
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                throw new Error('Rerank service timeout');
             }
             throw error;
         }

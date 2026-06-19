@@ -1,0 +1,962 @@
+{
+  "version": 2,
+  "description": "Comprehensive golden set: 8 query categories across 1000-doc corpus",
+  "corpus_documents": 1000,
+  "exported_at": "2026-06-18T23:12:18.175Z",
+  "categories": {
+    "exact_title": "Full title substring — expect rank 1",
+    "partial_title": "3-4 keywords from title — expect top 10",
+    "abstract_keyword": "Distinctive abstract terms — expect top 50",
+    "semantic": "Paraphrased query, no lexical overlap — tests vector recall",
+    "author": "Author surname — tests author search pipeline",
+    "field_broad": "Broad field name — tests coverage, not precision",
+    "cross_field": "Title keyword + field — tests multi-signal retrieval",
+    "multi_relevant": "Topic cluster — tests recall across related docs"
+  },
+  "queries": [
+    {
+      "id": "exact-title-1",
+      "query": "Physiochemical Characterization of tubulin from Arachis",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdec8",
+      "source_title": "Physiochemical Characterization of tubulin from Arachis hypogaea",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdec8": 3
+      }
+    },
+    {
+      "id": "exact-title-2",
+      "query": "Use of optimisation to position dummies in crash simulations",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece194",
+      "source_title": "Use of optimisation to position dummies in crash simulations",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece194": 3
+      }
+    },
+    {
+      "id": "exact-title-3",
+      "query": "Current sensitivity based OPF framework for active",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0a7",
+      "source_title": "Current sensitivity based OPF framework for active distribution network",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0a7": 3
+      }
+    },
+    {
+      "id": "exact-title-4",
+      "query": "Methodology for estimation of probable location of VRU",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece176",
+      "source_title": "Methodology for estimation of probable location of VRU before impact using data from post-crash analysis",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece176": 3
+      }
+    },
+    {
+      "id": "exact-title-5",
+      "query": "Allotropic transformation induced stacking faults and",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece090",
+      "source_title": "Allotropic transformation induced stacking faults and discontinuous coarsening in a γ-γ′ Co-base alloy",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece090": 3
+      }
+    },
+    {
+      "id": "exact-title-6",
+      "query": "Time-coupled day-ahead wind power scenario generation: A",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0b8",
+      "source_title": "Time-coupled day-ahead wind power scenario generation: A combined regular vine copula and variance reduction method",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0b8": 3
+      }
+    },
+    {
+      "id": "exact-title-7",
+      "query": "Characterization of Near-Field Blast Response of Aluminum",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece14d",
+      "source_title": "Characterization of Near-Field Blast Response of Aluminum Honeycomb Using Finite Element Simulations",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece14d": 3
+      }
+    },
+    {
+      "id": "exact-title-8",
+      "query": "Efficient operational planning of active distribution",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0b6",
+      "source_title": "Efficient operational planning of active distribution network by embedding uncertainties and network reconfiguration",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0b6": 3
+      }
+    },
+    {
+      "id": "exact-title-9",
+      "query": "Inverse material characterisation of human aortic tissue",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece15c",
+      "source_title": "Inverse material characterisation of human aortic tissue for traumatic injury in motor vehicle crashes",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece15c": 3
+      }
+    },
+    {
+      "id": "exact-title-10",
+      "query": "Laves phase intermetallic matrix composite in situ",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece089",
+      "source_title": "Laves phase intermetallic matrix composite in situ toughened by ductile precipitates",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece089": 3
+      }
+    },
+    {
+      "id": "exact-title-11",
+      "query": "A bilinear structural constitutive model for strain",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece164",
+      "source_title": "A bilinear structural constitutive model for strain rate-dependent behaviour of human diaphragm tissue",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece164": 3
+      }
+    },
+    {
+      "id": "exact-title-12",
+      "query": "Prediction of pedestrian injuries in motorcycle-pedestrian",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece143",
+      "source_title": "Prediction of pedestrian injuries in motorcycle-pedestrian crashes using THUMS FE-HBM",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece143": 3
+      }
+    },
+    {
+      "id": "exact-title-13",
+      "query": "Modeling of Folding of Passenger Side Airbag Mesh",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece1a9",
+      "source_title": "Modeling of Folding of Passenger Side Airbag Mesh",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece1a9": 3
+      }
+    },
+    {
+      "id": "exact-title-14",
+      "query": "On-Chip Er: Ta2O5 optical pulse amplifier",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece1bd",
+      "source_title": "On-Chip Er: Ta2O5 optical pulse amplifier",
+      "relevant": {
+        "69dec9f54e2d2a5b77ece1bd": 3
+      }
+    },
+    {
+      "id": "exact-title-15",
+      "query": "A Comprehensive Design Framework for AT-Fed Railway",
+      "type": "exact_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0a3",
+      "source_title": "A Comprehensive Design Framework for AT-Fed Railway Traction Power Systems",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0a3": 3
+      }
+    },
+    {
+      "id": "partial-title-16",
+      "query": "dimming-based modulation schemes visible",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ece005",
+      "source_title": "Dimming-Based Modulation Schemes for Visible Light Communication: Spectral Analysis and ISI Mitigation",
+      "relevant": {
+        "69dec9f34e2d2a5b77ece005": 3
+      }
+    },
+    {
+      "id": "partial-title-17",
+      "query": "emergence distribution system operator",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0c1",
+      "source_title": "Emergence of distribution system operator in the Indian power sector and possible way ahead",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0c1": 3
+      }
+    },
+    {
+      "id": "partial-title-18",
+      "query": "marginal loss modeling dcopf",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0c4",
+      "source_title": "Marginal loss modeling based DCOPF and LMP calculations for an integrated AC and Multi-terminal HVDC System",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0c4": 3
+      }
+    },
+    {
+      "id": "partial-title-19",
+      "query": "max-min fair financial transmission",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece108",
+      "source_title": "Max-min fair financial transmission rights payment-based AC optimal power flow locational marginal price decomposition",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece108": 3
+      }
+    },
+    {
+      "id": "partial-title-20",
+      "query": "evaluation power saving modes",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece042",
+      "source_title": "Evaluation of ONU power saving modes in next generation optical access networks",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece042": 3
+      }
+    },
+    {
+      "id": "partial-title-21",
+      "query": "lexicographical buyer-seller profile matching",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0ee",
+      "source_title": "Lexicographical buyer-seller profile matching in pool based electricity market",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0ee": 3
+      }
+    },
+    {
+      "id": "partial-title-22",
+      "query": "influence particle velocity when",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece086",
+      "source_title": "Influence of particle velocity when propelled using N2 or N2-He mixed gas on the properties of cold-sprayed Ti6Al4V coatings",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece086": 3
+      }
+    },
+    {
+      "id": "partial-title-23",
+      "query": "enhancing resource utilization radio-over-fiber",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdfec",
+      "source_title": "Enhancing resource utilization in radio-over-fiber using hybrid modulation scheme",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdfec": 3
+      }
+    },
+    {
+      "id": "partial-title-24",
+      "query": "alternating layers morselized allograft",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece148",
+      "source_title": "Alternating Layers of Morselized Allograft and Injectable Ceramic Bone Graft Substitute in Acetabular Reconstruction: A Novel ‘Sandwich’ Technique",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece148": 3
+      }
+    },
+    {
+      "id": "partial-title-25",
+      "query": "broadband sound transmission loss",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdf50",
+      "source_title": "Broadband Sound Transmission Loss in a Corrugated Sound Panel Using Periodic Structure Theory",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdf50": 3
+      }
+    },
+    {
+      "id": "partial-title-26",
+      "query": "machine learning-based boosting algorithm",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdf01",
+      "source_title": "Machine Learning-Based Boosting Algorithm for Analysis of Railway Bridges Under Moving Loads and Earthquake Excitation",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdf01": 3
+      }
+    },
+    {
+      "id": "partial-title-27",
+      "query": "wind-induced vibration control tall",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdf2e",
+      "source_title": "Wind-induced vibration control of tall buildings by designing the overhead fire water tanks as compliant deep tank dampers-inerter",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdf2e": 3
+      }
+    },
+    {
+      "id": "partial-title-28",
+      "query": "growth pbse quantum dots",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece27d",
+      "source_title": "Growth of PbSe quantum dots within high-index lead-phosphate glass for infrared saturable absorbers",
+      "relevant": {
+        "69dec9f54e2d2a5b77ece27d": 3
+      }
+    },
+    {
+      "id": "partial-title-29",
+      "query": "dissemination biases social media",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdfe2",
+      "source_title": "Dissemination biases of social media channels: On the topical coverage of socially shared news",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdfe2": 3
+      }
+    },
+    {
+      "id": "partial-title-30",
+      "query": "co-optimized flexibility market framework",
+      "type": "partial_title",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0a6",
+      "source_title": "Co-optimized Flexibility Market Framework for DSO Enabled Market Operations",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0a6": 3
+      }
+    },
+    {
+      "id": "abstract-kw-31",
+      "query": "signal processing on-chip nonlinear",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece217",
+      "source_title": "Integration of Brillouin and passive circuits for enhanced radio-frequency photonic filtering",
+      "relevant": {
+        "69dec9f54e2d2a5b77ece217": 2
+      }
+    },
+    {
+      "id": "abstract-kw-32",
+      "query": "proposes energy spinning reserve",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece114",
+      "source_title": "Multi-objective market clearing of electrical energy, spinning reserves and emission for wind-thermal power system",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece114": 2
+      }
+    },
+    {
+      "id": "abstract-kw-33",
+      "query": "coordination overcurrent relays meshed",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece11f",
+      "source_title": "Optimal overcurrent relay coordination in distribution system",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece11f": 2
+      }
+    },
+    {
+      "id": "abstract-kw-34",
+      "query": "aids development heterogeneous lung",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece133",
+      "source_title": "Heterogenous Lung Model for Blunt Impact Loads Using Strain Rate-Dependent Material Properties of Parenchyma and Bronchi",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece133": 2
+      }
+    },
+    {
+      "id": "abstract-kw-35",
+      "query": "during detonation energetic material",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece158",
+      "source_title": "Interaction of Structural Member with Near Field Detonation: Effect on Shock Wave Pattern and Overpressure Profile",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece158": 2
+      }
+    },
+    {
+      "id": "abstract-kw-36",
+      "query": "many groups developing human",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece17e",
+      "source_title": "Repositioning methodology for FE-HBM pelvis flesh to account for upper extremity posture change",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece17e": 2
+      }
+    },
+    {
+      "id": "abstract-kw-37",
+      "query": "recent military warfare lower",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece157",
+      "source_title": "Failure Analysis of Human Lower Extremity During Lateral Blast: A Computational Study",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece157": 2
+      }
+    },
+    {
+      "id": "abstract-kw-38",
+      "query": "cluster multi-objective differential evolution",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece107",
+      "source_title": "Multi-objective optimization of economic-emission load dispatch using cluster based differential evolution",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece107": 2
+      }
+    },
+    {
+      "id": "abstract-kw-39",
+      "query": "loss modelling dcopf overcome",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece120",
+      "source_title": "Improved loss distribution and modelling in DCOPF",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece120": 2
+      }
+    },
+    {
+      "id": "abstract-kw-40",
+      "query": "increasing penetration level distributed",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece110",
+      "source_title": "A hybrid protection scheme to mitigate the effect of distributed generation on relay coordination in distribution system",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece110": 2
+      }
+    },
+    {
+      "id": "abstract-kw-41",
+      "query": "allvac 718plus newly developed",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece09c",
+      "source_title": "Grain-boundary precipitation in Allvac 718Plus",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece09c": 2
+      }
+    },
+    {
+      "id": "abstract-kw-42",
+      "query": "studies numerical predict peak",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece156",
+      "source_title": "Numerical Modeling of Energy Absorption by Plastic Deformation of Aluminum Honeycomb Structure Subjected to Close-Range Blast Event",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece156": 2
+      }
+    },
+    {
+      "id": "abstract-kw-43",
+      "query": "days energy efficiency gaining",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0e5",
+      "source_title": "Energy saving certificate market in India",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0e5": 2
+      }
+    },
+    {
+      "id": "abstract-kw-44",
+      "query": "ensuring safety pedestrians crash",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece16f",
+      "source_title": "Optimisation study on multibody vehicle-front model for pedestrian safety",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece16f": 2
+      }
+    },
+    {
+      "id": "abstract-kw-45",
+      "query": "three-wheeled scooter taxis tsts",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece1b9",
+      "source_title": "Impact modelling studies for a three-wheeled scooter taxi",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece1b9": 2
+      }
+    },
+    {
+      "id": "semantic-46",
+      "query": "innovations related to ion-exchanged and glass and channel",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece27c",
+      "source_title": "Ion-exchanged Tm3+: Glass channel waveguide laser",
+      "relevant": {
+        "69dec9f54e2d2a5b77ece27c": 2
+      }
+    },
+    {
+      "id": "semantic-47",
+      "query": "how does impact relate to active",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0d1",
+      "source_title": "Impact of Active Distribution Network on Contingency Analysis of Transmission System",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0d1": 2
+      }
+    },
+    {
+      "id": "semantic-48",
+      "query": "recent advances in optimal dynamic techniques",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0ef",
+      "source_title": "Optimal dynamic emergency reserve activation using spinning, hydro and demand-side reserves",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0ef": 2
+      }
+    },
+    {
+      "id": "semantic-49",
+      "query": "innovations related to measurement and abrasion and injuries",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece167",
+      "source_title": "Measurement of Abrasion Injuries in Crash-related Environments",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece167": 2
+      }
+    },
+    {
+      "id": "semantic-50",
+      "query": "how does two-stage relate to load",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0d4",
+      "source_title": "Two-Stage Load Profiling of HV Feeders of a Distribution System",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0d4": 2
+      }
+    },
+    {
+      "id": "semantic-51",
+      "query": "recent advances in low-velocity nail techniques",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece13b",
+      "source_title": "Low-velocity nail penetration response of muscle tissue and gelatin",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece13b": 2
+      }
+    },
+    {
+      "id": "semantic-52",
+      "query": "innovations related to hierarchical and node and aggregation",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0f0",
+      "source_title": "A hierarchical approach of node aggregation for transmission usage prices",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0f0": 2
+      }
+    },
+    {
+      "id": "semantic-53",
+      "query": "how does texture relate to evolution",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece0a0",
+      "source_title": "Study of texture evolution of pure magnesium during ECAE using EBSD",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0a0": 2
+      }
+    },
+    {
+      "id": "semantic-54",
+      "query": "recent advances in data laves techniques",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece08c",
+      "source_title": "Data on a Laves phase intermetallic matrix composite in situ toughened by ductile precipitates",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece08c": 2
+      }
+    },
+    {
+      "id": "semantic-55",
+      "query": "innovations related to contour and repositioning and specific",
+      "type": "semantic",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece169",
+      "source_title": "Contour Based Repositioning of Specific Joints of the GHBMC Human Body FE Model",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece169": 2
+      }
+    },
+    {
+      "id": "author-56",
+      "query": "Dattaray",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece10f",
+      "source_title": "Tandem hydro scheduling in Indian electricity market",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece10f": 2
+      }
+    },
+    {
+      "id": "author-57",
+      "query": "Parsonage",
+      "type": "author",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece264",
+      "source_title": "Comparative study of rare-earth doped sesquioxides grown by pulsed laser deposition and their performance as planar waveguide lasers",
+      "relevant": {
+        "69dec9f54e2d2a5b77ece264": 2
+      }
+    },
+    {
+      "id": "author-58",
+      "query": "Kiran",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece111",
+      "source_title": "Comparison between differential evolution algorithm and particle swarm optimization for market clearing with voltage dependent load models",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece111": 2
+      }
+    },
+    {
+      "id": "author-59",
+      "query": "Rao",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece136",
+      "source_title": "Biomechanical evaluation of femoral neck fracture fixation based on finite element analysis",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece136": 2
+      }
+    },
+    {
+      "id": "author-60",
+      "query": "Verma",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece160",
+      "source_title": "A Comparative Analysis of Computation of Peak Overpressure in Near Field Scenario During High Energetic Material's Detonation",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece160": 2
+      }
+    },
+    {
+      "id": "author-61",
+      "query": "Singh",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece11f",
+      "source_title": "Optimal overcurrent relay coordination in distribution system",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece11f": 2
+      }
+    },
+    {
+      "id": "author-62",
+      "query": "Sankrityayan",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece142",
+      "source_title": "Numerical Modeling of a Ceramic Honeycomb Using an Equivalent Material Model",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece142": 2
+      }
+    },
+    {
+      "id": "author-63",
+      "query": "Mukherjee",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece171",
+      "source_title": "Safer vehicle design",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece171": 2
+      }
+    },
+    {
+      "id": "author-64",
+      "query": "Singh",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece16a",
+      "source_title": "Finite element simulation estimation of wheel-base reduction and deformation energy of a typical Indian motorcycle crash at known impact speed against sedan car",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece16a": 2
+      }
+    },
+    {
+      "id": "author-65",
+      "query": "Vikram",
+      "type": "author",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece146",
+      "source_title": "Computational assessment of leg response to extreme loadings using a detailed finite element model",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece146": 2
+      }
+    },
+    {
+      "id": "field-66",
+      "query": "Engineering",
+      "type": "field_broad",
+      "expected_min_results": 228,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdee2": 1,
+        "69dec9f44e2d2a5b77ece1b3": 1,
+        "69dec9f44e2d2a5b77ece0c5": 1
+      }
+    },
+    {
+      "id": "field-67",
+      "query": "Computer Science",
+      "type": "field_broad",
+      "expected_min_results": 204,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdfdf": 1,
+        "69dec9f34e2d2a5b77ecdfc4": 1,
+        "69dec9f34e2d2a5b77ece005": 1
+      }
+    },
+    {
+      "id": "field-68",
+      "query": "Materials Science",
+      "type": "field_broad",
+      "expected_min_results": 201,
+      "relevant": {
+        "69dec9f44e2d2a5b77ece05a": 1,
+        "69dec9f34e2d2a5b77ecdfa2": 1,
+        "69dec9f44e2d2a5b77ece04c": 1
+      }
+    },
+    {
+      "id": "field-69",
+      "query": "Physics and Astronomy",
+      "type": "field_broad",
+      "expected_min_results": 128,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdefa": 1,
+        "69dec9f54e2d2a5b77ece261": 1,
+        "69dec9f34e2d2a5b77ecdfad": 1
+      }
+    },
+    {
+      "id": "field-70",
+      "query": "Energy",
+      "type": "field_broad",
+      "expected_min_results": 80,
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0d5": 1,
+        "69dec9f44e2d2a5b77ece110": 1,
+        "69dec9f44e2d2a5b77ece11c": 1
+      }
+    },
+    {
+      "id": "field-71",
+      "query": "Social Sciences",
+      "type": "field_broad",
+      "expected_min_results": 36,
+      "relevant": {
+        "69dec9f44e2d2a5b77ece17a": 1,
+        "69dec9f44e2d2a5b77ece19f": 1,
+        "69dec9f34e2d2a5b77ecde9c": 1
+      }
+    },
+    {
+      "id": "field-72",
+      "query": "Mathematics",
+      "type": "field_broad",
+      "expected_min_results": 24,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdeaf": 1,
+        "69dec9f34e2d2a5b77ecdf1a": 1,
+        "69dec9f34e2d2a5b77ecdfd5": 1
+      }
+    },
+    {
+      "id": "field-73",
+      "query": "Chemistry",
+      "type": "field_broad",
+      "expected_min_results": 23,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdeb2": 1,
+        "69dec9f44e2d2a5b77ece072": 1,
+        "69dec9f54e2d2a5b77ece21c": 1
+      }
+    },
+    {
+      "id": "cross-74",
+      "query": "neural Materials Science",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece20a",
+      "source_title": "Neural networks for modelling nonlinear pulse propagation",
+      "relevant": {
+        "69dec9f54e2d2a5b77ece20a": 2
+      }
+    },
+    {
+      "id": "cross-75",
+      "query": "optical Engineering",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece1f9",
+      "source_title": "Optical Filter-less Photonic Dechirping of a Frequency-Modulated Continuous-Wave Radar",
+      "relevant": {
+        "69dec9f54e2d2a5b77ece1f9": 2
+      }
+    },
+    {
+      "id": "cross-76",
+      "query": "issues Social Sciences",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece197",
+      "source_title": "Issues in ALE simulation of airbags",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece197": 2
+      }
+    },
+    {
+      "id": "cross-77",
+      "query": "co-optimization Energy",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece103",
+      "source_title": "Co-optimization of Energy and Demand-Side Reserves in Day-Ahead Electricity Markets",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece103": 2
+      }
+    },
+    {
+      "id": "cross-78",
+      "query": "muscle Biochemistry, Genetics and Molecular Biology",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece187",
+      "source_title": "Effect of muscle contraction in high speed carpedestrian impact-simulations for walking posture",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece187": 2
+      }
+    },
+    {
+      "id": "cross-79",
+      "query": "impact Social Sciences",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece1b9",
+      "source_title": "Impact modelling studies for a three-wheeled scooter taxi",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece1b9": 2
+      }
+    },
+    {
+      "id": "cross-80",
+      "query": "market Energy",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece11a",
+      "source_title": "Market clearing for a wind-thermal power system incorporating wind generation and load forecast uncertainties",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece11a": 2
+      }
+    },
+    {
+      "id": "cross-81",
+      "query": "min-max Energy",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece127",
+      "source_title": "Min-max fairness criteria for transmission fixed cost allocation",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece127": 2
+      }
+    },
+    {
+      "id": "cross-82",
+      "query": "blade Energy",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece1b2",
+      "source_title": "Blade life: A comparison by cumulative damage theories",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece1b2": 2
+      }
+    },
+    {
+      "id": "cross-83",
+      "query": "contour Engineering",
+      "type": "cross_field",
+      "source_mongo_id": "69dec9f44e2d2a5b77ece169",
+      "source_title": "Contour Based Repositioning of Specific Joints of the GHBMC Human Body FE Model",
+      "relevant": {
+        "69dec9f44e2d2a5b77ece169": 2
+      }
+    },
+    {
+      "id": "topic-84",
+      "query": "machine learning prediction",
+      "type": "multi_relevant",
+      "matching_docs": 14,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdf01": 3,
+        "69dec9f34e2d2a5b77ecdf12": 3,
+        "69dec9f34e2d2a5b77ecdf24": 3,
+        "69dec9f34e2d2a5b77ecdf2c": 3,
+        "69dec9f34e2d2a5b77ecdf51": 3,
+        "69dec9f34e2d2a5b77ece017": 3,
+        "69dec9f44e2d2a5b77ece04e": 3,
+        "69dec9f44e2d2a5b77ece050": 3,
+        "69dec9f44e2d2a5b77ece051": 3,
+        "69dec9f44e2d2a5b77ece056": 3
+      }
+    },
+    {
+      "id": "topic-85",
+      "query": "deep learning neural network",
+      "type": "multi_relevant",
+      "matching_docs": 5,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdf04": 2,
+        "69dec9f34e2d2a5b77ecdf2b": 2,
+        "69dec9f44e2d2a5b77ece1b5": 2,
+        "69dec9f54e2d2a5b77ece204": 2,
+        "69dec9f54e2d2a5b77ece20a": 2
+      }
+    },
+    {
+      "id": "topic-86",
+      "query": "solar energy photovoltaic",
+      "type": "multi_relevant",
+      "matching_docs": 2,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdec6": 2,
+        "69dec9f44e2d2a5b77ece0a9": 3
+      }
+    },
+    {
+      "id": "topic-87",
+      "query": "alloy mechanical properties",
+      "type": "multi_relevant",
+      "matching_docs": 11,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdf89": 3,
+        "69dec9f44e2d2a5b77ece04c": 3,
+        "69dec9f44e2d2a5b77ece056": 3,
+        "69dec9f44e2d2a5b77ece05b": 3,
+        "69dec9f44e2d2a5b77ece05c": 3,
+        "69dec9f44e2d2a5b77ece061": 3,
+        "69dec9f44e2d2a5b77ece063": 3,
+        "69dec9f44e2d2a5b77ece091": 3,
+        "69dec9f44e2d2a5b77ece095": 3,
+        "69dec9f44e2d2a5b77ece099": 3
+      }
+    },
+    {
+      "id": "topic-88",
+      "query": "optimization algorithm",
+      "type": "multi_relevant",
+      "matching_docs": 9,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdf18": 2,
+        "69dec9f34e2d2a5b77ecdfd8": 2,
+        "69dec9f44e2d2a5b77ece0e0": 2,
+        "69dec9f44e2d2a5b77ece10b": 2,
+        "69dec9f44e2d2a5b77ece10d": 2,
+        "69dec9f44e2d2a5b77ece111": 3,
+        "69dec9f44e2d2a5b77ece116": 3,
+        "69dec9f44e2d2a5b77ece117": 2,
+        "69dec9f44e2d2a5b77ece199": 2
+      }
+    },
+    {
+      "id": "topic-89",
+      "query": "finite element simulation",
+      "type": "multi_relevant",
+      "matching_docs": 25,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdf9e": 3,
+        "69dec9f44e2d2a5b77ece04c": 3,
+        "69dec9f44e2d2a5b77ece136": 3,
+        "69dec9f44e2d2a5b77ece137": 3,
+        "69dec9f44e2d2a5b77ece138": 3,
+        "69dec9f44e2d2a5b77ece13a": 3,
+        "69dec9f44e2d2a5b77ece146": 3,
+        "69dec9f44e2d2a5b77ece147": 3,
+        "69dec9f44e2d2a5b77ece14d": 3,
+        "69dec9f44e2d2a5b77ece151": 3
+      }
+    },
+    {
+      "id": "topic-90",
+      "query": "power grid renewable",
+      "type": "multi_relevant",
+      "matching_docs": 4,
+      "relevant": {
+        "69dec9f44e2d2a5b77ece0a1": 2,
+        "69dec9f44e2d2a5b77ece0c7": 3,
+        "69dec9f44e2d2a5b77ece0cd": 2,
+        "69dec9f44e2d2a5b77ece0d2": 3
+      }
+    }
+  ]
+}

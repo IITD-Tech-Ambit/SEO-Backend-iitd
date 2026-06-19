@@ -2,7 +2,10 @@ package indexer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -647,15 +650,384 @@ func (idx *Indexer) buildOSDocuments(batch []cache.CacheEntry) []opensearch.OSDo
 	return osDocs
 }
 
-// RunBothPhases runs Phase 1 and Phase 2 sequentially
+// RunBothPhases runs the streaming pipeline (embed + index concurrently)
 func (idx *Indexer) RunBothPhases(ctx context.Context, limit int, reindexAll bool) error {
-	if err := idx.Phase1FetchAndEmbed(ctx, limit, reindexAll); err != nil {
-		return fmt.Errorf("phase 1: %w", err)
+	return idx.RunPipeline(ctx, limit, reindexAll)
+}
+
+// RunPipeline runs a fully decoupled 5-stage streaming pipeline:
+//
+//	┌─────────┐    ┌──────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────────┐
+//	│ MongoDB  │───→│  Embed   │───→│    Embed     │───→│   Index     │───→│    Index     │
+//	│ Producer │    │ Batcher  │    │   Workers    │    │  Batcher    │    │   Workers    │
+//	└─────────┘    └──────────┘    └──────┬───────┘    └─────────────┘    └──────────────┘
+//	  (1 doc)      (EmbedBatch)    (1 API call)        (BulkSize)         (1 bulk call)
+//	                                     │
+//	                                cache.Add (resume)
+//
+// Each stage has a single responsibility and communicates only through
+// channels. Batching happens at the optimal granularity for each stage:
+//   - Embed batcher: groups docs to EmbedBatchSize (matches API call size)
+//   - Index batcher: groups entries to BulkSize (matches OpenSearch bulk size)
+//
+// No stage waits for another to finish — they all run concurrently.
+func (idx *Indexer) RunPipeline(ctx context.Context, limit int, reindexAll bool) error {
+	idx.cli.StartPhase("Streaming Pipeline")
+
+	// ── Step 1: Load cache for resume ──
+	idx.cli.Step(1, 6, "Loading cache")
+	if err := idx.cache.Load(); err != nil {
+		idx.cli.Warning(fmt.Sprintf("Could not load cache: %v (starting fresh)", err))
+	} else if cached := idx.cache.Count(); cached > 0 {
+		idx.cli.Info(fmt.Sprintf("Resuming: %d documents already cached", cached))
 	}
 
-	if err := idx.Phase2IndexAndUpdate(ctx); err != nil {
-		return fmt.Errorf("phase 2: %w", err)
+	// ── Step 2: Count documents ──
+	idx.cli.Step(2, 6, "Counting documents")
+	total, err := idx.mongoDB.CountDocumentsToIndex(ctx, reindexAll)
+	if err != nil {
+		return fmt.Errorf("count documents: %w", err)
 	}
+	if limit > 0 && int64(limit) < total {
+		total = int64(limit)
+	}
+
+	alreadyCached := int64(idx.cache.Count())
+	remaining := total - alreadyCached
+	if remaining <= 0 {
+		idx.cli.Success("All documents already cached, skipping to index phase")
+		remaining = total
+	}
+	idx.cli.Info(fmt.Sprintf("Total: %d | Cached: %d | Remaining: %d", total, alreadyCached, remaining))
+	idx.cache.SetMetadata(total, reindexAll)
+
+	// ── Step 3: Ensure OpenSearch index ──
+	idx.cli.Step(3, 6, "Ensuring OpenSearch index")
+	if err := idx.openSearch.CreateIndex(ctx); err != nil {
+		return fmt.Errorf("ensure index: %w", err)
+	}
+
+	// ── Step 4: Streaming pipeline ──
+	idx.cli.Step(4, 6, "Embed → Index (streaming)")
+
+	embedWorkers := max(2, idx.cfg.NumWorkers)
+	bulkWorkers := max(1, idx.cfg.BulkIndexWorkers)
+	bulkSize := min(idx.cfg.OpenSearchBulkSize, 50)
+
+	idx.cli.Running(fmt.Sprintf(
+		"embed workers: %d (batch %d) | index workers: %d (bulk %d)",
+		embedWorkers, idx.cfg.EmbedBatchSize, bulkWorkers, bulkSize,
+	))
+
+	var (
+		embedded  int64
+		embedErrs int64
+		indexed   int64
+		indexErrs int64
+		skipped   int64
+	)
+
+	progress := cli.NewProgress(remaining)
+
+	// ────────────────────────────────────────────────────────────────────
+	// Stage 1: MongoDB Producer
+	// Streams individual documents from the MongoDB cursor.
+	// ────────────────────────────────────────────────────────────────────
+	docChan, err := idx.mongoDB.StreamDocuments(ctx, reindexAll, limit)
+	if err != nil {
+		return fmt.Errorf("stream documents: %w", err)
+	}
+
+	// ────────────────────────────────────────────────────────────────────
+	// Stage 2: Embed Batcher
+	// Collects individual docs into embed-optimal batches (EmbedBatchSize).
+	// Skips already-cached docs. This is the ONLY place batching for the
+	// embedding API happens — workers never sub-batch internally.
+	// ────────────────────────────────────────────────────────────────────
+	embedBatchChan := make(chan []mongodb.Document, embedWorkers*2)
+	go func() {
+		defer close(embedBatchChan)
+		batch := make([]mongodb.Document, 0, idx.cfg.EmbedBatchSize)
+		for doc := range docChan {
+			if idx.cache.IsProcessed(doc.ID.Hex()) {
+				atomic.AddInt64(&skipped, 1)
+				continue
+			}
+			batch = append(batch, doc)
+			if len(batch) >= idx.cfg.EmbedBatchSize {
+				toSend := make([]mongodb.Document, len(batch))
+				copy(toSend, batch)
+				select {
+				case embedBatchChan <- toSend:
+				case <-ctx.Done():
+					return
+				}
+				batch = batch[:0]
+			}
+		}
+		if len(batch) > 0 {
+			select {
+			case embedBatchChan <- batch:
+			case <-ctx.Done():
+			}
+		}
+	}()
+
+	// ────────────────────────────────────────────────────────────────────
+	// Stage 3: Embed Workers (fan-out)
+	// Each worker: take one batch → one /embed call → emit entries.
+	// Single responsibility: embed + build CacheEntry. No sub-batching.
+	// ────────────────────────────────────────────────────────────────────
+	entryChan := make(chan []cache.CacheEntry, embedWorkers*4)
+	var embedWg sync.WaitGroup
+	for i := 0; i < embedWorkers; i++ {
+		embedWg.Add(1)
+		go func() {
+			defer embedWg.Done()
+			for docs := range embedBatchChan {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				texts := make([]string, len(docs))
+				for i, doc := range docs {
+					texts[i] = embedding.BuildEmbeddingText(doc.Title, doc.Abstract)
+				}
+
+				embeddings, err := idx.embedClient.GetEmbeddings(ctx, texts)
+				if err != nil {
+					atomic.AddInt64(&embedErrs, int64(len(docs)))
+					continue
+				}
+
+				entries := make([]cache.CacheEntry, len(docs))
+				for i, doc := range docs {
+					authors := make([]cache.CachedAuthor, len(doc.Authors))
+					for j, a := range doc.Authors {
+						authors[j] = cache.CachedAuthor{
+							AuthorID:             a.AuthorID,
+							AuthorPosition:       a.AuthorPosition,
+							AuthorName:           a.AuthorName,
+							AuthorAvailableNames: a.AuthorAvailableNames,
+						}
+					}
+					entries[i] = cache.CacheEntry{
+						MongoID:         doc.ID,
+						DocumentEID:     doc.DocumentEID,
+						Title:           doc.Title,
+						Abstract:        doc.Abstract,
+						Authors:         authors,
+						ExpertID:        doc.ExpertID,
+						Kerberos:        doc.Kerberos,
+						PublicationYear: doc.PublicationYear,
+						FieldAssociated: doc.FieldAssociated,
+						DocumentType:    doc.DocumentType,
+						SubjectArea:     doc.SubjectArea,
+						CitationCount:   doc.CitationCount,
+						ReferenceCount:  doc.ReferenceCount,
+						Embedding:       embeddings[i],
+					}
+				}
+
+				idx.cache.AddEntries(entries)
+				atomic.AddInt64(&embedded, int64(len(entries)))
+				progress.Update(int64(len(entries)))
+
+				select {
+				case entryChan <- entries:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		embedWg.Wait()
+		close(entryChan)
+	}()
+
+	// ────────────────────────────────────────────────────────────────────
+	// Stage 4: Index Batcher
+	// Collects entries into bulk-index-optimal batches (bulkSize).
+	// Each embed batch is small (8 entries), so this stage accumulates
+	// them into efficient bulk payloads for OpenSearch.
+	// ────────────────────────────────────────────────────────────────────
+	indexBatchChan := make(chan []cache.CacheEntry, bulkWorkers*2)
+	go func() {
+		defer close(indexBatchChan)
+		buf := make([]cache.CacheEntry, 0, bulkSize)
+		for entries := range entryChan {
+			buf = append(buf, entries...)
+			for len(buf) >= bulkSize {
+				batch := make([]cache.CacheEntry, bulkSize)
+				copy(batch, buf[:bulkSize])
+				buf = buf[bulkSize:]
+				select {
+				case indexBatchChan <- batch:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if len(buf) > 0 {
+			select {
+			case indexBatchChan <- buf:
+			case <-ctx.Done():
+			}
+		}
+	}()
+
+	// ────────────────────────────────────────────────────────────────────
+	// Stage 5: Index Workers (fan-out)
+	// Each worker: take one bulk batch → one BulkIndex call → emit result.
+	// Single responsibility: build OS docs + bulk index.
+	// ────────────────────────────────────────────────────────────────────
+	type indexResult struct {
+		updates []mongodb.IDUpdate
+		indexed int64
+		errors  int64
+	}
+
+	resultChan := make(chan indexResult, bulkWorkers*2)
+	var indexWg sync.WaitGroup
+	for w := 0; w < bulkWorkers; w++ {
+		indexWg.Add(1)
+		go func() {
+			defer indexWg.Done()
+			for batch := range indexBatchChan {
+				select {
+				case <-ctx.Done():
+					resultChan <- indexResult{errors: int64(len(batch))}
+					continue
+				default:
+				}
+
+				osDocs := idx.buildOSDocuments(batch)
+				idMap, err := idx.openSearch.BulkIndex(ctx, osDocs)
+
+				r := indexResult{}
+				if err != nil {
+					r.errors = int64(len(batch))
+				} else {
+					r.indexed = int64(len(idMap))
+					r.errors = int64(len(batch) - len(idMap))
+					for _, entry := range batch {
+						if osID, ok := idMap[entry.MongoID.Hex()]; ok {
+							r.updates = append(r.updates, mongodb.IDUpdate{
+								MongoID:      entry.MongoID,
+								OpenSearchID: osID,
+							})
+						}
+					}
+				}
+				resultChan <- r
+			}
+		}()
+	}
+	go func() {
+		indexWg.Wait()
+		close(resultChan)
+	}()
+
+	// ── Background services ──
+	saveCtx, cancelSave := context.WithCancel(ctx)
+	saveDone := make(chan struct{})
+	go func() {
+		defer close(saveDone)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := idx.cache.Save(); err != nil {
+					idx.cli.Warning(fmt.Sprintf("Periodic cache save failed: %v", err))
+				}
+			case <-saveCtx.Done():
+				return
+			}
+		}
+	}()
+
+	progressCtx, cancelProgress := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				idx.cli.Progress(progress)
+			case <-progressCtx.Done():
+				return
+			}
+		}
+	}()
+
+	// ── Drain results ──
+	var mongoUpdates []mongodb.IDUpdate
+	for r := range resultChan {
+		indexed += r.indexed
+		indexErrs += r.errors
+		mongoUpdates = append(mongoUpdates, r.updates...)
+	}
+
+	cancelSave()
+	<-saveDone
+	cancelProgress()
+	idx.cli.ProgressDone()
+
+	// ── Step 5: Save cache ──
+	idx.cli.Step(5, 6, "Saving cache")
+	if err := idx.cache.Save(); err != nil {
+		idx.cli.Warning(fmt.Sprintf("Cache save failed: %v", err))
+	} else {
+		entries, size, _ := idx.cache.Stats()
+		idx.cli.Success(fmt.Sprintf("Cache: %d entries, %s", entries, formatBytes(size)))
+	}
+
+	// ── Step 6: Refresh + update MongoDB ──
+	idx.cli.Step(6, 6, "Refreshing index & updating MongoDB")
+
+	if err := idx.openSearch.RefreshIndex(ctx); err != nil {
+		idx.cli.Warning(fmt.Sprintf("Index refresh failed: %v", err))
+	}
+
+	if len(mongoUpdates) > 0 {
+		idx.cli.Running(fmt.Sprintf("Updating %d MongoDB documents", len(mongoUpdates)))
+		updateChan := make(chan []mongodb.IDUpdate, bulkWorkers*2)
+		var updateWg sync.WaitGroup
+		for w := 0; w < bulkWorkers; w++ {
+			updateWg.Add(1)
+			go func() {
+				defer updateWg.Done()
+				for batch := range updateChan {
+					if err := idx.mongoDB.BulkUpdateOpenSearchIDs(ctx, batch); err != nil {
+						idx.cli.Warning(fmt.Sprintf("MongoDB update failed: %v", err))
+					}
+				}
+			}()
+		}
+		for i := 0; i < len(mongoUpdates); i += idx.cfg.OpenSearchBulkSize {
+			end := min(i+idx.cfg.OpenSearchBulkSize, len(mongoUpdates))
+			updateChan <- mongoUpdates[i:end]
+		}
+		close(updateChan)
+		updateWg.Wait()
+	}
+
+	elapsed := idx.cli.EndPhase()
+
+	idx.cli.Summary("Pipeline Complete", map[string]string{
+		"Embedded":     fmt.Sprintf("%d", embedded),
+		"Embed Errors": fmt.Sprintf("%d", embedErrs),
+		"Skipped":      fmt.Sprintf("%d (cached)", skipped),
+		"Indexed":      fmt.Sprintf("%d", indexed),
+		"Index Errors": fmt.Sprintf("%d", indexErrs),
+		"MongoDB":      fmt.Sprintf("%d updated", len(mongoUpdates)),
+		"Total Time":   elapsed.String(),
+		"Rate":         fmt.Sprintf("%.1f docs/sec", float64(indexed)/max(elapsed.Seconds(), 0.1)),
+	})
 
 	return nil
 }
@@ -745,10 +1117,287 @@ func (idx *Indexer) ReindexFull(ctx context.Context) error {
 	idx.cli.Step(4, 5, "Clearing cache")
 	idx.cache.Clear()
 
-	idx.cli.Step(5, 5, "Running two-phase indexing")
+	idx.cli.Step(5, 5, "Running streaming pipeline")
 	idx.cli.EndPhase()
 
-	return idx.RunBothPhases(ctx, 0, true)
+	return idx.RunPipeline(ctx, 0, true)
+}
+
+// DumpTestCorpus writes test_corpus.json and golden_set_corpus.json from the
+// current cache contents into cfg.TestDumpDir. Call after RunPipeline so the
+// cache holds exactly the documents that were indexed.
+func (idx *Indexer) DumpTestCorpus() error {
+	idx.cli.StartPhase("Test Corpus Dump")
+
+	if err := idx.cache.Load(); err != nil {
+		return fmt.Errorf("load cache: %w", err)
+	}
+	entries := idx.cache.GetEntries()
+	if len(entries) == 0 {
+		idx.cli.Warning("Cache is empty — nothing to dump")
+		idx.cli.EndPhase()
+		return nil
+	}
+
+	outDir := idx.cfg.TestDumpDir
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return fmt.Errorf("create dump dir: %w", err)
+	}
+
+	// ── test_corpus.json ──
+	idx.cli.Step(1, 2, "Writing test_corpus.json")
+
+	type corpusAuthor struct {
+		Name string `json:"name"`
+		ID   string `json:"id"`
+	}
+	type corpusDoc struct {
+		MongoID         string         `json:"mongo_id"`
+		Title           string         `json:"title"`
+		Abstract        string         `json:"abstract"`
+		Authors         []corpusAuthor `json:"authors"`
+		PublicationYear int            `json:"publication_year"`
+		DocumentType    string         `json:"document_type"`
+		FieldAssociated string         `json:"field_associated"`
+		SubjectArea     []string       `json:"subject_area"`
+		CitationCount   int            `json:"citation_count"`
+		ReferenceCount  int            `json:"reference_count"`
+		Kerberos        string         `json:"kerberos"`
+	}
+
+	docs := make([]corpusDoc, len(entries))
+	docTypes := make(map[string]bool)
+	subjects := make(map[string]bool)
+	withAbstract := 0
+	withAuthors := 0
+	minYear, maxYear := 9999, 0
+
+	for i, e := range entries {
+		authors := make([]corpusAuthor, len(e.Authors))
+		for j, a := range e.Authors {
+			authors[j] = corpusAuthor{Name: a.AuthorName, ID: a.AuthorID}
+		}
+		docs[i] = corpusDoc{
+			MongoID:         e.MongoID.Hex(),
+			Title:           e.Title,
+			Abstract:        e.Abstract,
+			Authors:         authors,
+			PublicationYear: e.PublicationYear,
+			DocumentType:    e.DocumentType,
+			FieldAssociated: e.FieldAssociated,
+			SubjectArea:     e.SubjectArea,
+			CitationCount:   e.CitationCount,
+			ReferenceCount:  e.ReferenceCount,
+			Kerberos:        e.Kerberos,
+		}
+		if e.Abstract != "" && e.Abstract != "(No abstract available)" {
+			withAbstract++
+		}
+		if len(e.Authors) > 0 {
+			withAuthors++
+		}
+		if e.DocumentType != "" {
+			docTypes[e.DocumentType] = true
+		}
+		for _, s := range e.SubjectArea {
+			subjects[s] = true
+		}
+		if e.PublicationYear > 0 && e.PublicationYear < minYear {
+			minYear = e.PublicationYear
+		}
+		if e.PublicationYear > maxYear {
+			maxYear = e.PublicationYear
+		}
+	}
+
+	dtList := make([]string, 0, len(docTypes))
+	for k := range docTypes {
+		dtList = append(dtList, k)
+	}
+	saList := make([]string, 0, len(subjects))
+	for k := range subjects {
+		saList = append(saList, k)
+	}
+
+	type yearRange struct {
+		Min int `json:"min"`
+		Max int `json:"max"`
+	}
+	type fieldsSummary struct {
+		WithAbstract int       `json:"with_abstract"`
+		WithAuthors  int       `json:"with_authors"`
+		DocTypes     []string  `json:"document_types"`
+		YearRange    yearRange `json:"year_range"`
+		SubjectAreas []string  `json:"subject_areas"`
+	}
+	type corpus struct {
+		ExportedAt    string        `json:"exported_at"`
+		TotalDocs     int           `json:"total_documents"`
+		FieldsSummary fieldsSummary `json:"fields_summary"`
+		Documents     []corpusDoc   `json:"documents"`
+	}
+
+	c := corpus{
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+		TotalDocs:  len(docs),
+		FieldsSummary: fieldsSummary{
+			WithAbstract: withAbstract,
+			WithAuthors:  withAuthors,
+			DocTypes:     dtList,
+			YearRange:    yearRange{Min: minYear, Max: maxYear},
+			SubjectAreas: saList,
+		},
+		Documents: docs,
+	}
+
+	corpusBytes, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal corpus: %w", err)
+	}
+	corpusPath := filepath.Join(outDir, "test_corpus.json")
+	if err := os.WriteFile(corpusPath, corpusBytes, 0644); err != nil {
+		return fmt.Errorf("write corpus: %w", err)
+	}
+	idx.cli.Success(fmt.Sprintf("test_corpus.json: %d documents (%s)", len(docs), formatBytes(int64(len(corpusBytes)))))
+
+	// ── golden_set_corpus.json ──
+	idx.cli.Step(2, 2, "Writing golden_set_corpus.json")
+
+	type goldenRelevant map[string]int
+	type goldenQuery struct {
+		ID            string         `json:"id"`
+		Query         string         `json:"query"`
+		Type          string         `json:"type"`
+		SourceMongoID string         `json:"source_mongo_id"`
+		SourceTitle   string         `json:"source_title"`
+		Relevant      goldenRelevant `json:"relevant"`
+		Notes         string         `json:"notes"`
+	}
+	type goldenSet struct {
+		Version    int           `json:"version"`
+		Desc       string        `json:"description"`
+		CorpusDocs int           `json:"corpus_documents"`
+		ExportedAt string        `json:"exported_at"`
+		Queries    []goldenQuery `json:"queries"`
+	}
+
+	// Pick one doc per distinct field (up to 12), then top-cited to fill to 15
+	seenFields := make(map[string]bool)
+	picked := make([]corpusDoc, 0, 15)
+	for _, d := range docs {
+		if len(d.Title) < 10 {
+			continue
+		}
+		f := d.FieldAssociated
+		if f == "" {
+			f = "unknown"
+		}
+		if seenFields[f] {
+			continue
+		}
+		seenFields[f] = true
+		picked = append(picked, d)
+		if len(picked) >= 12 {
+			break
+		}
+	}
+	// Top cited filler
+	sorted := make([]corpusDoc, len(docs))
+	copy(sorted, docs)
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[j].CitationCount > sorted[i].CitationCount {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+	for _, d := range sorted {
+		if len(picked) >= 15 {
+			break
+		}
+		found := false
+		for _, p := range picked {
+			if p.MongoID == d.MongoID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			picked = append(picked, d)
+		}
+	}
+
+	queries := make([]goldenQuery, len(picked))
+	for i, d := range picked {
+		var qType, query string
+		switch i % 3 {
+		case 0: // title query
+			qType = "title"
+			words := strings.Fields(d.Title)
+			if len(words) > 5 {
+				words = words[:5]
+			}
+			query = strings.Join(words, " ")
+		case 1: // author query
+			qType = "author"
+			if len(d.Authors) > 0 {
+				parts := strings.FieldsFunc(d.Authors[0].Name, func(r rune) bool {
+					return r == ',' || r == ' '
+				})
+				if len(parts) > 0 {
+					query = parts[len(parts)-1]
+				}
+			}
+			if d.FieldAssociated != "" {
+				query += " " + d.FieldAssociated
+			}
+			query = strings.TrimSpace(query)
+		case 2: // field query
+			qType = "field"
+			query = d.FieldAssociated
+		}
+		if query == "" {
+			query = d.Title
+			qType = "title"
+		}
+
+		queries[i] = goldenQuery{
+			ID:            fmt.Sprintf("corpus-%02d", i+1),
+			Query:         query,
+			Type:          qType,
+			SourceMongoID: d.MongoID,
+			SourceTitle:   d.Title,
+			Relevant:      goldenRelevant{d.MongoID: 3},
+			Notes:         fmt.Sprintf("Auto-generated (%s, %d)", d.DocumentType, d.PublicationYear),
+		}
+	}
+
+	gs := goldenSet{
+		Version:    1,
+		Desc:       "Golden set aligned to the test corpus. Source doc is grade 3.",
+		CorpusDocs: len(docs),
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+		Queries:    queries,
+	}
+
+	gsBytes, err := json.MarshalIndent(gs, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal golden set: %w", err)
+	}
+	gsPath := filepath.Join(outDir, "golden_set_corpus.json")
+	if err := os.WriteFile(gsPath, gsBytes, 0644); err != nil {
+		return fmt.Errorf("write golden set: %w", err)
+	}
+	idx.cli.Success(fmt.Sprintf("golden_set_corpus.json: %d queries", len(queries)))
+
+	elapsed := idx.cli.EndPhase()
+	idx.cli.Summary("Test Dump Complete", map[string]string{
+		"Corpus":     fmt.Sprintf("%d documents → %s", len(docs), corpusPath),
+		"Golden Set": fmt.Sprintf("%d queries → %s", len(queries), gsPath),
+		"Time":       elapsed.String(),
+	})
+
+	return nil
 }
 
 // formatBytes formats bytes in human-readable format
