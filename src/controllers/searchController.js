@@ -8,7 +8,7 @@
  */
 export async function search(request, reply) {
     const startTime = Date.now();
-    const { query, filters, sort, page, per_page, search_in, mode, refine_within } = request.body;
+    const { query, filters, sort, page, per_page, search_in, mode, refine_within, rerank } = request.body;
     const searchService = request.server.searchService;
 
     try {
@@ -20,7 +20,8 @@ export async function search(request, reply) {
             per_page,
             search_in,
             mode,
-            refine_within
+            refine_within,
+            rerank
         });
 
         const tookMs = Date.now() - startTime;

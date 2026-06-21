@@ -99,7 +99,7 @@ export default class SearchService {
      * Advanced: BM25 (fuzziness AUTO) + hybrid kNN, gated by a BM25 pre-check, with a fuzzy
      *   fallback if the primary query returns nothing.
      */
-    async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null }) {
+    async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null, rerank = null }) {
         const searchInNorm = this.filters.normalizeSearchIn(search_in);
         // Warm the IITD roster before building queries; all author-name matching is gated to it.
         await this.roster.getAll();
@@ -107,7 +107,8 @@ export default class SearchService {
 
         const cachePayload = JSON.stringify({
             query, filters, sort, page, per_page,
-            search_in: searchInNorm, mode, refine_within: refine_within || null
+            search_in: searchInNorm, mode, refine_within: refine_within || null,
+            rerank: rerank === false ? false : null
         });
         const cacheKey = `search:${crypto.createHash('sha256').update(cachePayload).digest('hex').slice(0, 16)}`;
 
@@ -156,7 +157,7 @@ export default class SearchService {
         return this._runAdvancedSearch({
             query, filters, sort, page, per_page, searchInNorm, refine_within,
             facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds,
-            cacheKey
+            cacheKey, rerank
         });
     }
 
@@ -206,7 +207,7 @@ export default class SearchService {
         return { ...response, cacheHit: false };
     }
 
-    async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refine_within, facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds, cacheKey }) {
+    async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refine_within, facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds, cacheKey, rerank = null }) {
         this.logger.info({ query, mode: 'advanced' }, 'Running ADVANCED (hybrid) search');
 
         const embedding = await this.embeddingService.embedQuery(query);
@@ -237,7 +238,7 @@ export default class SearchService {
         if (sort === 'impact') {
             osQuery = this.queryBuilder.buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
         } else if (sort === 'relevance' || sort === 'normalized') {
-            osQuery = this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
+            osQuery = this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds, { bm25HitCount, candidateK: this.candidateK });
         } else {
             osQuery = this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
         }
@@ -259,7 +260,8 @@ export default class SearchService {
 
         // Pagination: the top `candidateK` matches form the reranked window; pages beyond it are
         // paginated in raw hybrid-score order via from/size (bounded by max_result_window).
-        const rerankApplicable = this.rerankEnabled && (sort === 'relevance' || sort === 'normalized');
+        const rerankRequested = rerank !== false;
+        const rerankApplicable = this.rerankEnabled && rerankRequested && (sort === 'relevance' || sort === 'normalized');
         const K = this.candidateK;
         const pageStart = (page - 1) * per_page;
         const pageEnd = pageStart + per_page;

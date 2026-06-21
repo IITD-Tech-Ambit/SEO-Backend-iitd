@@ -13,6 +13,15 @@ export function buildSearchConfig(config) {
     const relevant = config.search?.relevantMinScore ?? 1.20;
     return {
         hybridWeights: { bm25: 0.4, vector: 0.6 },
+        // Adaptive weighting: lexical-rich queries (many BM25 matches) lean on BM25 for
+        // precision; sparse-lexical (paraphrase/semantic) queries lean on the vector arm.
+        // Selected by ratio = bm25PreCheckHits / candidateK.
+        adaptiveHybridWeights: {
+            lexicalRich: { bm25: 0.55, vector: 0.45 },
+            semantic: { bm25: 0.3, vector: 0.7 },
+            lexicalRichRatio: 1.0,
+            semanticRatio: 0.2
+        },
         fieldBoosts: {
             title: 4,
             titleExact: 5,

@@ -26,14 +26,16 @@ const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.P
 const ROOT_BASE = API_BASE.replace(/\/api\/v1$/, '');
 const RERANK_OVERRIDE = process.env.RERANK_OVERRIDE; // 'on', 'off', or unset (runs both)
 
-async function searchQuery(query, { mode = 'advanced', sort = 'relevance', perPage = 50 } = {}) {
+async function searchQuery(query, { mode = 'advanced', sort = 'relevance', perPage = 50, rerank } = {}) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
+        const body = { query, mode, sort, per_page: perPage, page: 1 };
+        if (rerank === false) body.rerank = false;
         const res = await fetch(`${API_BASE}/search`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, mode, sort, per_page: perPage, page: 1 }),
+            body: JSON.stringify(body),
             signal: controller.signal,
         });
         clearTimeout(timeoutId);
@@ -45,7 +47,7 @@ async function searchQuery(query, { mode = 'advanced', sort = 'relevance', perPa
     }
 }
 
-async function runConfig(goldenSet, configLabel, { mode = 'advanced', sort = 'relevance' } = {}) {
+async function runConfig(goldenSet, configLabel, { mode = 'advanced', sort = 'relevance', rerank } = {}) {
     const results = [];
     const skipped = [];
     const errors = [];
@@ -57,7 +59,7 @@ async function runConfig(goldenSet, configLabel, { mode = 'advanced', sort = 're
         }
 
         try {
-            const resp = await searchQuery(entry.query, { mode, sort });
+            const resp = await searchQuery(entry.query, { mode, sort, rerank });
             const retrievedIds = (resp.results || []).map(r => r.mongo_id || r._id);
             const metrics = computeAll(retrievedIds, entry.relevant);
             results.push({ id: entry.id, query: entry.query, type: entry.type, ...metrics });
@@ -242,8 +244,8 @@ async function main() {
         reports.push(basicReport);
 
         // 2. Advanced mode — first stage only (rerank disabled via sort=impact which skips rerank)
-        console.log('\n[2/3] Advanced mode (hybrid BM25+kNN, no rerank)...');
-        const noRerankReport = await runConfig(goldenSet, 'advanced (no rerank)', { mode: 'advanced', sort: 'impact' });
+        console.log('\n[2/3] Advanced mode (normalized hybrid BM25+kNN, no rerank)...');
+        const noRerankReport = await runConfig(goldenSet, 'advanced (no rerank)', { mode: 'advanced', sort: 'normalized', rerank: false });
         printReport(noRerankReport, { verbose });
         reports.push(noRerankReport);
 

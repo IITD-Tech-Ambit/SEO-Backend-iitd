@@ -104,6 +104,10 @@ export default {
     reranker: {
         timeout: parseInt(process.env.RERANK_TIMEOUT_MS || '800'),
         modelVersion: process.env.RERANK_MODEL_VERSION || 'bge-reranker-base-v1',
-        scoreCacheTTL: parseInt(process.env.RERANK_CACHE_TTL || '3600')
+        scoreCacheTTL: parseInt(process.env.RERANK_CACHE_TTL || '3600'),
+        // Score fusion: final = alpha * norm(rerank) + (1 - alpha) * norm(firstStage).
+        // Bumping alpha trusts the cross-encoder more; lowering it preserves lexical ranking.
+        fusionAlpha: parseFloat(process.env.RERANK_FUSION_ALPHA || '0.7'),
+        literalTitleBonus: parseFloat(process.env.RERANK_LITERAL_TITLE_BONUS || '0.3')
     }
 };

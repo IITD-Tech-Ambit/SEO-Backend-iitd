@@ -98,6 +98,10 @@ export const searchRequestSchema = {
             type: 'string',
             maxLength: 500,
             description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
+        },
+        rerank: {
+            type: 'boolean',
+            description: 'Advanced mode only. When false, returns the first-stage hybrid ranking without cross-encoder reranking. Defaults to the server reranker setting.'
         }
     },
     additionalProperties: false
@@ -125,7 +129,8 @@ export const searchResponseSchema = {
                     document_eid: { type: 'string' },
                     document_scopus_id: { type: 'string' },
                     open_search_id: { type: 'string' },
-                    rerank_score: { type: 'number', description: 'Cross-encoder rerank score (present when reranking is applied)' }
+                    rerank_score: { type: 'number', description: 'Cross-encoder rerank score (present when reranking is applied)' },
+                    fused_score: { type: 'number', description: 'Final fused score: alpha*norm(rerank) + (1-alpha)*norm(firstStage) + literal-title bonus' }
                 }
             }
         },

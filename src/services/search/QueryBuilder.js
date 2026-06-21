@@ -231,12 +231,18 @@ export default class QueryBuilder {
         if (words.length < 2) return [];
         const titleField = literal ? 'title.standard' : 'title';
         const abstractField = literal ? 'abstract.standard' : 'abstract';
-        return [
+        const tiers = [
             { match_phrase: { [titleField]: { query, slop: 0, boost: 20 } } },
             { match_phrase: { [titleField]: { query, slop: 2, boost: 10 } } },
             { match_phrase: { [abstractField]: { query, slop: 0, boost: 6 } } },
             { match_phrase: { [abstractField]: { query, slop: 4, boost: 3 } } }
         ];
+        // Advanced (stemmed) mode lacks basic mode's literal precision. Add a top-priority
+        // un-stemmed exact-title tier so an exact title snippet outranks stemmed/partial matches.
+        if (!literal) {
+            tiers.unshift({ match_phrase: { 'title.standard': { query, slop: 0, boost: 25 } } });
+        }
+        return tiers;
     }
 
     /**
@@ -575,11 +581,36 @@ export default class QueryBuilder {
      * clears `min_score`, so advanced results are a strict superset of basic, and exact/lexical
      * matches rank above purely-semantic ones that the relevance bar would otherwise prune.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false } = {}) {
+    /**
+     * Full title-term coverage SHOULD clause. Docs whose title contains ALL query terms
+     * (un-stemmed) rank above partial-coverage docs — a lightweight grade signal for broad
+     * topic clusters where flat relevance alone ranks poorly.
+     */
+    _buildTitleCoverageClause(query, boost = 5) {
+        const words = query.trim().split(/\s+/).filter(Boolean);
+        if (words.length < 2) return null;
+        return { match: { 'title.standard': { query, operator: 'and', boost } } };
+    }
+
+    /**
+     * Pick BM25/vector weights from the BM25 pre-check hit ratio: lexical-rich queries favor
+     * BM25 precision, sparse-lexical (semantic/paraphrase) queries favor the vector arm.
+     */
+    _resolveHybridWeights(bm25HitCount, candidateK) {
+        const base = this.searchConfig.hybridWeights;
+        const adaptive = this.searchConfig.adaptiveHybridWeights;
+        if (!adaptive || bm25HitCount == null || !candidateK) return base;
+        const ratio = bm25HitCount / candidateK;
+        if (ratio >= adaptive.lexicalRichRatio) return adaptive.lexicalRich;
+        if (ratio < adaptive.semanticRatio) return adaptive.semantic;
+        return base;
+    }
+
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, bm25HitCount = null, candidateK = null } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
-        const weights = this.searchConfig.hybridWeights;
+        const weights = this._resolveHybridWeights(bm25HitCount, candidateK);
         const searchAllFields = !searchIn || searchIn.length === 0;
         const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
 
@@ -621,6 +652,11 @@ export default class QueryBuilder {
 
         if (isMultiWord && (searchAllFields || searchIn.includes('title') || searchIn.includes('abstract') || (authorRefineNarrow && authorOnly))) {
             boostClauses.push(...this._buildPhraseBoostTiers(query));
+        }
+
+        if (isMultiWord && (searchAllFields || searchIn.includes('title'))) {
+            const coverageClause = this._buildTitleCoverageClause(query);
+            if (coverageClause) boostClauses.push(coverageClause);
         }
 
         return {

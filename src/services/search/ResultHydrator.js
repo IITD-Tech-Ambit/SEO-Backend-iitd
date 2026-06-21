@@ -27,10 +27,17 @@ export default class ResultHydrator {
         if (!osHits.length) return [];
 
         const mongoIds = osHits.map(hit => hit._source.mongo_id);
+        const scoreById = new Map(osHits.map(hit => [hit._source.mongo_id, hit._score]));
         const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
         const docs = await ResearchDocument.find({ _id: { $in: mongoIds } }).select('-__v').lean();
         const docMap = new Map(docs.map(d => [d._id.toString(), d]));
         const ordered = mongoIds.map(id => docMap.get(id)).filter(Boolean);
+        // Carry the first-stage OpenSearch score so the reranker can fuse it with the
+        // cross-encoder score instead of discarding the lexical/hybrid signal entirely.
+        for (const doc of ordered) {
+            const score = scoreById.get(doc._id.toString());
+            if (typeof score === 'number') doc._firstStageScore = score;
+        }
         await this.filterAuthorsToFacultyRoster(ordered);
         return ordered;
     }

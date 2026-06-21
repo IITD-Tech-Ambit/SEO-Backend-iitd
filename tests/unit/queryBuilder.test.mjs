@@ -17,11 +17,13 @@ test('phrase tiers: empty for single-word, tiered for multi-word', () => {
     const qb = makeQB();
     assert.deepEqual(qb._buildPhraseBoostTiers('quantum'), []);
     const tiers = qb._buildPhraseBoostTiers('machine learning');
-    assert.equal(tiers.length, 4);
-    // Tier 1 = exact phrase on title with the highest boost.
-    assert.equal(tiers[0].match_phrase.title.slop, 0);
-    assert.equal(tiers[0].match_phrase.title.boost, 20);
-    // Later tiers are weaker (exact title > near title > abstract).
+    // Advanced (stemmed) mode prepends an un-stemmed literal exact-title tier.
+    assert.equal(tiers.length, 5);
+    assert.equal(tiers[0].match_phrase['title.standard'].slop, 0);
+    assert.equal(tiers[0].match_phrase['title.standard'].boost, 25);
+    assert.equal(tiers[1].match_phrase.title.slop, 0);
+    assert.equal(tiers[1].match_phrase.title.boost, 20);
+    // Boosts are strictly descending (literal exact > exact title > near title > abstract).
     const boosts = tiers.map(t => Object.values(t.match_phrase)[0].boost);
     for (let i = 1; i < boosts.length; i++) assert.ok(boosts[i] < boosts[i - 1]);
 });
@@ -53,6 +55,30 @@ test('buildNormalizedHybridQuery includes the lexical-floor function', () => {
     assert.equal(body.query.function_score.score_mode, 'sum');
     assert.equal(body.query.function_score.boost_mode, 'replace');
     assert.equal(body.min_score, searchConfig.minScore.relevant);
+});
+
+test('_resolveHybridWeights: lexical-rich leans BM25, sparse leans vector', () => {
+    const qb = makeQB();
+    const { adaptiveHybridWeights: a, hybridWeights: base } = searchConfig;
+    assert.deepEqual(qb._resolveHybridWeights(60, 50), a.lexicalRich, 'ratio >= 1 -> lexical-rich');
+    assert.deepEqual(qb._resolveHybridWeights(5, 50), a.semantic, 'ratio < 0.2 -> semantic');
+    assert.deepEqual(qb._resolveHybridWeights(20, 50), base, 'mid ratio -> base');
+    assert.deepEqual(qb._resolveHybridWeights(null, 50), base, 'no hint -> base');
+});
+
+test('_buildTitleCoverageClause: requires all terms, multi-word only', () => {
+    const qb = makeQB();
+    assert.equal(qb._buildTitleCoverageClause('quantum'), null);
+    const clause = qb._buildTitleCoverageClause('machine learning');
+    assert.equal(clause.match['title.standard'].operator, 'and');
+    assert.equal(clause.match['title.standard'].boost, 5);
+});
+
+test('buildNormalizedHybridQuery: lexical-rich hint shifts BM25 weight into the script', () => {
+    const qb = makeQB();
+    const body = qb.buildNormalizedHybridQuery('machine learning', EMBED, {}, 1, 20, null, null, false, null, null, { bm25HitCount: 100, candidateK: 50 });
+    const bm25Fn = body.query.function_score.functions.find(f => f.script_score?.script?.lang === 'painless');
+    assert.ok(bm25Fn.script_score.script.source.startsWith(String(searchConfig.adaptiveHybridWeights.lexicalRich.bm25)));
 });
 
 test('buildStrictBm25Must: <=3 terms require all terms (must)', () => {

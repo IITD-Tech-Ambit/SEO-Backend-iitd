@@ -27,24 +27,26 @@ const MIN_THRESHOLDS = {
     hard_cross_field: { mrr: 0.15, precision_10: 0.05 },
 };
 
-async function searchQuery(query, { mode = 'advanced', sort = 'relevance', perPage = 50 } = {}) {
+async function searchQuery(query, { mode = 'advanced', sort = 'relevance', perPage = 50, rerank } = {}) {
+    const body = { query, mode, sort, per_page: perPage, page: 1 };
+    if (rerank === false) body.rerank = false;
     const res = await fetch(`${API_BASE}/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, mode, sort, per_page: perPage, page: 1 }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
 }
 
-async function runConfig(goldenSet, configLabel, { mode = 'advanced', sort = 'relevance' } = {}) {
+async function runConfig(goldenSet, configLabel, { mode = 'advanced', sort = 'relevance', rerank } = {}) {
     const results = [];
     const errors = [];
 
     for (const entry of goldenSet.queries) {
         try {
-            const resp = await searchQuery(entry.query, { mode, sort });
+            const resp = await searchQuery(entry.query, { mode, sort, rerank });
             const retrievedIds = (resp.results || []).map(r => r.mongo_id || r._id);
             const metrics = computeAll(retrievedIds, entry.relevant);
             results.push({ id: entry.id, query: entry.query, type: entry.type, difficulty: entry.difficulty, ...metrics });
@@ -177,8 +179,8 @@ async function main() {
     allFailures = allFailures.concat(printReport(basic, { verbose }));
     reports.push(basic);
 
-    console.log('\n[2/3] Advanced (no rerank)...');
-    const noRerank = await runConfig(goldenSet, 'advanced (no rerank)', { mode: 'advanced', sort: 'impact' });
+    console.log('\n[2/3] Advanced (no rerank, normalized hybrid)...');
+    const noRerank = await runConfig(goldenSet, 'advanced (no rerank)', { mode: 'advanced', sort: 'normalized', rerank: false });
     allFailures = allFailures.concat(printReport(noRerank, { verbose }));
     reports.push(noRerank);
 
