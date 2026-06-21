@@ -80,6 +80,11 @@ export default {
 
     // Search defaults
     search: {
+        // User-facing relevance threshold (normalized hybrid score) that defines a
+        // "matching paper". Set via env so it can be tuned against the eval harness.
+        // 0.12 (the old recall floor) counted the entire kNN recall pool (~corpus-sized);
+        // ~1.20 keeps only documents with real BM25 and/or strong semantic similarity.
+        relevantMinScore: parseFloat(process.env.RELEVANT_MIN_SCORE || '1.20'),
         defaultPageSize: 20,
         maxPageSize: 100,
         hybridWeights: {
@@ -87,7 +92,12 @@ export default {
             vector: 0.6
         },
         candidateK: parseInt(process.env.CANDIDATE_K || '50'),
-        rerankEnabled: (process.env.RERANK_ENABLED || 'true').toLowerCase() === 'true'
+        rerankEnabled: (process.env.RERANK_ENABLED || 'true').toLowerCase() === 'true',
+        // OpenSearch's index.max_result_window bound on `from + size`. Deep pagination
+        // (pages beyond the reranked window) uses from/size, so a requested page whose
+        // window would exceed this cannot be served and total_pages is clamped accordingly.
+        // Keep this in sync with the index setting if you raise it for deeper navigation.
+        maxResultWindow: parseInt(process.env.MAX_RESULT_WINDOW || '10000')
     },
 
     // Reranker

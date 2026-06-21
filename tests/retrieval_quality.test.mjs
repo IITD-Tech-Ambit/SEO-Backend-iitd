@@ -78,7 +78,9 @@ describe('Gibberish queries return 0 results', () => {
 });
 
 describe('Non-alphanumeric and numeric-only queries return 0 results', () => {
-    const edgeCases = ['!!!???', '12345', '@#$%^', '...'];
+    // Note: avoid short numbers like "12345" that legitimately occur as tokens in the corpus
+    // (those are real matches, not gibberish). Use a clearly-absent numeric string.
+    const edgeCases = ['!!!???', '909187654321', '@#$%^', '...'];
 
     for (const q of edgeCases) {
         it(`advanced mode: "${q}" → 0 results`, async () => {
@@ -231,15 +233,24 @@ describe('Very short queries', () => {
         assert.ok(totalOf(body) > 0, '"a" should match many documents');
     });
 
-    it('"ab" returns 0 in advanced (no meaningful match)', async () => {
+    it('a short but meaningful token matches, and advanced is a superset of basic', async () => {
+        // "ab" is a real token in this corpus ("ab initio" methods), so it legitimately
+        // matches. The invariant to enforce is basic ⊆ advanced, not a zero result.
+        const basic = await post('/search', { query: 'ab', mode: 'basic', per_page: 5 });
+        const advanced = await post('/search', { query: 'ab', mode: 'advanced', per_page: 5 });
+        assert.equal(basic.status, 200);
+        assert.equal(advanced.status, 200);
+        assert.ok(totalOf(advanced.body) >= totalOf(basic.body), 'advanced should be a superset of basic for "ab"');
+    });
+
+    it('a genuinely absent short token returns 0 in advanced', async () => {
         const { status, body } = await post('/search', {
-            query: 'ab',
+            query: 'zq',
             mode: 'advanced',
             per_page: 5,
         });
         assert.equal(status, 200);
-        // "ab" is unlikely to match any title/abstract as a standalone token
-        assert.equal(totalOf(body), 0, '"ab" should not return results');
+        assert.equal(totalOf(body), 0, '"zq" is not a corpus token and should return no results');
     });
 });
 

@@ -22,17 +22,18 @@ export function recallAtK(retrieved, relevant, k) {
 }
 
 /**
- * Precision@k — fraction of top-k that are relevant.
+ * Precision@k — fraction of top-k positions that hold a relevant doc.
+ * Denominator is always k (not the actual number retrieved), per standard IR convention:
+ * unjudged/missing positions are treated as non-relevant.
  */
 export function precisionAtK(retrieved, relevant, k) {
     const relSet = new Set(Object.keys(relevant));
     const topK = retrieved.slice(0, k);
-    if (topK.length === 0) return 0;
     let found = 0;
     for (const id of topK) {
         if (relSet.has(id)) found++;
     }
-    return found / topK.length;
+    return found / k;
 }
 
 /**
@@ -71,6 +72,8 @@ export function ndcgAtK(retrieved, relevant, k) {
 export function computeAll(retrieved, relevant) {
     return {
         recall_50: recallAtK(retrieved, relevant, 50),
+        precision_1: precisionAtK(retrieved, relevant, 1),
+        precision_5: precisionAtK(retrieved, relevant, 5),
         precision_10: precisionAtK(retrieved, relevant, 10),
         ndcg_10: ndcgAtK(retrieved, relevant, 10),
         mrr: mrr(retrieved, relevant),
@@ -83,7 +86,7 @@ export function computeAll(retrieved, relevant) {
  * Average metrics across multiple queries (skips null recall for queries with no relevance judgments).
  */
 export function averageMetrics(perQueryMetrics) {
-    const keys = ['recall_50', 'precision_10', 'ndcg_10', 'mrr'];
+    const keys = ['recall_50', 'precision_1', 'precision_5', 'precision_10', 'ndcg_10', 'mrr'];
     const avgs = {};
     for (const key of keys) {
         const vals = perQueryMetrics.map(m => m[key]).filter(v => v !== null && v !== undefined);

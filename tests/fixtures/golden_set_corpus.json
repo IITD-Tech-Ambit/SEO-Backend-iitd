@@ -1,173 +1,231 @@
 {
   "version": 1,
-  "description": "Golden set aligned to the test corpus. Source doc is grade 3.",
-  "corpus_documents": 1000,
-  "exported_at": "2026-06-18T22:49:23Z",
+  "description": "Golden set aligned to the random test corpus sample. Source doc is grade 3; search hits may be added as grade 2.",
+  "corpus_documents": 500,
+  "exported_at": "2026-06-21T22:34:00.934Z",
   "queries": [
     {
       "id": "corpus-01",
-      "query": "Groundwater markets, irrigation efficiency and",
+      "query": "Interactive effects of p-aramid fabric",
       "type": "title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecde9d",
-      "source_title": "Groundwater markets, irrigation efficiency and sustainability: A study from North India",
+      "source_mongo_id": "69deca2e4e2d2a5b77ed6a1d",
+      "source_title": "Interactive effects of p-aramid fabric structure and shear thickening fluid on impact resistance performance of soft armor materials",
       "relevant": {
-        "69dec9f34e2d2a5b77ecde9d": 3
+        "69deca2e4e2d2a5b77ed6a1d": 3
       },
-      "notes": "Auto-generated (Book Chapter, 2012)"
+      "notes": "Auto-generated from indexed test corpus (Article, 2016)"
     },
     {
       "id": "corpus-02",
-      "query": "J.V. Medicine",
-      "type": "author",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdea0",
-      "source_title": "Using a discrete choice experiment to elicit the demand for a nutritious food: Willingness-to-pay for orange maize in rural Zambia",
+      "query": "Chemistry",
+      "type": "field",
+      "source_mongo_id": "69deca4e4e2d2a5b77edb252",
+      "source_title": "Differential influence of additives on the various stages of insulin aggregation",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdea0": 3
+        "69deca4e4e2d2a5b77edb252": 3,
+        "69deca074e2d2a5b77ed0bf2": 2,
+        "69deca674e2d2a5b77ede765": 2,
+        "69deca5d4e2d2a5b77edcf38": 2,
+        "69dec9f94e2d2a5b77ecec6b": 2,
+        "69dec9f94e2d2a5b77ececbb": 2
       },
-      "notes": "Auto-generated (Article, 2012)"
+      "notes": "Auto-generated from indexed test corpus (Article, 2016)"
     },
     {
       "id": "corpus-03",
-      "query": "Business, Management and Accounting",
-      "type": "field",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdea1",
-      "source_title": "Local network externalities and market segmentation",
+      "query": "Memory effect in silicon nitride",
+      "type": "title",
+      "source_mongo_id": "69deca1e4e2d2a5b77ed4464",
+      "source_title": "Memory effect in silicon nitride deposition using ICPCVD technique",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdea1": 3
+        "69deca1e4e2d2a5b77ed4464": 3,
+        "69deca244e2d2a5b77ed550d": 2,
+        "69deca244e2d2a5b77ed5475": 2
       },
-      "notes": "Auto-generated (Article, 2009)"
+      "notes": "Auto-generated from indexed test corpus (Article, 2019)"
     },
     {
       "id": "corpus-04",
-      "query": "Millers, commission agents and collusion",
-      "type": "title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdea2",
-      "source_title": "Millers, commission agents and collusion in grain markets: Evidence from basmati auctions in North India",
+      "query": "Engineering",
+      "type": "field",
+      "source_mongo_id": "69deca094e2d2a5b77ed101c",
+      "source_title": "ATLHCAF and DMNGI-PLL Based Control Techniques for a Dual-Stage SPV Array and BES in Shipboard Microgrid",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdea2": 3
+        "69deca094e2d2a5b77ed101c": 3,
+        "69deca304e2d2a5b77ed6ec2": 2,
+        "69deca0c4e2d2a5b77ed19eb": 2,
+        "69dec9f84e2d2a5b77eceb7e": 2,
+        "69deca014e2d2a5b77ecfd8b": 2,
+        "69deca454e2d2a5b77ed9895": 2
       },
-      "notes": "Auto-generated (Article, 2008)"
+      "notes": "Auto-generated from indexed test corpus (Article, 2024)"
     },
     {
       "id": "corpus-05",
-      "query": "A. Agricultural and Biological Sciences",
-      "type": "author",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdea4",
-      "source_title": "Buyer collusion and efficiency of government intervention in wheat markets in northern India: An asymmetric structural auctions analysis",
+      "query": "Energynn: Energy estimation for neural",
+      "type": "title",
+      "source_mongo_id": "69deca314e2d2a5b77ed703e",
+      "source_title": "Energynn: Energy estimation for neural network inference tasks on DPU",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdea4": 3
+        "69deca314e2d2a5b77ed703e": 3
       },
-      "notes": "Auto-generated (Article, 2004)"
+      "notes": "Auto-generated from indexed test corpus (Conference Paper, 2021)"
     },
     {
       "id": "corpus-06",
-      "query": "Computer Science",
+      "query": "Energy",
       "type": "field",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdea6",
-      "source_title": "Leveling Up Leadership: Emerging Voices and Evolving Practices in the Games \u0026 Play Community",
+      "source_mongo_id": "69deca4d4e2d2a5b77edaed9",
+      "source_title": "Algorithm to determine the knee point on capacity fade curves of lithium-ion cells",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdea6": 3
+        "69deca4d4e2d2a5b77edaed9": 3,
+        "69deca154e2d2a5b77ed2e45": 2,
+        "69deca634e2d2a5b77edde44": 2,
+        "69deca424e2d2a5b77ed93bc": 2,
+        "69dec9f64e2d2a5b77ece5bc": 2,
+        "69deca084e2d2a5b77ed1000": 2
       },
-      "notes": "Auto-generated (Conference Paper, 2025)"
+      "notes": "Auto-generated from indexed test corpus (Article, 2019)"
     },
     {
       "id": "corpus-07",
-      "query": "Theory as Design Material: How",
+      "query": "A novel swarm intelligence based",
       "type": "title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdea7",
-      "source_title": "Theory as Design Material: How Design Researchers Use Design Skills to Explore the Malleability of Theory",
+      "source_mongo_id": "69deca094e2d2a5b77ed1287",
+      "source_title": "A novel swarm intelligence based gravitational search algorithm for combined economic and emission dispatch problems",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdea7": 3
+        "69deca094e2d2a5b77ed1287": 3,
+        "69deca094e2d2a5b77ed11b8": 2,
+        "69deca094e2d2a5b77ed12d1": 2,
+        "69deca164e2d2a5b77ed3131": 2,
+        "69deca024e2d2a5b77ecff31": 2
       },
-      "notes": "Auto-generated (Article, 2025)"
+      "notes": "Auto-generated from indexed test corpus (Conference Paper, 2013)"
     },
     {
       "id": "corpus-08",
-      "query": "B. Engineering",
+      "query": "P.K.",
       "type": "author",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdea9",
-      "source_title": "Impact of Body Language on Design Students—A Case Study at an Indian University Classroom",
+      "source_mongo_id": "69deca4f4e2d2a5b77edb497",
+      "source_title": "Simultaneous synthesis of enzymatically active luciferase and biologically active β subunit of human chorionic gonadotropin in caterpillars infected with a recombinant baculovirus",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdea9": 3
+        "69deca4f4e2d2a5b77edb497": 3,
+        "69dec9fe4e2d2a5b77ecf6a2": 2,
+        "69deca064e2d2a5b77ed090f": 2,
+        "69deca064e2d2a5b77ed0910": 2,
+        "69deca064e2d2a5b77ed0912": 2,
+        "69deca0b4e2d2a5b77ed177c": 2
       },
-      "notes": "Auto-generated (Conference Paper, 2025)"
+      "notes": "Auto-generated from indexed test corpus (Article, 1992)"
     },
     {
       "id": "corpus-09",
-      "query": "Mathematics",
-      "type": "field",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdeac",
-      "source_title": "Designing Pachi: A Verbal Language Learning Application for Children with Hearing Impairment in India",
+      "query": "Performance evaluation of the adms-urban",
+      "type": "title",
+      "source_mongo_id": "69deca334e2d2a5b77ed763d",
+      "source_title": "Performance evaluation of the adms-urban model in predicting PM10 concentrations at the roadside in Chennai, India and Newcastle, UK",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdeac": 3
+        "69deca334e2d2a5b77ed763d": 3,
+        "69deca334e2d2a5b77ed7634": 2,
+        "69deca314e2d2a5b77ed7276": 2,
+        "69deca334e2d2a5b77ed763b": 2,
+        "69deca334e2d2a5b77ed763c": 2
       },
-      "notes": "Auto-generated (Conference Paper, 2024)"
+      "notes": "Auto-generated from indexed test corpus (Conference Paper, 2011)"
     },
     {
       "id": "corpus-10",
-      "query": "Eliciting Willingness-to-Pay through Multiple Experimental",
-      "type": "title",
-      "source_mongo_id": "69dec9f24e2d2a5b77ecde98",
-      "source_title": "Eliciting Willingness-to-Pay through Multiple Experimental Procedures: Evidence from Lab-in-the-Field in Rural Ghana",
+      "query": "Business, Management and Accounting",
+      "type": "field",
+      "source_mongo_id": "69deca554e2d2a5b77edc251",
+      "source_title": "Do emerging market corporates mimic the payout policy of peers?",
       "relevant": {
-        "69dec9f24e2d2a5b77ecde98": 3
+        "69deca554e2d2a5b77edc251": 3,
+        "69deca4b4e2d2a5b77eda9a8": 2,
+        "69deca024e2d2a5b77ecff6c": 2,
+        "69deca4b4e2d2a5b77eda9db": 2,
+        "69deca024e2d2a5b77ecfeee": 2,
+        "69deca254e2d2a5b77ed5695": 2
       },
-      "notes": "Auto-generated (Article, 2018)"
+      "notes": "Auto-generated from indexed test corpus (Article, 2024)"
     },
     {
       "id": "corpus-11",
-      "query": "A. Decision Sciences",
+      "query": "A.K.",
       "type": "author",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdead",
-      "source_title": "Facilitating Use of Existing Knowledge in Research-Through-Design: A Case Study with Design Students",
+      "source_mongo_id": "69deca164e2d2a5b77ed3058",
+      "source_title": "A preliminary assessment of spatiotemporal properties of urban heat island and urban morphology at Gautam Buddha Nagar, India",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdead": 3
+        "69deca164e2d2a5b77ed3058": 3,
+        "69dec9f64e2d2a5b77ece5c4": 2,
+        "69dec9f44e2d2a5b77ece1ab": 2,
+        "69dec9f44e2d2a5b77ece1ac": 2,
+        "69dec9f44e2d2a5b77ece1b1": 2,
+        "69dec9ff4e2d2a5b77ecf849": 2
       },
-      "notes": "Auto-generated (Conference Paper, 2023)"
+      "notes": "Auto-generated from indexed test corpus (Article, 2026)"
     },
     {
       "id": "corpus-12",
-      "query": "Chemistry",
+      "query": "Earth and Planetary Sciences",
       "type": "field",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdeb2",
-      "source_title": "Triplet Energy Migration in Cytoskeletal Polymers",
+      "source_mongo_id": "69dec9f64e2d2a5b77ece52c",
+      "source_title": "Numerical modeling of suspended sediment transport in the Gulf of Kachchh including Kandla creek, west coast of India",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdeb2": 3
+        "69dec9f64e2d2a5b77ece52c": 3,
+        "69deca034e2d2a5b77ed0277": 2,
+        "69deca504e2d2a5b77edb5de": 2,
+        "69deca314e2d2a5b77ed7113": 2,
+        "69deca314e2d2a5b77ed7130": 2,
+        "69deca1b4e2d2a5b77ed3cf6": 2
       },
-      "notes": "Auto-generated (Article, 2025)"
+      "notes": "Auto-generated from indexed test corpus (Article, 2006)"
     },
     {
       "id": "corpus-13",
-      "query": "Stop Clickbait: Detecting and preventing",
+      "query": "Casson fluid flow in a",
       "type": "title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdfe0",
-      "source_title": "Stop Clickbait: Detecting and preventing clickbaits in online news media",
+      "source_mongo_id": "69deca214e2d2a5b77ed4d89",
+      "source_title": "Casson fluid flow in a pipe filled with a homogeneous porous medium",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdfe0": 3
+        "69deca214e2d2a5b77ed4d89": 3,
+        "69deca214e2d2a5b77ed4d75": 2,
+        "69deca214e2d2a5b77ed4d70": 2,
+        "69deca214e2d2a5b77ed4d67": 2,
+        "69deca214e2d2a5b77ed4d87": 2
       },
-      "notes": "Auto-generated (Conference Paper, 2016)"
+      "notes": "Auto-generated from indexed test corpus (Article, 1996)"
     },
     {
       "id": "corpus-14",
-      "query": "M. Energy",
+      "query": "S.R.",
       "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece116",
-      "source_title": "Optimal coordination of directional over-current relays using Teaching Learning-Based Optimization (TLBO) algorithm",
+      "source_mongo_id": "69deca5b4e2d2a5b77edcbb2",
+      "source_title": "VARIUS: A model of process variation and resulting timing errors for microarchitects",
       "relevant": {
-        "69dec9f44e2d2a5b77ece116": 3
+        "69deca5b4e2d2a5b77edcbb2": 3,
+        "69deca3b4e2d2a5b77ed8400": 2,
+        "69dec9fe4e2d2a5b77ecf594": 2,
+        "69dec9fe4e2d2a5b77ecf596": 2,
+        "69dec9fe4e2d2a5b77ecf597": 2,
+        "69deca184e2d2a5b77ed358e": 2
       },
-      "notes": "Auto-generated (Article, 2013)"
+      "notes": "Auto-generated from indexed test corpus (Conference Paper, 2008)"
     },
     {
       "id": "corpus-15",
-      "query": "Engineering",
-      "type": "field",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdfab",
-      "source_title": "Joining technologies for automotive battery systems manufacturing",
+      "query": "The Fourier decomposition method for",
+      "type": "title",
+      "source_mongo_id": "69deca2b4e2d2a5b77ed6395",
+      "source_title": "The Fourier decomposition method for nonlinear and non-stationary time series analysis",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdfab": 3
+        "69deca2b4e2d2a5b77ed6395": 3,
+        "69deca4e4e2d2a5b77edb28b": 2,
+        "69deca2d4e2d2a5b77ed67f7": 2,
+        "69deca504e2d2a5b77edb4be": 2,
+        "69deca394e2d2a5b77ed7eee": 2
       },
-      "notes": "Auto-generated (Article, 2018)"
+      "notes": "Auto-generated from indexed test corpus (Article, 2017)"
     }
   ]
 }

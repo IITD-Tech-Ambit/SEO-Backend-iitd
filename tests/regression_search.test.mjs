@@ -98,16 +98,16 @@ describe('Bug #5 — Cache isolation', () => {
 });
 
 describe('Bug #9 — Deep pagination guard', () => {
-    it('rejects page values above the maximum', async () => {
+    it('rejects page values above the schema maximum (10000)', async () => {
         const { status } = await post('/search', {
             query: 'test',
-            page: 501,
+            page: 10001,
             per_page: 20,
         });
-        assert.equal(status, 400, 'Should reject page > 500');
+        assert.equal(status, 400, 'Should reject page > 10000');
     });
 
-    it('accepts the maximum allowed page', async () => {
+    it('accepts a deep but in-bounds page (served as an honest empty page when beyond the window)', async () => {
         const { status } = await post('/search', {
             query: 'test',
             page: 500,

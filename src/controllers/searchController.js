@@ -108,7 +108,7 @@ export async function searchHealth(request, reply) {
  */
 export async function authorScopedSearch(request, reply) {
     const startTime = Date.now();
-    const { query, author_id, page, per_page, mode, refine_within, search_in } = request.body;
+    const { query, author_id, page, per_page, mode, refine_within, search_in, filters } = request.body;
     const searchService = request.server.searchService;
 
     try {
@@ -119,7 +119,8 @@ export async function authorScopedSearch(request, reply) {
             per_page,
             mode,
             refine_within,
-            search_in
+            search_in,
+            filters
         });
 
         const tookMs = Date.now() - startTime;
@@ -156,7 +157,7 @@ export async function authorScopedSearch(request, reply) {
  */
 export async function getAllFacultyForQuery(request, reply) {
     const startTime = Date.now();
-    const { query, mode, search_in: searchInRaw, refine_within } = request.query;
+    const { query, mode, search_in: searchInRaw, refine_within, filters: filtersRaw } = request.query;
     const searchService = request.server.searchService;
 
     const parsedSearchIn =
@@ -164,8 +165,19 @@ export async function getAllFacultyForQuery(request, reply) {
             ? searchInRaw.split(',').map((s) => s.trim()).filter(Boolean)
             : undefined;
 
+    // Filters arrive as a JSON-encoded object so the People sidebar applies the IDENTICAL
+    // facet filters as POST /search and the two paper totals stay consistent.
+    let parsedFilters = null;
+    if (typeof filtersRaw === 'string' && filtersRaw.trim()) {
+        try {
+            parsedFilters = JSON.parse(filtersRaw);
+        } catch (err) {
+            request.log.warn({ err: err?.message, filtersRaw }, 'Faculty-for-query: ignoring malformed filters param');
+        }
+    }
+
     try {
-        const result = await searchService.getAllFacultyForQuery(query, mode, parsedSearchIn, refine_within);
+        const result = await searchService.getAllFacultyForQuery(query, mode, parsedSearchIn, refine_within, parsedFilters);
 
         const tookMs = Date.now() - startTime;
 

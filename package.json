@@ -7,8 +7,15 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "test": "node --test tests/regression_search.test.mjs tests/perf_search.test.mjs tests/author_scope_search.test.mjs",
-    "test:eval": "node tests/eval/eval_harness.mjs"
+    "test": "node --test tests/regression_search.test.mjs tests/perf_search.test.mjs tests/author_scope_search.test.mjs tests/unit/*.test.mjs tests/integration/*.test.mjs tests/corpus_retrieval.test.mjs",
+    "test:dump": "node tests/scripts/dump_test_corpus.mjs",
+    "test:golden": "node tests/scripts/generate_golden_set.mjs",
+    "test:golden:hard": "node tests/scripts/generate_hard_golden_set.mjs",
+    "test:corpus": "node --test tests/corpus_retrieval.test.mjs",
+    "test:hard": "node --test tests/hard_retrieval.test.mjs",
+    "test:eval": "node tests/eval/eval_harness.mjs",
+    "test:eval:hard": "node tests/eval/eval_hard.mjs",
+    "test:retrieval": "node --test tests/retrieval_quality.test.mjs tests/corpus_retrieval.test.mjs tests/hard_retrieval.test.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",

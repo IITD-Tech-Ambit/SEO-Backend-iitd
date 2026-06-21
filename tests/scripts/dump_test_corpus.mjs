@@ -7,8 +7,10 @@
  * Also auto-populates the golden set with candidate relevant documents.
  *
  * Output:
- *   tests/fixtures/test_corpus.json  — full document details for all indexed docs
- *   tests/fixtures/golden_set.json   — updated with candidate mongo_ids (if empty)
+ *   tests/fixtures/test_corpus.json              — random sample of indexed docs (default 500)
+ *   tests/fixtures/golden_set_corpus.json        — small smoke golden set (15 queries)
+ *   tests/fixtures/golden_set_comprehensive.json — full eval golden set (~80+ queries)
+ *   tests/fixtures/golden_set_hard.json          — difficult metric-stress queries
  *
  * Usage:
  *   MONGODB_URI=mongodb://localhost:27017/research_db node tests/scripts/dump_test_corpus.mjs
@@ -16,6 +18,7 @@
  * Environment:
  *   MONGODB_URI    — MongoDB connection string (default: mongodb://localhost:27017/research_db)
  *   SEARCH_API_URL — Search API base URL (default: http://localhost:3001)
+ *   CORPUS_LIMIT   — random sample size (default: 500; set 0 to fetch all indexed docs)
  */
 
 import mongoose from 'mongoose';
@@ -23,6 +26,9 @@ import { readFile, writeFile } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import dotenv from 'dotenv';
+import { buildComprehensiveGoldenSet } from './build_comprehensive_golden_set.mjs';
+import { buildHardGoldenSet } from './build_hard_golden_set.mjs';
+import { calibrateHardSet } from './calibrate_hard_set.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -37,47 +43,61 @@ const API_BASE = process.env.SEARCH_API_URL || process.env.API_BASE || `http://l
 const CORPUS_PATH = path.resolve(__dirname, '../fixtures/test_corpus.json');
 const GOLDEN_SET_PATH = path.resolve(__dirname, '../fixtures/golden_set.json');
 const GOLDEN_SET_CORPUS_PATH = path.resolve(__dirname, '../fixtures/golden_set_corpus.json');
-const CORPUS_LIMIT = parseInt(process.env.CORPUS_LIMIT || '0', 10);
+const GOLDEN_SET_COMPREHENSIVE_PATH = path.resolve(__dirname, '../fixtures/golden_set_comprehensive.json');
+const GOLDEN_SET_HARD_PATH = path.resolve(__dirname, '../fixtures/golden_set_hard.json');
+const CORPUS_LIMIT = parseInt(process.env.CORPUS_LIMIT ?? '500', 10);
 
-async function fetchAllIndexedDocs() {
+const INDEXED_MATCH = {
+    open_search_id: { $exists: true, $ne: null, $ne: '' },
+    $expr: {
+        $not: { $regexMatch: { input: '$open_search_id', regex: /^pending_/ } }
+    }
+};
+
+const PROJECT_FIELDS = {
+    _id: 1,
+    title: 1,
+    abstract: 1,
+    authors: 1,
+    publication_year: 1,
+    document_type: 1,
+    field_associated: 1,
+    subject_area: 1,
+    citation_count: 1,
+    reference_count: 1,
+    document_eid: 1,
+    document_scopus_id: 1,
+    link: 1,
+    kerberos: 1,
+    open_search_id: 1,
+};
+
+async function fetchIndexedDocs() {
     console.log('Connecting to MongoDB...');
     await mongoose.connect(MONGODB_URI);
     const db = mongoose.connection.db;
     const collection = db.collection(MONGODB_COLLECTION);
     console.log(`  Collection: ${MONGODB_COLLECTION}`);
 
-    // Find all documents that have been indexed (open_search_id is set and not pending)
-    let cursor = collection.find({
-        open_search_id: { $exists: true, $ne: null, $ne: '' },
-        $expr: {
-            $not: { $regexMatch: { input: '$open_search_id', regex: /^pending_/ } }
-        }
-    }).project({
-        _id: 1,
-        title: 1,
-        abstract: 1,
-        authors: 1,
-        publication_year: 1,
-        document_type: 1,
-        field_associated: 1,
-        subject_area: 1,
-        citation_count: 1,
-        reference_count: 1,
-        document_eid: 1,
-        document_scopus_id: 1,
-        link: 1,
-        kerberos: 1,
-        open_search_id: 1,
-    }).sort({ _id: 1 });
+    const totalIndexed = await collection.countDocuments(INDEXED_MATCH);
+    console.log(`  Indexed documents in collection: ${totalIndexed}`);
 
+    let docs;
     if (CORPUS_LIMIT > 0) {
-        cursor = cursor.limit(CORPUS_LIMIT);
+        const sampleSize = Math.min(CORPUS_LIMIT, totalIndexed);
+        console.log(`  Sampling ${sampleSize} random indexed documents (CORPUS_LIMIT=${CORPUS_LIMIT})`);
+        docs = await collection.aggregate([
+            { $match: INDEXED_MATCH },
+            { $sample: { size: sampleSize } },
+            { $project: PROJECT_FIELDS },
+        ]).toArray();
+    } else {
+        console.log('  CORPUS_LIMIT=0 — fetching all indexed documents');
+        docs = await collection.find(INDEXED_MATCH).project(PROJECT_FIELDS).sort({ _id: 1 }).toArray();
     }
 
-    const docs = await cursor.toArray();
-
     await mongoose.disconnect();
-    return docs;
+    return { docs, totalIndexed };
 }
 
 async function searchAndCollect(query, mode = 'basic') {
@@ -166,10 +186,10 @@ function buildCorpusGoldenSet(corpus) {
     }
 
     const queries = picked.map((doc, i) => {
-        const author = doc.authors?.[0]?.name?.split(/[,\s]/).filter(Boolean)[0] || '';
+        const surname = (doc.authors?.[0]?.name || '').split(/[,\s]+/).filter(Boolean).pop() || '';
         const variants = [
             { type: 'title', query: titleQuery(doc.title) },
-            author ? { type: 'author', query: `${author} ${doc.field_associated || ''}`.trim() } : null,
+            surname.length >= 4 ? { type: 'author', query: surname } : null,
             doc.field_associated ? { type: 'field', query: doc.field_associated } : null,
         ].filter(Boolean);
 
@@ -187,11 +207,46 @@ function buildCorpusGoldenSet(corpus) {
 
     return {
         version: 1,
-        description: 'Golden set aligned to the 1000-doc test corpus. Source doc is grade 3; search hits may be added as grade 2.',
+        description: 'Golden set aligned to the random test corpus sample. Source doc is grade 3; search hits may be added as grade 2.',
         corpus_documents: corpus.total_documents,
         exported_at: new Date().toISOString(),
         queries,
     };
+}
+
+async function verifyGoldenQueries(goldenSet, { modes = ['advanced'], topK = 50 } = {}) {
+    const verified = [];
+    let dropped = 0;
+
+    for (const entry of goldenSet.queries) {
+        const sourceId = entry.source_mongo_id;
+        const mustRecallSource = ['exact_title', 'partial_title', 'abstract_keyword'].includes(entry.type);
+
+        if (!mustRecallSource || !sourceId) {
+            verified.push(entry);
+            continue;
+        }
+
+        let ok = false;
+        for (const mode of modes) {
+            const results = await searchAndCollect(entry.query, mode);
+            const ids = results.slice(0, topK).map(r => r.mongo_id);
+            if (ids.includes(sourceId)) {
+                ok = true;
+                break;
+            }
+        }
+
+        if (ok) {
+            verified.push(entry);
+        } else {
+            dropped++;
+            console.log(`  [drop] ${entry.id} "${entry.query.slice(0, 50)}" — source doc not in top ${topK}`);
+        }
+    }
+
+    goldenSet.queries = verified;
+    return dropped;
 }
 
 async function enrichCorpusGoldenSet(goldenSet) {
@@ -214,9 +269,9 @@ async function enrichCorpusGoldenSet(goldenSet) {
 async function main() {
     console.log('=== Test Corpus Dump ===\n');
 
-    // 1. Dump all indexed documents from MongoDB
-    const docs = await fetchAllIndexedDocs();
-    console.log(`Found ${docs.length} indexed documents in MongoDB`);
+    // 1. Sample indexed documents from MongoDB (random 500 by default)
+    const { docs, totalIndexed } = await fetchIndexedDocs();
+    console.log(`Selected ${docs.length} documents (${totalIndexed} indexed in MongoDB)`);
 
     if (docs.length === 0) {
         console.log('\nNo indexed documents found. Run the indexer first:');
@@ -227,6 +282,8 @@ async function main() {
     // Build corpus with stats
     const corpus = {
         exported_at: new Date().toISOString(),
+        sample_size: docs.length,
+        total_indexed_in_db: totalIndexed,
         total_documents: docs.length,
         fields_summary: {
             with_abstract: docs.filter(d => d.abstract && d.abstract !== '(No abstract available)').length,
@@ -258,7 +315,7 @@ async function main() {
 
     await writeFile(CORPUS_PATH, JSON.stringify(corpus, null, 2));
     console.log(`\nCorpus written to: ${CORPUS_PATH}`);
-    console.log(`  Documents: ${corpus.total_documents}`);
+    console.log(`  Sample size: ${corpus.total_documents} (of ${totalIndexed} indexed in DB)`);
     console.log(`  With abstracts: ${corpus.fields_summary.with_abstract}`);
     console.log(`  With authors: ${corpus.fields_summary.with_authors}`);
     console.log(`  Year range: ${corpus.fields_summary.year_range.min}–${corpus.fields_summary.year_range.max}`);
@@ -281,7 +338,34 @@ async function main() {
     console.log(`\nCorpus golden set: ${GOLDEN_SET_CORPUS_PATH}`);
     console.log(`  Queries: ${corpusGolden.queries.length} (each with grade-3 source doc)`);
 
-    // 3. Auto-populate the generic golden set if the search API is reachable
+    // 3. Build comprehensive golden set from the same corpus sample
+    const comprehensiveGolden = buildComprehensiveGoldenSet(corpus);
+    if (apiOk) {
+        console.log('\nVerifying comprehensive golden set against live search...');
+        const dropped = await verifyGoldenQueries(comprehensiveGolden);
+        if (dropped > 0) console.log(`  Dropped ${dropped} queries that did not recall their source doc`);
+    }
+    await writeFile(GOLDEN_SET_COMPREHENSIVE_PATH, JSON.stringify(comprehensiveGolden, null, 2));
+    const typeCounts = {};
+    for (const q of comprehensiveGolden.queries) typeCounts[q.type] = (typeCounts[q.type] || 0) + 1;
+    console.log(`\nComprehensive golden set: ${GOLDEN_SET_COMPREHENSIVE_PATH}`);
+    console.log(`  Queries: ${comprehensiveGolden.queries.length}`);
+    for (const [type, count] of Object.entries(typeCounts).sort((a, b) => b[1] - a[1])) {
+        console.log(`    ${type.padEnd(18)} ${count}`);
+    }
+
+    // 4. Build hard golden set (metric-stress queries)
+    const hardGolden = buildHardGoldenSet(corpus);
+    if (apiOk) {
+        console.log('\nCalibrating hard golden set against live search...');
+        const droppedHard = await calibrateHardSet(hardGolden);
+        if (droppedHard > 0) console.log(`  Dropped ${droppedHard} uncalibratable hard queries`);
+    }
+    await writeFile(GOLDEN_SET_HARD_PATH, JSON.stringify(hardGolden, null, 2));
+    console.log(`\nHard golden set: ${GOLDEN_SET_HARD_PATH}`);
+    console.log(`  Queries: ${hardGolden.queries.length}`);
+
+    // 5. Auto-populate the generic golden set if the search API is reachable
     if (apiOk) {
         try {
             const goldenSet = JSON.parse(await readFile(GOLDEN_SET_PATH, 'utf8'));
@@ -303,7 +387,7 @@ async function main() {
         console.log('Start the API and run: npm run test:dump');
     }
 
-    // 4. Print sample documents for quick review
+    // 6. Print sample documents for quick review
     console.log('\n=== Sample Documents ===\n');
     const samples = corpus.documents.slice(0, 5);
     for (const doc of samples) {
