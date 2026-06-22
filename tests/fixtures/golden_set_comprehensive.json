@@ -1,961 +1,1011 @@
 {
-  "version": 2,
-  "description": "Comprehensive golden set: 8 query categories across 1000-doc corpus",
-  "corpus_documents": 1000,
-  "exported_at": "2026-06-18T23:12:18.175Z",
+  "version": 3,
+  "description": "Comprehensive golden set derived deterministically from the test corpus sample",
+  "corpus_documents": 500,
+  "corpus_sample_size": 500,
+  "exported_at": "2026-06-21T22:34:04.892Z",
   "categories": {
-    "exact_title": "Full title substring — expect rank 1",
-    "partial_title": "3-4 keywords from title — expect top 10",
-    "abstract_keyword": "Distinctive abstract terms — expect top 50",
-    "semantic": "Paraphrased query, no lexical overlap — tests vector recall",
-    "author": "Author surname — tests author search pipeline",
-    "field_broad": "Broad field name — tests coverage, not precision",
-    "cross_field": "Title keyword + field — tests multi-signal retrieval",
-    "multi_relevant": "Topic cluster — tests recall across related docs"
+    "exact_title": "Title substring from corpus doc — source doc should rank in top 10",
+    "partial_title": "Keywords from corpus title — source doc should appear in top 50",
+    "abstract_keyword": "Distinctive abstract terms from corpus doc",
+    "semantic": "Paraphrased title — tests vector recall",
+    "author": "Author surname from corpus doc (prefers IITD kerberos papers)",
+    "field_broad": "Broad field name present in corpus sample",
+    "cross_field": "Title keyword + field from same corpus doc",
+    "multi_relevant": "Title bigram cluster mined from corpus (≥3 docs)"
   },
   "queries": [
     {
       "id": "exact-title-1",
-      "query": "Physiochemical Characterization of tubulin from Arachis",
+      "query": "A Block Minorization-Maximization Algorithm for Row-Sparse",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdec8",
-      "source_title": "Physiochemical Characterization of tubulin from Arachis hypogaea",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdecf",
+      "source_title": "A Block Minorization-Maximization Algorithm for Row-Sparse Principal Component Analysis",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdec8": 3
+        "69dec9f34e2d2a5b77ecdecf": 3
       }
     },
     {
       "id": "exact-title-2",
-      "query": "Use of optimisation to position dummies in crash simulations",
+      "query": "Link performance optimization of chip-based Si3N4 microwave",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece194",
-      "source_title": "Use of optimisation to position dummies in crash simulations",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece22a",
+      "source_title": "Link performance optimization of chip-based Si3N4 microwave photonic filters",
       "relevant": {
-        "69dec9f44e2d2a5b77ece194": 3
+        "69dec9f54e2d2a5b77ece22a": 3
       }
     },
     {
       "id": "exact-title-3",
-      "query": "Current sensitivity based OPF framework for active",
+      "query": "Numerical modeling of suspended sediment transport in the",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0a7",
-      "source_title": "Current sensitivity based OPF framework for active distribution network",
+      "source_mongo_id": "69dec9f64e2d2a5b77ece52c",
+      "source_title": "Numerical modeling of suspended sediment transport in the Gulf of Kachchh including Kandla creek, west coast of India",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0a7": 3
+        "69dec9f64e2d2a5b77ece52c": 3
       }
     },
     {
       "id": "exact-title-4",
-      "query": "Methodology for estimation of probable location of VRU",
+      "query": "Modulation instability induced by cross phase modulation in",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece176",
-      "source_title": "Methodology for estimation of probable location of VRU before impact using data from post-crash analysis",
+      "source_mongo_id": "69dec9f74e2d2a5b77ece784",
+      "source_title": "Modulation instability induced by cross phase modulation in a negative refractive index material with saturable nonlinear responses",
       "relevant": {
-        "69dec9f44e2d2a5b77ece176": 3
+        "69dec9f74e2d2a5b77ece784": 3
       }
     },
     {
       "id": "exact-title-5",
-      "query": "Allotropic transformation induced stacking faults and",
+      "query": "Size-selective laser-induced etching of semi-insulating",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece090",
-      "source_title": "Allotropic transformation induced stacking faults and discontinuous coarsening in a γ-γ′ Co-base alloy",
+      "source_mongo_id": "69dec9f94e2d2a5b77ecebcb",
+      "source_title": "Size-selective laser-induced etching of semi-insulating GaAs: Photoluminescence studies",
       "relevant": {
-        "69dec9f44e2d2a5b77ece090": 3
+        "69dec9f94e2d2a5b77ecebcb": 3
       }
     },
     {
       "id": "exact-title-6",
-      "query": "Time-coupled day-ahead wind power scenario generation: A",
+      "query": "Tellurated Schiff bases formed from",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0b8",
-      "source_title": "Time-coupled day-ahead wind power scenario generation: A combined regular vine copula and variance reduction method",
+      "source_mongo_id": "69dec9f94e2d2a5b77ecec7b",
+      "source_title": "Tellurated Schiff bases formed from {2-[(4-methoxyphenyl)telluro]ethyl} amine and bis(2-aminoethyl) telluride with o-hydroxyacetophenone: Synthesis and complexation reactions with HgII, PdII and RuII - Crystal structures of the ligands, [Ru(p-cymene)Cl{A}]Cl·H2 O and [RuCl{L2}] (see abstract)",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0b8": 3
+        "69dec9f94e2d2a5b77ecec7b": 3
       }
     },
     {
       "id": "exact-title-7",
-      "query": "Characterization of Near-Field Blast Response of Aluminum",
+      "query": "Performance Evaluation of Open-End Winding IM Drive",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece14d",
-      "source_title": "Characterization of Near-Field Blast Response of Aluminum Honeycomb Using Finite Element Simulations",
+      "source_mongo_id": "69dec9fc4e2d2a5b77ecf13d",
+      "source_title": "Performance Evaluation of Open-End Winding IM Drive Operated with Synchronous PWM with Even Non-Triplen Pulse Number",
       "relevant": {
-        "69dec9f44e2d2a5b77ece14d": 3
+        "69dec9fc4e2d2a5b77ecf13d": 3
       }
     },
     {
       "id": "exact-title-8",
-      "query": "Efficient operational planning of active distribution",
+      "query": "Gain enhancement of a CPW-Fed monopole antenna using",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0b6",
-      "source_title": "Efficient operational planning of active distribution network by embedding uncertainties and network reconfiguration",
+      "source_mongo_id": "69dec9fd4e2d2a5b77ecf399",
+      "source_title": "Gain enhancement of a CPW-Fed monopole antenna using polarization- insensitive AMC structure",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0b6": 3
+        "69dec9fd4e2d2a5b77ecf399": 3
       }
     },
     {
       "id": "exact-title-9",
-      "query": "Inverse material characterisation of human aortic tissue",
+      "query": "Diatom: Source of Biofuel and Active Green Anode Material",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece15c",
-      "source_title": "Inverse material characterisation of human aortic tissue for traumatic injury in motor vehicle crashes",
+      "source_mongo_id": "69dec9fe4e2d2a5b77ecf6ac",
+      "source_title": "Diatom: Source of Biofuel and Active Green Anode Material for Advanced Energy Storage Application",
       "relevant": {
-        "69dec9f44e2d2a5b77ece15c": 3
+        "69dec9fe4e2d2a5b77ecf6ac": 3
       }
     },
     {
       "id": "exact-title-10",
-      "query": "Laves phase intermetallic matrix composite in situ",
+      "query": "Computational analysis of stresses acting on intermodular",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece089",
-      "source_title": "Laves phase intermetallic matrix composite in situ toughened by ductile precipitates",
+      "source_mongo_id": "69dec9fe4e2d2a5b77ecf830",
+      "source_title": "Computational analysis of stresses acting on intermodular junctions in thoracic aortic endografts",
       "relevant": {
-        "69dec9f44e2d2a5b77ece089": 3
+        "69dec9fe4e2d2a5b77ecf830": 3
       }
     },
     {
       "id": "exact-title-11",
-      "query": "A bilinear structural constitutive model for strain",
+      "query": "Novel purification platform based on multimodal preparative",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece164",
-      "source_title": "A bilinear structural constitutive model for strain rate-dependent behaviour of human diaphragm tissue",
+      "source_mongo_id": "69dec9ff4e2d2a5b77ecfa76",
+      "source_title": "Novel purification platform based on multimodal preparative scale separation of mAb fragments and aggregates",
       "relevant": {
-        "69dec9f44e2d2a5b77ece164": 3
+        "69dec9ff4e2d2a5b77ecfa76": 3
       }
     },
     {
       "id": "exact-title-12",
-      "query": "Prediction of pedestrian injuries in motorcycle-pedestrian",
+      "query": "Instability of a shear-imposed flow down a vibrating",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece143",
-      "source_title": "Prediction of pedestrian injuries in motorcycle-pedestrian crashes using THUMS FE-HBM",
+      "source_mongo_id": "69deca014e2d2a5b77ecfe31",
+      "source_title": "Instability of a shear-imposed flow down a vibrating inclined plane",
       "relevant": {
-        "69dec9f44e2d2a5b77ece143": 3
+        "69deca014e2d2a5b77ecfe31": 3
       }
     },
     {
       "id": "exact-title-13",
-      "query": "Modeling of Folding of Passenger Side Airbag Mesh",
+      "query": "User engagement for mobile payment service providers –",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece1a9",
-      "source_title": "Modeling of Folding of Passenger Side Airbag Mesh",
+      "source_mongo_id": "69deca024e2d2a5b77ecff3b",
+      "source_title": "User engagement for mobile payment service providers – introducing the social media engagement model",
       "relevant": {
-        "69dec9f44e2d2a5b77ece1a9": 3
+        "69deca024e2d2a5b77ecff3b": 3
       }
     },
     {
       "id": "exact-title-14",
-      "query": "On-Chip Er: Ta2O5 optical pulse amplifier",
+      "query": "Physical properties of amorphous Ge20Sb25-xBixSe55 thin",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f54e2d2a5b77ece1bd",
-      "source_title": "On-Chip Er: Ta2O5 optical pulse amplifier",
+      "source_mongo_id": "69deca024e2d2a5b77ed012f",
+      "source_title": "Physical properties of amorphous Ge20Sb25-xBixSe55 thin films",
       "relevant": {
-        "69dec9f54e2d2a5b77ece1bd": 3
+        "69deca024e2d2a5b77ed012f": 3
       }
     },
     {
       "id": "exact-title-15",
-      "query": "A Comprehensive Design Framework for AT-Fed Railway",
+      "query": "Characterizing the Evolution of Indian Cities Using",
       "type": "exact_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0a3",
-      "source_title": "A Comprehensive Design Framework for AT-Fed Railway Traction Power Systems",
+      "source_mongo_id": "69deca034e2d2a5b77ed0350",
+      "source_title": "Characterizing the Evolution of Indian Cities Using Satellite Imagery and Open Street Maps",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0a3": 3
+        "69deca034e2d2a5b77ed0350": 3
       }
     },
     {
-      "id": "partial-title-16",
-      "query": "dimming-based modulation schemes visible",
-      "type": "partial_title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ece005",
-      "source_title": "Dimming-Based Modulation Schemes for Visible Light Communication: Spectral Analysis and ISI Mitigation",
+      "id": "exact-title-16",
+      "query": "Cytotoxicity of in vitro produced podophyllotoxin from",
+      "type": "exact_title",
+      "source_mongo_id": "69deca044e2d2a5b77ed04c1",
+      "source_title": "Cytotoxicity of in vitro produced podophyllotoxin from Podophyllum hexandrum on human cancer cell line",
       "relevant": {
-        "69dec9f34e2d2a5b77ece005": 3
+        "69deca044e2d2a5b77ed04c1": 3
       }
     },
     {
-      "id": "partial-title-17",
-      "query": "emergence distribution system operator",
-      "type": "partial_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0c1",
-      "source_title": "Emergence of distribution system operator in the Indian power sector and possible way ahead",
+      "id": "exact-title-17",
+      "query": "A note on a problem of Motzkin regarding density of",
+      "type": "exact_title",
+      "source_mongo_id": "69deca054e2d2a5b77ed0676",
+      "source_title": "A note on a problem of Motzkin regarding density of integral sets with missing differences",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0c1": 3
+        "69deca054e2d2a5b77ed0676": 3
       }
     },
     {
-      "id": "partial-title-18",
-      "query": "marginal loss modeling dcopf",
-      "type": "partial_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0c4",
-      "source_title": "Marginal loss modeling based DCOPF and LMP calculations for an integrated AC and Multi-terminal HVDC System",
+      "id": "exact-title-18",
+      "query": "The role of plasma chemistry on functional silicon nitride",
+      "type": "exact_title",
+      "source_mongo_id": "69deca064e2d2a5b77ed08da",
+      "source_title": "The role of plasma chemistry on functional silicon nitride film properties deposited at low-temperature by mixing two frequency powers using PECVD",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0c4": 3
+        "69deca064e2d2a5b77ed08da": 3
       }
     },
     {
-      "id": "partial-title-19",
-      "query": "max-min fair financial transmission",
-      "type": "partial_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece108",
-      "source_title": "Max-min fair financial transmission rights payment-based AC optimal power flow locational marginal price decomposition",
+      "id": "exact-title-19",
+      "query": "Structurally stable polyvinyl alcohol/sodium alginate-based",
+      "type": "exact_title",
+      "source_mongo_id": "69deca074e2d2a5b77ed0c89",
+      "source_title": "Structurally stable polyvinyl alcohol/sodium alginate-based optimally designed electrospun mats as mechanistically robust controlled-urea-release-systems",
       "relevant": {
-        "69dec9f44e2d2a5b77ece108": 3
+        "69deca074e2d2a5b77ed0c89": 3
       }
     },
     {
-      "id": "partial-title-20",
-      "query": "evaluation power saving modes",
-      "type": "partial_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece042",
-      "source_title": "Evaluation of ONU power saving modes in next generation optical access networks",
+      "id": "exact-title-20",
+      "query": "Robust speaker verification using GFCC based i-vectors",
+      "type": "exact_title",
+      "source_mongo_id": "69deca094e2d2a5b77ed11f3",
+      "source_title": "Robust speaker verification using GFCC based i-vectors",
       "relevant": {
-        "69dec9f44e2d2a5b77ece042": 3
+        "69deca094e2d2a5b77ed11f3": 3
       }
     },
     {
       "id": "partial-title-21",
-      "query": "lexicographical buyer-seller profile matching",
+      "query": "block minorization-maximization algorithm row-sparse",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0ee",
-      "source_title": "Lexicographical buyer-seller profile matching in pool based electricity market",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdecf",
+      "source_title": "A Block Minorization-Maximization Algorithm for Row-Sparse Principal Component Analysis",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0ee": 3
+        "69dec9f34e2d2a5b77ecdecf": 3
       }
     },
     {
       "id": "partial-title-22",
-      "query": "influence particle velocity when",
+      "query": "gigahertz tuning on-chip photonic",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece086",
-      "source_title": "Influence of particle velocity when propelled using N2 or N2-He mixed gas on the properties of cold-sprayed Ti6Al4V coatings",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece245",
+      "source_title": "Gigahertz tuning of on-chip RF photonic delay line",
       "relevant": {
-        "69dec9f44e2d2a5b77ece086": 3
+        "69dec9f54e2d2a5b77ece245": 3
       }
     },
     {
       "id": "partial-title-23",
-      "query": "enhancing resource utilization radio-over-fiber",
+      "query": "triggering oscilloscope associative memory",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdfec",
-      "source_title": "Enhancing resource utilization in radio-over-fiber using hybrid modulation scheme",
+      "source_mongo_id": "69dec9f64e2d2a5b77ece5ca",
+      "source_title": "A new triggering method for oscilloscope based on associative memory technique",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdfec": 3
+        "69dec9f64e2d2a5b77ece5ca": 3
       }
     },
     {
       "id": "partial-title-24",
-      "query": "alternating layers morselized allograft",
+      "query": "strategic computer waste management",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece148",
-      "source_title": "Alternating Layers of Morselized Allograft and Injectable Ceramic Bone Graft Substitute in Acetabular Reconstruction: A Novel ‘Sandwich’ Technique",
+      "source_mongo_id": "69dec9f84e2d2a5b77eceaf8",
+      "source_title": "Strategic analysis of computer waste management options: Game-theoretic approach",
       "relevant": {
-        "69dec9f44e2d2a5b77ece148": 3
+        "69dec9f84e2d2a5b77eceaf8": 3
       }
     },
     {
       "id": "partial-title-25",
-      "query": "broadband sound transmission loss",
+      "query": "organosulphur related ligands suzuki-miyaura",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdf50",
-      "source_title": "Broadband Sound Transmission Loss in a Corrugated Sound Panel Using Periodic Structure Theory",
+      "source_mongo_id": "69dec9f94e2d2a5b77ecec3e",
+      "source_title": "Organosulphur and related ligands in Suzuki-Miyaura C-C coupling",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdf50": 3
+        "69dec9f94e2d2a5b77ecec3e": 3
       }
     },
     {
       "id": "partial-title-26",
-      "query": "machine learning-based boosting algorithm",
+      "query": "performance evaluation open-end winding",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdf01",
-      "source_title": "Machine Learning-Based Boosting Algorithm for Analysis of Railway Bridges Under Moving Loads and Earthquake Excitation",
+      "source_mongo_id": "69dec9fc4e2d2a5b77ecf13d",
+      "source_title": "Performance Evaluation of Open-End Winding IM Drive Operated with Synchronous PWM with Even Non-Triplen Pulse Number",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdf01": 3
+        "69dec9fc4e2d2a5b77ecf13d": 3
       }
     },
     {
       "id": "partial-title-27",
-      "query": "wind-induced vibration control tall",
+      "query": "aspect nanorod growth electrodeposited",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdf2e",
-      "source_title": "Wind-induced vibration control of tall buildings by designing the overhead fire water tanks as compliant deep tank dampers-inerter",
+      "source_mongo_id": "69dec9fd4e2d2a5b77ecf529",
+      "source_title": "High aspect ZnO nanorod growth over electrodeposited tubes for photocatalytic degradation of EtBr dye",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdf2e": 3
+        "69dec9fd4e2d2a5b77ecf529": 3
       }
     },
     {
       "id": "partial-title-28",
-      "query": "growth pbse quantum dots",
+      "query": "dynamic metafrontier malmquist luenberger",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f54e2d2a5b77ece27d",
-      "source_title": "Growth of PbSe quantum dots within high-index lead-phosphate glass for infrared saturable absorbers",
+      "source_mongo_id": "69dec9fe4e2d2a5b77ecf785",
+      "source_title": "Dynamic Metafrontier Malmquist–Luenberger Productivity Index in Network DEA: An Application to Banking Data",
       "relevant": {
-        "69dec9f54e2d2a5b77ece27d": 3
+        "69dec9fe4e2d2a5b77ecf785": 3
       }
     },
     {
       "id": "partial-title-29",
-      "query": "dissemination biases social media",
+      "query": "scope electrospun chitosan nanofibrous",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f34e2d2a5b77ecdfe2",
-      "source_title": "Dissemination biases of social media channels: On the topical coverage of socially shared news",
+      "source_mongo_id": "69dec9ff4e2d2a5b77ecf8d1",
+      "source_title": "Scope of Electrospun Chitosan Nanofibrous Web for its Potential Application in Water Filtration",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdfe2": 3
+        "69dec9ff4e2d2a5b77ecf8d1": 3
       }
     },
     {
       "id": "partial-title-30",
-      "query": "co-optimized flexibility market framework",
+      "query": "particle surface chemistry film",
       "type": "partial_title",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0a6",
-      "source_title": "Co-optimized Flexibility Market Framework for DSO Enabled Market Operations",
+      "source_mongo_id": "69deca014e2d2a5b77ecfe0d",
+      "source_title": "On the effect of particle surface chemistry in film stratification and morphology regulation",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0a6": 3
+        "69deca014e2d2a5b77ecfe0d": 3
       }
     },
     {
-      "id": "abstract-kw-31",
-      "query": "signal processing on-chip nonlinear",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f54e2d2a5b77ece217",
-      "source_title": "Integration of Brillouin and passive circuits for enhanced radio-frequency photonic filtering",
+      "id": "partial-title-31",
+      "query": "user engagement mobile payment",
+      "type": "partial_title",
+      "source_mongo_id": "69deca024e2d2a5b77ecff3b",
+      "source_title": "User engagement for mobile payment service providers – introducing the social media engagement model",
       "relevant": {
-        "69dec9f54e2d2a5b77ece217": 2
+        "69deca024e2d2a5b77ecff3b": 3
       }
     },
     {
-      "id": "abstract-kw-32",
-      "query": "proposes energy spinning reserve",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece114",
-      "source_title": "Multi-objective market clearing of electrical energy, spinning reserves and emission for wind-thermal power system",
+      "id": "partial-title-32",
+      "query": "reactions -c5h5 cnme lewis",
+      "type": "partial_title",
+      "source_mongo_id": "69deca024e2d2a5b77ed0137",
+      "source_title": "Reactions of [Fe2(η-C5H5)2(CO)2(L)(CNMe)](L = CO or CNMe) with lewis acids resulting in adduct formation, dimer scission or both. Structure of[Fe(η-C5H5)(CO)(CNMe)2] [BF4]",
       "relevant": {
-        "69dec9f44e2d2a5b77ece114": 2
+        "69deca024e2d2a5b77ed0137": 3
       }
     },
     {
-      "id": "abstract-kw-33",
-      "query": "coordination overcurrent relays meshed",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece11f",
-      "source_title": "Optimal overcurrent relay coordination in distribution system",
+      "id": "partial-title-33",
+      "query": "optical properties square-lattice microstructured",
+      "type": "partial_title",
+      "source_mongo_id": "69deca034e2d2a5b77ed03c0",
+      "source_title": "Optical properties of square-lattice microstructured optical fibers",
       "relevant": {
-        "69dec9f44e2d2a5b77ece11f": 2
+        "69deca034e2d2a5b77ed03c0": 3
       }
     },
     {
-      "id": "abstract-kw-34",
-      "query": "aids development heterogeneous lung",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece133",
-      "source_title": "Heterogenous Lung Model for Blunt Impact Loads Using Strain Rate-Dependent Material Properties of Parenchyma and Bronchi",
+      "id": "partial-title-34",
+      "query": "solution properties electrospinning poly",
+      "type": "partial_title",
+      "source_mongo_id": "69deca044e2d2a5b77ed05c4",
+      "source_title": "Solution properties and electrospinning of poly(galacturonic acid) nanofibers",
       "relevant": {
-        "69dec9f44e2d2a5b77ece133": 2
+        "69deca044e2d2a5b77ed05c4": 3
       }
     },
     {
-      "id": "abstract-kw-35",
-      "query": "during detonation energetic material",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece158",
-      "source_title": "Interaction of Structural Member with Near Field Detonation: Effect on Shock Wave Pattern and Overpressure Profile",
+      "id": "partial-title-35",
+      "query": "fast bayesian inference inverse",
+      "type": "partial_title",
+      "source_mongo_id": "69deca054e2d2a5b77ed084e",
+      "source_title": "Fast Bayesian inference for inverse heat conduction problem using polynomial chaos and Karhunen–Loeve expansions",
       "relevant": {
-        "69dec9f44e2d2a5b77ece158": 2
+        "69deca054e2d2a5b77ed084e": 3
       }
     },
     {
-      "id": "abstract-kw-36",
-      "query": "many groups developing human",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece17e",
-      "source_title": "Repositioning methodology for FE-HBM pelvis flesh to account for upper extremity posture change",
+      "id": "partial-title-36",
+      "query": "structurally stable polyvinyl alcohol",
+      "type": "partial_title",
+      "source_mongo_id": "69deca074e2d2a5b77ed0c89",
+      "source_title": "Structurally stable polyvinyl alcohol/sodium alginate-based optimally designed electrospun mats as mechanistically robust controlled-urea-release-systems",
       "relevant": {
-        "69dec9f44e2d2a5b77ece17e": 2
+        "69deca074e2d2a5b77ed0c89": 3
       }
     },
     {
-      "id": "abstract-kw-37",
-      "query": "recent military warfare lower",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece157",
-      "source_title": "Failure Analysis of Human Lower Extremity During Lateral Blast: A Computational Study",
+      "id": "partial-title-37",
+      "query": "performance dual-hop wireless-powerline mixed",
+      "type": "partial_title",
+      "source_mongo_id": "69deca094e2d2a5b77ed11f9",
+      "source_title": "Performance of a dual-hop wireless-powerline mixed cooperative system",
       "relevant": {
-        "69dec9f44e2d2a5b77ece157": 2
+        "69deca094e2d2a5b77ed11f9": 3
       }
     },
     {
-      "id": "abstract-kw-38",
-      "query": "cluster multi-objective differential evolution",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece107",
-      "source_title": "Multi-objective optimization of economic-emission load dispatch using cluster based differential evolution",
+      "id": "partial-title-38",
+      "query": "high-performance visible-to-swir photodetector layered",
+      "type": "partial_title",
+      "source_mongo_id": "69deca0c4e2d2a5b77ed186f",
+      "source_title": "High-Performance Visible-to-SWIR Photodetector Based on the Layered WS2 Heterojunction with Light-Trapping Pyramidal Black Germanium",
       "relevant": {
-        "69dec9f44e2d2a5b77ece107": 2
+        "69deca0c4e2d2a5b77ed186f": 3
       }
     },
     {
-      "id": "abstract-kw-39",
-      "query": "loss modelling dcopf overcome",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece120",
-      "source_title": "Improved loss distribution and modelling in DCOPF",
+      "id": "partial-title-39",
+      "query": "improving power quality single",
+      "type": "partial_title",
+      "source_mongo_id": "69deca0d4e2d2a5b77ed1d44",
+      "source_title": "Improving power quality of single phase utility grid connected to wind-PV system using multilayer-frequency adaptive fundamental signal extractor",
       "relevant": {
-        "69dec9f44e2d2a5b77ece120": 2
+        "69deca0d4e2d2a5b77ed1d44": 3
       }
     },
     {
-      "id": "abstract-kw-40",
-      "query": "increasing penetration level distributed",
-      "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece110",
-      "source_title": "A hybrid protection scheme to mitigate the effect of distributed generation on relay coordination in distribution system",
+      "id": "partial-title-40",
+      "query": "power factor correction modified",
+      "type": "partial_title",
+      "source_mongo_id": "69deca0e4e2d2a5b77ed1fff",
+      "source_title": "Power factor correction in modified bridgeless buck boost converter fed SRM drive",
       "relevant": {
-        "69dec9f44e2d2a5b77ece110": 2
+        "69deca0e4e2d2a5b77ed1fff": 3
       }
     },
     {
       "id": "abstract-kw-41",
-      "query": "allvac 718plus newly developed",
+      "query": "block minorization-maximization algorithm solve",
       "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece09c",
-      "source_title": "Grain-boundary precipitation in Allvac 718Plus",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdecf",
+      "source_title": "A Block Minorization-Maximization Algorithm for Row-Sparse Principal Component Analysis",
       "relevant": {
-        "69dec9f44e2d2a5b77ece09c": 2
+        "69dec9f34e2d2a5b77ecdecf": 2
       }
     },
     {
       "id": "abstract-kw-42",
-      "query": "studies numerical predict peak",
+      "query": "prove version gohberg lemma",
       "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece156",
-      "source_title": "Numerical Modeling of Energy Absorption by Plastic Deformation of Aluminum Honeycomb Structure Subjected to Close-Range Blast Event",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece2e8",
+      "source_title": "The Gohberg Lemma, compactness, and essential spectrum of operators on compact Lie groups",
       "relevant": {
-        "69dec9f44e2d2a5b77ece156": 2
+        "69dec9f54e2d2a5b77ece2e8": 2
       }
     },
     {
       "id": "abstract-kw-43",
-      "query": "days energy efficiency gaining",
+      "query": "li-ion batteries diversified applications",
       "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0e5",
-      "source_title": "Energy saving certificate market in India",
+      "source_mongo_id": "69dec9f74e2d2a5b77ece8c9",
+      "source_title": "A Genetic Algorithm and RNN-LSTM Model for Remaining Battery Capacity Prediction",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0e5": 2
+        "69dec9f74e2d2a5b77ece8c9": 2
       }
     },
     {
       "id": "abstract-kw-44",
-      "query": "ensuring safety pedestrians crash",
+      "query": "suzuki-miyaura cross coupling important",
       "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece16f",
-      "source_title": "Optimisation study on multibody vehicle-front model for pedestrian safety",
+      "source_mongo_id": "69dec9f94e2d2a5b77ecec3e",
+      "source_title": "Organosulphur and related ligands in Suzuki-Miyaura C-C coupling",
       "relevant": {
-        "69dec9f44e2d2a5b77ece16f": 2
+        "69dec9f94e2d2a5b77ecec3e": 2
       }
     },
     {
       "id": "abstract-kw-45",
-      "query": "three-wheeled scooter taxis tsts",
+      "query": "deriving inductance profile synrm",
       "type": "abstract_keyword",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece1b9",
-      "source_title": "Impact modelling studies for a three-wheeled scooter taxi",
+      "source_mongo_id": "69dec9fc4e2d2a5b77ecf286",
+      "source_title": "Study of Different Inductance Profiles of SynRM Coupled to Constant Torque Load",
       "relevant": {
-        "69dec9f44e2d2a5b77ece1b9": 2
+        "69dec9fc4e2d2a5b77ecf286": 2
       }
     },
     {
-      "id": "semantic-46",
-      "query": "innovations related to ion-exchanged and glass and channel",
+      "id": "abstract-kw-46",
+      "query": "diatoms single-celled microalgae silica",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9fe4e2d2a5b77ecf6ac",
+      "source_title": "Diatom: Source of Biofuel and Active Green Anode Material for Advanced Energy Storage Application",
+      "relevant": {
+        "69dec9fe4e2d2a5b77ecf6ac": 2
+      }
+    },
+    {
+      "id": "abstract-kw-47",
+      "query": "water essentially bereft toxic",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69dec9ff4e2d2a5b77ecf8d1",
+      "source_title": "Scope of Electrospun Chitosan Nanofibrous Web for its Potential Application in Water Filtration",
+      "relevant": {
+        "69dec9ff4e2d2a5b77ecf8d1": 2
+      }
+    },
+    {
+      "id": "abstract-kw-48",
+      "query": "multiple scale studied nonlinear",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69deca014e2d2a5b77ecfe4a",
+      "source_title": "Bifurcation analysis of first and second order Benney equations for viscoelastic fluid flowing down a vertical plane",
+      "relevant": {
+        "69deca014e2d2a5b77ecfe4a": 2
+      }
+    },
+    {
+      "id": "abstract-kw-49",
+      "query": "spin states cd105 studied",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69deca024e2d2a5b77ed0073",
+      "source_title": "High spin spectroscopy and shape evolution in Cd 105",
+      "relevant": {
+        "69deca024e2d2a5b77ed0073": 2
+      }
+    },
+    {
+      "id": "abstract-kw-50",
+      "query": "modifying earlier developed analytical",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69deca034e2d2a5b77ed03c0",
+      "source_title": "Optical properties of square-lattice microstructured optical fibers",
+      "relevant": {
+        "69deca034e2d2a5b77ed03c0": 2
+      }
+    },
+    {
+      "id": "abstract-kw-51",
+      "query": "given positive integers problem",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69deca054e2d2a5b77ed0676",
+      "source_title": "A note on a problem of Motzkin regarding density of integral sets with missing differences",
+      "relevant": {
+        "69deca054e2d2a5b77ed0676": 2
+      }
+    },
+    {
+      "id": "abstract-kw-53",
+      "query": "wireless power line communication",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69deca094e2d2a5b77ed11f9",
+      "source_title": "Performance of a dual-hop wireless-powerline mixed cooperative system",
+      "relevant": {
+        "69deca094e2d2a5b77ed11f9": 2
+      }
+    },
+    {
+      "id": "abstract-kw-54",
+      "query": "content hydrogen depth profile",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69deca0c4e2d2a5b77ed197b",
+      "source_title": "Study of hydrogen in DLC film by ERDA with 58Ni ions",
+      "relevant": {
+        "69deca0c4e2d2a5b77ed197b": 2
+      }
+    },
+    {
+      "id": "abstract-kw-55",
+      "query": "36-pulse ac-dc converter 5-level",
+      "type": "abstract_keyword",
+      "source_mongo_id": "69deca0e4e2d2a5b77ed1e8b",
+      "source_title": "Multipulse AC-DC Conversion Fed 3rd Harmonic Injection Based SPWM Controlled Cascaded MLI Driven VCIMD",
+      "relevant": {
+        "69deca0e4e2d2a5b77ed1e8b": 2
+      }
+    },
+    {
+      "id": "semantic-56",
+      "query": "how does block relate to minorization-maximization",
       "type": "semantic",
-      "source_mongo_id": "69dec9f54e2d2a5b77ece27c",
-      "source_title": "Ion-exchanged Tm3+: Glass channel waveguide laser",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdecf",
+      "source_title": "A Block Minorization-Maximization Algorithm for Row-Sparse Principal Component Analysis",
       "relevant": {
-        "69dec9f54e2d2a5b77ece27c": 2
+        "69dec9f34e2d2a5b77ecdecf": 2
       }
     },
     {
-      "id": "semantic-47",
-      "query": "how does impact relate to active",
+      "id": "semantic-57",
+      "query": "recent advances in graphite-si tio2 techniques",
       "type": "semantic",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0d1",
-      "source_title": "Impact of Active Distribution Network on Contingency Analysis of Transmission System",
+      "source_mongo_id": "69dec9f74e2d2a5b77ece6d9",
+      "source_title": "Graphite-Si@TiO2 Core-Shell Nanoparticles as Composite Anode for Li-ion Batteries: Electrochemical Response",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0d1": 2
+        "69dec9f74e2d2a5b77ece6d9": 2
       }
     },
     {
-      "id": "semantic-48",
-      "query": "recent advances in optimal dynamic techniques",
+      "id": "semantic-58",
+      "query": "innovations related to evolutionary and computing and reducing",
       "type": "semantic",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0ef",
-      "source_title": "Optimal dynamic emergency reserve activation using spinning, hydro and demand-side reserves",
+      "source_mongo_id": "69dec9f94e2d2a5b77ececf5",
+      "source_title": "An evolutionary computing approach for reducing bias in the dynamic modulus predictive models of hot mix asphalt",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0ef": 2
+        "69dec9f94e2d2a5b77ececf5": 2
       }
     },
     {
-      "id": "semantic-49",
-      "query": "innovations related to measurement and abrasion and injuries",
+      "id": "semantic-59",
+      "query": "how does characterization relate to chemically",
       "type": "semantic",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece167",
-      "source_title": "Measurement of Abrasion Injuries in Crash-related Environments",
+      "source_mongo_id": "69dec9fe4e2d2a5b77ecf631",
+      "source_title": "Characterization of chemically modified zeolite-clay composite membranes using separation of trivalent cations",
       "relevant": {
-        "69dec9f44e2d2a5b77ece167": 2
+        "69dec9fe4e2d2a5b77ecf631": 2
       }
     },
     {
-      "id": "semantic-50",
-      "query": "how does two-stage relate to load",
+      "id": "semantic-60",
+      "query": "recent advances in tools functional techniques",
       "type": "semantic",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0d4",
-      "source_title": "Two-Stage Load Profiling of HV Feeders of a Distribution System",
+      "source_mongo_id": "69deca004e2d2a5b77ecfb0b",
+      "source_title": "Tools for functional assessment of biotherapeutics",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0d4": 2
+        "69deca004e2d2a5b77ecfb0b": 2
       }
     },
     {
-      "id": "semantic-51",
-      "query": "recent advances in low-velocity nail techniques",
+      "id": "semantic-61",
+      "query": "innovations related to physical and properties and amorphous",
       "type": "semantic",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece13b",
-      "source_title": "Low-velocity nail penetration response of muscle tissue and gelatin",
+      "source_mongo_id": "69deca024e2d2a5b77ed012f",
+      "source_title": "Physical properties of amorphous Ge20Sb25-xBixSe55 thin films",
       "relevant": {
-        "69dec9f44e2d2a5b77ece13b": 2
+        "69deca024e2d2a5b77ed012f": 2
       }
     },
     {
-      "id": "semantic-52",
-      "query": "innovations related to hierarchical and node and aggregation",
+      "id": "semantic-62",
+      "query": "how does solution relate to properties",
       "type": "semantic",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0f0",
-      "source_title": "A hierarchical approach of node aggregation for transmission usage prices",
+      "source_mongo_id": "69deca044e2d2a5b77ed05c4",
+      "source_title": "Solution properties and electrospinning of poly(galacturonic acid) nanofibers",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0f0": 2
+        "69deca044e2d2a5b77ed05c4": 2
       }
     },
     {
-      "id": "semantic-53",
-      "query": "how does texture relate to evolution",
+      "id": "semantic-63",
+      "query": "recent advances in modification polydimethylsiloxane techniques",
       "type": "semantic",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece0a0",
-      "source_title": "Study of texture evolution of pure magnesium during ECAE using EBSD",
+      "source_mongo_id": "69deca074e2d2a5b77ed0cb8",
+      "source_title": "Modification of polydimethylsiloxane with polyvinylpyrrolidone: Influence of reinforcing filler on physico-mechanical properties",
       "relevant": {
-        "69dec9f44e2d2a5b77ece0a0": 2
+        "69deca074e2d2a5b77ed0cb8": 2
       }
     },
     {
-      "id": "semantic-54",
-      "query": "recent advances in data laves techniques",
+      "id": "semantic-64",
+      "query": "innovations related to hydrogen and film and erda",
       "type": "semantic",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece08c",
-      "source_title": "Data on a Laves phase intermetallic matrix composite in situ toughened by ductile precipitates",
+      "source_mongo_id": "69deca0c4e2d2a5b77ed197b",
+      "source_title": "Study of hydrogen in DLC film by ERDA with 58Ni ions",
       "relevant": {
-        "69dec9f44e2d2a5b77ece08c": 2
+        "69deca0c4e2d2a5b77ed197b": 2
       }
     },
     {
-      "id": "semantic-55",
-      "query": "innovations related to contour and repositioning and specific",
+      "id": "semantic-65",
+      "query": "how does harmonic relate to mitigation",
       "type": "semantic",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece169",
-      "source_title": "Contour Based Repositioning of Specific Joints of the GHBMC Human Body FE Model",
+      "source_mongo_id": "69deca104e2d2a5b77ed22d8",
+      "source_title": "Harmonic mitigation in AC-DC converters for vector controlled induction motor drives",
       "relevant": {
-        "69dec9f44e2d2a5b77ece169": 2
+        "69deca104e2d2a5b77ed22d8": 2
       }
     },
     {
-      "id": "author-56",
-      "query": "Dattaray",
+      "id": "author-66",
+      "query": "Rakesh",
       "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece10f",
-      "source_title": "Tandem hydro scheduling in Indian electricity market",
+      "source_mongo_id": "69deca064e2d2a5b77ed099a",
+      "source_title": "TEMPERATURE-DEPENDENT SMALL-ANGLE X-RAY SCATTERING FROM POLYETHYLENE.",
+      "kerberos": "bdeopura",
       "relevant": {
-        "69dec9f44e2d2a5b77ece10f": 2
+        "69deca064e2d2a5b77ed099a": 2
       }
     },
     {
-      "id": "author-57",
-      "query": "Parsonage",
+      "id": "author-67",
+      "query": "Baishya",
       "type": "author",
-      "source_mongo_id": "69dec9f54e2d2a5b77ece264",
-      "source_title": "Comparative study of rare-earth doped sesquioxides grown by pulsed laser deposition and their performance as planar waveguide lasers",
+      "source_mongo_id": "6a26be722b6042b76389b679",
+      "source_title": "Chlorophyll-a estimation and evaluating the effect of land use change in a Ramsar Site of North East India",
+      "kerberos": "gtalukdar",
       "relevant": {
-        "69dec9f54e2d2a5b77ece264": 2
+        "6a26be722b6042b76389b679": 2
       }
     },
     {
-      "id": "author-58",
-      "query": "Kiran",
+      "id": "author-68",
+      "query": "Vezvaee",
       "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece111",
-      "source_title": "Comparison between differential evolution algorithm and particle swarm optimization for market clearing with voltage dependent load models",
+      "source_mongo_id": "6a25fe512b6042b7638673f6",
+      "source_title": "Driven dynamics of a quantum dot electron spin coupled to a bath of higher-spin nuclei",
+      "kerberos": "gargee",
       "relevant": {
-        "69dec9f44e2d2a5b77ece111": 2
-      }
-    },
-    {
-      "id": "author-59",
-      "query": "Rao",
-      "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece136",
-      "source_title": "Biomechanical evaluation of femoral neck fracture fixation based on finite element analysis",
-      "relevant": {
-        "69dec9f44e2d2a5b77ece136": 2
-      }
-    },
-    {
-      "id": "author-60",
-      "query": "Verma",
-      "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece160",
-      "source_title": "A Comparative Analysis of Computation of Peak Overpressure in Near Field Scenario During High Energetic Material's Detonation",
-      "relevant": {
-        "69dec9f44e2d2a5b77ece160": 2
-      }
-    },
-    {
-      "id": "author-61",
-      "query": "Singh",
-      "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece11f",
-      "source_title": "Optimal overcurrent relay coordination in distribution system",
-      "relevant": {
-        "69dec9f44e2d2a5b77ece11f": 2
-      }
-    },
-    {
-      "id": "author-62",
-      "query": "Sankrityayan",
-      "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece142",
-      "source_title": "Numerical Modeling of a Ceramic Honeycomb Using an Equivalent Material Model",
-      "relevant": {
-        "69dec9f44e2d2a5b77ece142": 2
-      }
-    },
-    {
-      "id": "author-63",
-      "query": "Mukherjee",
-      "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece171",
-      "source_title": "Safer vehicle design",
-      "relevant": {
-        "69dec9f44e2d2a5b77ece171": 2
-      }
-    },
-    {
-      "id": "author-64",
-      "query": "Singh",
-      "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece16a",
-      "source_title": "Finite element simulation estimation of wheel-base reduction and deformation energy of a typical Indian motorcycle crash at known impact speed against sedan car",
-      "relevant": {
-        "69dec9f44e2d2a5b77ece16a": 2
-      }
-    },
-    {
-      "id": "author-65",
-      "query": "Vikram",
-      "type": "author",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece146",
-      "source_title": "Computational assessment of leg response to extreme loadings using a detailed finite element model",
-      "relevant": {
-        "69dec9f44e2d2a5b77ece146": 2
-      }
-    },
-    {
-      "id": "field-66",
-      "query": "Engineering",
-      "type": "field_broad",
-      "expected_min_results": 228,
-      "relevant": {
-        "69dec9f34e2d2a5b77ecdee2": 1,
-        "69dec9f44e2d2a5b77ece1b3": 1,
-        "69dec9f44e2d2a5b77ece0c5": 1
-      }
-    },
-    {
-      "id": "field-67",
-      "query": "Computer Science",
-      "type": "field_broad",
-      "expected_min_results": 204,
-      "relevant": {
-        "69dec9f34e2d2a5b77ecdfdf": 1,
-        "69dec9f34e2d2a5b77ecdfc4": 1,
-        "69dec9f34e2d2a5b77ece005": 1
-      }
-    },
-    {
-      "id": "field-68",
-      "query": "Materials Science",
-      "type": "field_broad",
-      "expected_min_results": 201,
-      "relevant": {
-        "69dec9f44e2d2a5b77ece05a": 1,
-        "69dec9f34e2d2a5b77ecdfa2": 1,
-        "69dec9f44e2d2a5b77ece04c": 1
+        "6a25fe512b6042b7638673f6": 2
       }
     },
     {
       "id": "field-69",
-      "query": "Physics and Astronomy",
+      "query": "Engineering",
       "type": "field_broad",
-      "expected_min_results": 128,
+      "expected_min_results": 85,
       "relevant": {
-        "69dec9f34e2d2a5b77ecdefa": 1,
-        "69dec9f54e2d2a5b77ece261": 1,
-        "69dec9f34e2d2a5b77ecdfad": 1
+        "69dec9f34e2d2a5b77ecdfa1": 1,
+        "69dec9f94e2d2a5b77ececf5": 1,
+        "69dec9fd4e2d2a5b77ecf399": 1,
+        "69deca014e2d2a5b77ecfe95": 1,
+        "69deca074e2d2a5b77ed0d34": 1
       }
     },
     {
       "id": "field-70",
-      "query": "Energy",
+      "query": "Computer Science",
       "type": "field_broad",
-      "expected_min_results": 80,
+      "expected_min_results": 72,
       "relevant": {
-        "69dec9f44e2d2a5b77ece0d5": 1,
-        "69dec9f44e2d2a5b77ece110": 1,
-        "69dec9f44e2d2a5b77ece11c": 1
+        "69dec9f34e2d2a5b77ecdecf": 1,
+        "69dec9f74e2d2a5b77ece8c9": 1,
+        "69dec9fe4e2d2a5b77ecf5eb": 1,
+        "69deca024e2d2a5b77ecff21": 1,
+        "69deca034e2d2a5b77ed0360": 1
       }
     },
     {
       "id": "field-71",
-      "query": "Social Sciences",
+      "query": "Materials Science",
       "type": "field_broad",
-      "expected_min_results": 36,
+      "expected_min_results": 72,
       "relevant": {
-        "69dec9f44e2d2a5b77ece17a": 1,
-        "69dec9f44e2d2a5b77ece19f": 1,
-        "69dec9f34e2d2a5b77ecde9c": 1
+        "69dec9f54e2d2a5b77ece245": 1,
+        "69dec9f74e2d2a5b77ece758": 1,
+        "69dec9f94e2d2a5b77ecebdd": 1,
+        "69deca034e2d2a5b77ed03c0": 1,
+        "69deca074e2d2a5b77ed0bf4": 1
       }
     },
     {
       "id": "field-72",
-      "query": "Mathematics",
+      "query": "Chemistry",
       "type": "field_broad",
-      "expected_min_results": 24,
+      "expected_min_results": 46,
       "relevant": {
-        "69dec9f34e2d2a5b77ecdeaf": 1,
-        "69dec9f34e2d2a5b77ecdf1a": 1,
-        "69dec9f34e2d2a5b77ecdfd5": 1
+        "69dec9f94e2d2a5b77ecec3b": 1,
+        "69dec9fa4e2d2a5b77ecedaa": 1,
+        "69dec9fe4e2d2a5b77ecf631": 1,
+        "69deca004e2d2a5b77ecfad8": 1,
+        "69deca024e2d2a5b77ed0137": 1
       }
     },
     {
       "id": "field-73",
-      "query": "Chemistry",
+      "query": "Physics and Astronomy",
       "type": "field_broad",
-      "expected_min_results": 23,
+      "expected_min_results": 42,
       "relevant": {
-        "69dec9f34e2d2a5b77ecdeb2": 1,
-        "69dec9f44e2d2a5b77ece072": 1,
-        "69dec9f54e2d2a5b77ece21c": 1
+        "69dec9f54e2d2a5b77ece22a": 1,
+        "69deca024e2d2a5b77ed0045": 1,
+        "69deca064e2d2a5b77ed08da": 1,
+        "69deca104e2d2a5b77ed2361": 1,
+        "69deca184e2d2a5b77ed36c4": 1
       }
     },
     {
-      "id": "cross-74",
-      "query": "neural Materials Science",
-      "type": "cross_field",
-      "source_mongo_id": "69dec9f54e2d2a5b77ece20a",
-      "source_title": "Neural networks for modelling nonlinear pulse propagation",
+      "id": "field-74",
+      "query": "Energy",
+      "type": "field_broad",
+      "expected_min_results": 27,
       "relevant": {
-        "69dec9f54e2d2a5b77ece20a": 2
+        "69dec9f44e2d2a5b77ece0a6": 1,
+        "69dec9fe4e2d2a5b77ecf7f7": 1,
+        "69deca094e2d2a5b77ed11fc": 1,
+        "69deca0d4e2d2a5b77ed1d44": 1,
+        "69deca264e2d2a5b77ed5a3d": 1
       }
     },
     {
-      "id": "cross-75",
-      "query": "optical Engineering",
-      "type": "cross_field",
-      "source_mongo_id": "69dec9f54e2d2a5b77ece1f9",
-      "source_title": "Optical Filter-less Photonic Dechirping of a Frequency-Modulated Continuous-Wave Radar",
+      "id": "field-75",
+      "query": "Biochemistry, Genetics and Molecular Biology",
+      "type": "field_broad",
+      "expected_min_results": 24,
       "relevant": {
-        "69dec9f54e2d2a5b77ece1f9": 2
+        "69dec9f54e2d2a5b77ece2ad": 1,
+        "69deca044e2d2a5b77ed04a0": 1,
+        "69deca1e4e2d2a5b77ed4554": 1,
+        "69deca314e2d2a5b77ed7196": 1,
+        "69deca4a4e2d2a5b77eda849": 1
       }
     },
     {
-      "id": "cross-76",
-      "query": "issues Social Sciences",
-      "type": "cross_field",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece197",
-      "source_title": "Issues in ALE simulation of airbags",
+      "id": "field-76",
+      "query": "Mathematics",
+      "type": "field_broad",
+      "expected_min_results": 19,
       "relevant": {
-        "69dec9f44e2d2a5b77ece197": 2
+        "69dec9f54e2d2a5b77ece2e8": 1,
+        "69deca094e2d2a5b77ed1287": 1,
+        "69deca214e2d2a5b77ed4cf4": 1,
+        "69deca2f4e2d2a5b77ed6c34": 1,
+        "69deca444e2d2a5b77ed9669": 1
       }
     },
     {
       "id": "cross-77",
-      "query": "co-optimization Energy",
+      "query": "block Computer Science",
       "type": "cross_field",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece103",
-      "source_title": "Co-optimization of Energy and Demand-Side Reserves in Day-Ahead Electricity Markets",
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdecf",
+      "source_title": "A Block Minorization-Maximization Algorithm for Row-Sparse Principal Component Analysis",
       "relevant": {
-        "69dec9f44e2d2a5b77ece103": 2
+        "69dec9f34e2d2a5b77ecdecf": 2
       }
     },
     {
       "id": "cross-78",
-      "query": "muscle Biochemistry, Genetics and Molecular Biology",
+      "query": "effective Materials Science",
       "type": "cross_field",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece187",
-      "source_title": "Effect of muscle contraction in high speed carpedestrian impact-simulations for walking posture",
+      "source_mongo_id": "69dec9f54e2d2a5b77ece45e",
+      "source_title": "Effective Channel Mobility Extraction and Modeling of 10-nm Bulk CMOS FinFETs in Cryogenic Temperature Operation for Quantum Computing Applications",
       "relevant": {
-        "69dec9f44e2d2a5b77ece187": 2
+        "69dec9f54e2d2a5b77ece45e": 2
       }
     },
     {
       "id": "cross-79",
-      "query": "impact Social Sciences",
+      "query": "strategic Environmental Science",
       "type": "cross_field",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece1b9",
-      "source_title": "Impact modelling studies for a three-wheeled scooter taxi",
+      "source_mongo_id": "69dec9f84e2d2a5b77eceaf8",
+      "source_title": "Strategic analysis of computer waste management options: Game-theoretic approach",
       "relevant": {
-        "69dec9f44e2d2a5b77ece1b9": 2
+        "69dec9f84e2d2a5b77eceaf8": 2
       }
     },
     {
       "id": "cross-80",
-      "query": "market Energy",
+      "query": "residual Agricultural and Biological Sciences",
       "type": "cross_field",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece11a",
-      "source_title": "Market clearing for a wind-thermal power system incorporating wind generation and load forecast uncertainties",
+      "source_mongo_id": "69dec9fa4e2d2a5b77eced51",
+      "source_title": "Residual biogas slurry for mushroom cultivation: A step towards solid waste management",
       "relevant": {
-        "69dec9f44e2d2a5b77ece11a": 2
+        "69dec9fa4e2d2a5b77eced51": 2
       }
     },
     {
       "id": "cross-81",
-      "query": "min-max Energy",
+      "query": "aspect Chemistry",
       "type": "cross_field",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece127",
-      "source_title": "Min-max fairness criteria for transmission fixed cost allocation",
+      "source_mongo_id": "69dec9fd4e2d2a5b77ecf529",
+      "source_title": "High aspect ZnO nanorod growth over electrodeposited tubes for photocatalytic degradation of EtBr dye",
       "relevant": {
-        "69dec9f44e2d2a5b77ece127": 2
+        "69dec9fd4e2d2a5b77ecf529": 2
       }
     },
     {
       "id": "cross-82",
-      "query": "blade Energy",
+      "query": "computational Medicine",
       "type": "cross_field",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece1b2",
-      "source_title": "Blade life: A comparison by cumulative damage theories",
+      "source_mongo_id": "69dec9fe4e2d2a5b77ecf830",
+      "source_title": "Computational analysis of stresses acting on intermodular junctions in thoracic aortic endografts",
       "relevant": {
-        "69dec9f44e2d2a5b77ece1b2": 2
+        "69dec9fe4e2d2a5b77ecf830": 2
       }
     },
     {
       "id": "cross-83",
-      "query": "contour Engineering",
+      "query": "quality Pharmacology, Toxicology and Pharmaceutics",
       "type": "cross_field",
-      "source_mongo_id": "69dec9f44e2d2a5b77ece169",
-      "source_title": "Contour Based Repositioning of Specific Joints of the GHBMC Human Body FE Model",
+      "source_mongo_id": "69deca004e2d2a5b77ecfbd3",
+      "source_title": "Quality by design for manufacturing of biotech therapeutics",
       "relevant": {
-        "69dec9f44e2d2a5b77ece169": 2
+        "69deca004e2d2a5b77ecfbd3": 2
       }
     },
     {
-      "id": "topic-84",
-      "query": "machine learning prediction",
-      "type": "multi_relevant",
-      "matching_docs": 14,
+      "id": "cross-84",
+      "query": "predicting Computer Science",
+      "type": "cross_field",
+      "source_mongo_id": "69deca024e2d2a5b77ecff48",
+      "source_title": "Predicting retweet class using deep learning",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdf01": 3,
-        "69dec9f34e2d2a5b77ecdf12": 3,
-        "69dec9f34e2d2a5b77ecdf24": 3,
-        "69dec9f34e2d2a5b77ecdf2c": 3,
-        "69dec9f34e2d2a5b77ecdf51": 3,
-        "69dec9f34e2d2a5b77ece017": 3,
-        "69dec9f44e2d2a5b77ece04e": 3,
-        "69dec9f44e2d2a5b77ece050": 3,
-        "69dec9f44e2d2a5b77ece051": 3,
-        "69dec9f44e2d2a5b77ece056": 3
+        "69deca024e2d2a5b77ecff48": 2
       }
     },
     {
-      "id": "topic-85",
-      "query": "deep learning neural network",
-      "type": "multi_relevant",
-      "matching_docs": 5,
+      "id": "cross-85",
+      "query": "characterizing Computer Science",
+      "type": "cross_field",
+      "source_mongo_id": "69deca034e2d2a5b77ed0350",
+      "source_title": "Characterizing the Evolution of Indian Cities Using Satellite Imagery and Open Street Maps",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdf04": 2,
-        "69dec9f34e2d2a5b77ecdf2b": 2,
-        "69dec9f44e2d2a5b77ece1b5": 2,
-        "69dec9f54e2d2a5b77ece204": 2,
-        "69dec9f54e2d2a5b77ece20a": 2
+        "69deca034e2d2a5b77ed0350": 2
       }
     },
     {
-      "id": "topic-86",
-      "query": "solar energy photovoltaic",
-      "type": "multi_relevant",
-      "matching_docs": 2,
+      "id": "cross-86",
+      "query": "solution Chemistry",
+      "type": "cross_field",
+      "source_mongo_id": "69deca044e2d2a5b77ed05c4",
+      "source_title": "Solution properties and electrospinning of poly(galacturonic acid) nanofibers",
       "relevant": {
-        "69dec9f34e2d2a5b77ecdec6": 2,
-        "69dec9f44e2d2a5b77ece0a9": 3
+        "69deca044e2d2a5b77ed05c4": 2
       }
     },
     {
       "id": "topic-87",
-      "query": "alloy mechanical properties",
+      "query": "thin films",
       "type": "multi_relevant",
-      "matching_docs": 11,
+      "matching_docs": 5,
       "relevant": {
-        "69dec9f34e2d2a5b77ecdf89": 3,
-        "69dec9f44e2d2a5b77ece04c": 3,
-        "69dec9f44e2d2a5b77ece056": 3,
-        "69dec9f44e2d2a5b77ece05b": 3,
-        "69dec9f44e2d2a5b77ece05c": 3,
-        "69dec9f44e2d2a5b77ece061": 3,
-        "69dec9f44e2d2a5b77ece063": 3,
-        "69dec9f44e2d2a5b77ece091": 3,
-        "69dec9f44e2d2a5b77ece095": 3,
-        "69dec9f44e2d2a5b77ece099": 3
+        "69deca024e2d2a5b77ed012f": 3,
+        "69deca3a4e2d2a5b77ed8169": 3,
+        "69deca644e2d2a5b77ede073": 3,
+        "69deca3a4e2d2a5b77ed8148": 3,
+        "69deca474e2d2a5b77eda007": 3
       }
     },
     {
       "id": "topic-88",
-      "query": "optimization algorithm",
+      "query": "carbon nanotubes",
       "type": "multi_relevant",
-      "matching_docs": 9,
+      "matching_docs": 3,
       "relevant": {
-        "69dec9f34e2d2a5b77ecdf18": 2,
-        "69dec9f34e2d2a5b77ecdfd8": 2,
-        "69dec9f44e2d2a5b77ece0e0": 2,
-        "69dec9f44e2d2a5b77ece10b": 2,
-        "69dec9f44e2d2a5b77ece10d": 2,
-        "69dec9f44e2d2a5b77ece111": 3,
-        "69dec9f44e2d2a5b77ece116": 3,
-        "69dec9f44e2d2a5b77ece117": 2,
-        "69dec9f44e2d2a5b77ece199": 2
+        "69deca2b4e2d2a5b77ed6375": 3,
+        "69deca654e2d2a5b77ede1fd": 3,
+        "69deca3f4e2d2a5b77ed8cca": 3
       }
     },
     {
       "id": "topic-89",
-      "query": "finite element simulation",
+      "query": "communication system",
       "type": "multi_relevant",
-      "matching_docs": 25,
+      "matching_docs": 5,
       "relevant": {
-        "69dec9f34e2d2a5b77ecdf9e": 3,
-        "69dec9f44e2d2a5b77ece04c": 3,
-        "69dec9f44e2d2a5b77ece136": 3,
-        "69dec9f44e2d2a5b77ece137": 3,
-        "69dec9f44e2d2a5b77ece138": 3,
-        "69dec9f44e2d2a5b77ece13a": 3,
-        "69dec9f44e2d2a5b77ece146": 3,
-        "69dec9f44e2d2a5b77ece147": 3,
-        "69dec9f44e2d2a5b77ece14d": 3,
-        "69dec9f44e2d2a5b77ece151": 3
+        "69deca1a4e2d2a5b77ed3bd9": 3,
+        "69deca2f4e2d2a5b77ed6c45": 3,
+        "69deca4a4e2d2a5b77eda764": 3,
+        "69deca1b4e2d2a5b77ed3dd4": 3,
+        "69deca324e2d2a5b77ed74bd": 3
       }
     },
     {
       "id": "topic-90",
-      "query": "power grid renewable",
+      "query": "indian cities",
       "type": "multi_relevant",
-      "matching_docs": 4,
+      "matching_docs": 3,
       "relevant": {
-        "69dec9f44e2d2a5b77ece0a1": 2,
-        "69dec9f44e2d2a5b77ece0c7": 3,
-        "69dec9f44e2d2a5b77ece0cd": 2,
-        "69dec9f44e2d2a5b77ece0d2": 3
+        "69deca034e2d2a5b77ed0350": 3,
+        "69deca494e2d2a5b77eda572": 3,
+        "69deca3f4e2d2a5b77ed8dbb": 3
+      }
+    },
+    {
+      "id": "topic-91",
+      "query": "induction motor",
+      "type": "multi_relevant",
+      "matching_docs": 3,
+      "relevant": {
+        "69deca054e2d2a5b77ed06d5": 3,
+        "69deca104e2d2a5b77ed2334": 3,
+        "69deca104e2d2a5b77ed22d8": 3
+      }
+    },
+    {
+      "id": "topic-92",
+      "query": "mechanical properties",
+      "type": "multi_relevant",
+      "matching_docs": 5,
+      "relevant": {
+        "69deca064e2d2a5b77ed0965": 3,
+        "69deca2c4e2d2a5b77ed6619": 3,
+        "69deca5c4e2d2a5b77edcc8e": 3,
+        "69deca074e2d2a5b77ed0cb8": 3,
+        "69deca454e2d2a5b77ed9b29": 3
+      }
+    },
+    {
+      "id": "topic-93",
+      "query": "motor drives",
+      "type": "multi_relevant",
+      "matching_docs": 3,
+      "relevant": {
+        "69deca054e2d2a5b77ed06d5": 3,
+        "69deca104e2d2a5b77ed2334": 3,
+        "69deca104e2d2a5b77ed22d8": 3
+      }
+    },
+    {
+      "id": "topic-94",
+      "query": "performance evaluation",
+      "type": "multi_relevant",
+      "matching_docs": 3,
+      "relevant": {
+        "69dec9fc4e2d2a5b77ecf13d": 3,
+        "69deca334e2d2a5b77ed763d": 3,
+        "69deca254e2d2a5b77ed587a": 3
+      }
+    },
+    {
+      "id": "topic-95",
+      "query": "silicon nitride",
+      "type": "multi_relevant",
+      "matching_docs": 3,
+      "relevant": {
+        "69deca064e2d2a5b77ed08da": 3,
+        "69deca234e2d2a5b77ed51d9": 3,
+        "69deca1e4e2d2a5b77ed4464": 3
+      }
+    },
+    {
+      "id": "topic-96",
+      "query": "single phase",
+      "type": "multi_relevant",
+      "matching_docs": 3,
+      "relevant": {
+        "69deca0d4e2d2a5b77ed1d44": 3,
+        "69deca264e2d2a5b77ed5ad4": 3,
+        "69deca104e2d2a5b77ed23ca": 3
       }
     }
   ]

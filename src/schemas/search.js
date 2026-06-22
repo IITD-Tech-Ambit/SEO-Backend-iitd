@@ -70,9 +70,9 @@ export const searchRequestSchema = {
         page: {
             type: 'integer',
             minimum: 1,
-            maximum: 500,
+            maximum: 10000,
             default: 1,
-            description: 'Page number. Capped to prevent exceeding OpenSearch max_result_window (10000).'
+            description: 'Page number. Deep pages beyond the reranked window are served in raw hybrid-score order; the service clamps total_pages so a valid page never exceeds OpenSearch max_result_window (from + size ≤ 10000).'
         },
         per_page: {
             type: 'integer',
@@ -97,7 +97,17 @@ export const searchRequestSchema = {
         refine_within: {
             type: 'string',
             maxLength: 500,
-            description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
+            description: 'Original query to refine within. When set, results must match BOTH this AND the main query. Legacy single-step form of refine_chain.'
+        },
+        refine_chain: {
+            type: 'array',
+            items: { type: 'string', maxLength: 500 },
+            maxItems: 8,
+            description: 'Ordered prior queries (oldest first) for multi-step refinement. Results must match the main query AND every entry; each entry is applied as a strict lexical filter so the result set narrows monotonically.'
+        },
+        rerank: {
+            type: 'boolean',
+            description: 'Advanced mode only. When false, returns the first-stage hybrid ranking without cross-encoder reranking. Defaults to the server reranker setting.'
         }
     },
     additionalProperties: false
@@ -125,7 +135,8 @@ export const searchResponseSchema = {
                     document_eid: { type: 'string' },
                     document_scopus_id: { type: 'string' },
                     open_search_id: { type: 'string' },
-                    rerank_score: { type: 'number', description: 'Cross-encoder rerank score (present when reranking is applied)' }
+                    rerank_score: { type: 'number', description: 'Cross-encoder rerank score (present when reranking is applied)' },
+                    fused_score: { type: 'number', description: 'Final fused score: alpha*norm(rerank) + (1-alpha)*norm(firstStage) + literal-title bonus' }
                 }
             }
         },
@@ -166,7 +177,8 @@ export const searchResponseSchema = {
                 page: { type: 'integer' },
                 per_page: { type: 'integer' },
                 total: { type: 'integer' },
-                total_pages: { type: 'integer' }
+                ranked_window: { type: 'integer', description: 'Number of top candidates cross-encoder reranked (transparency only). Pages within this window are reranked; deeper pages are paginated in raw hybrid-score order.' },
+                total_pages: { type: 'integer', description: 'Derived from the true match count (total), clamped to the deepest page servable within OpenSearch max_result_window.' }
             }
         },
         meta: {
@@ -267,7 +279,13 @@ export const authorScopedSearchRequestSchema = {
         refine_within: {
             type: 'string',
             maxLength: 500,
-            description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
+            description: 'Original query to refine within. When set, results must match BOTH this AND the main query. Legacy single-step form of refine_chain.'
+        },
+        refine_chain: {
+            type: 'array',
+            items: { type: 'string', maxLength: 500 },
+            maxItems: 8,
+            description: 'Ordered prior queries (oldest first) for multi-step refinement; each entry is a strict lexical filter that narrows the result set.'
         },
         search_in: {
             type: 'array',
@@ -276,6 +294,24 @@ export const authorScopedSearchRequestSchema = {
                 enum: ['title', 'abstract', 'author', 'subject_area', 'field']
             },
             description: 'Same as POST /search. When set, constrains BM25 (and refine_within) to those fields; basic = strict, advanced = fuzzy where applicable.'
+        },
+        filters: {
+            // Same facet filters as POST /search so the drill-down paper count matches the
+            // People sidebar per-faculty count for the same query+filters.
+            type: 'object',
+            properties: {
+                year_from: { type: 'integer', minimum: 1900, maximum: 2100 },
+                year_to: { type: 'integer', minimum: 1900, maximum: 2100 },
+                field_associated: { type: 'string' },
+                document_type: { type: 'string' },
+                document_types: { type: 'array', items: { type: 'string' } },
+                subject_area: { type: 'array', items: { type: 'string' } },
+                author_id: { type: 'string' },
+                first_author_only: { type: 'boolean' },
+                interdisciplinary: { type: 'boolean' },
+                kerberos: { type: 'string' }
+            },
+            additionalProperties: false
         }
     },
     additionalProperties: false
@@ -368,6 +404,16 @@ export const facultyForQueryRequestSchema = {
             type: 'string',
             maxLength: 500,
             description: 'Optional base query when refining (same as POST /search refine_within)'
+        },
+        refine_chain: {
+            type: 'string',
+            maxLength: 2000,
+            description: 'JSON-encoded array of ordered prior queries (oldest first) for multi-step refinement, matching POST /search refine_chain. Parsed and applied as strict lexical filters.'
+        },
+        filters: {
+            type: 'string',
+            maxLength: 2000,
+            description: 'JSON-encoded facet filters identical to POST /search filters (year_from, year_to, document_type, etc.). Applied so total_matching_papers matches POST /search pagination.total.'
         }
     },
     additionalProperties: false

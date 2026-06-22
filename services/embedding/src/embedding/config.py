@@ -1,70 +1,51 @@
 import os
-from typing import List, Optional
+from typing import List
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Model configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "BAAI/bge-base-en-v1.5")
 MAX_LENGTH = int(os.getenv("MAX_LENGTH", "512"))
-MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "600"))
-
-# Output embedding dimensionality (BGE-base = 768; BGE-M3 dense = 1024).
+MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "32"))
 EMBED_DIM = int(os.getenv("EMBED_DIM", "768"))
-
-# Backend for the embedding model: "onnx" (optimum + onnxruntime) or "torch" (transformers + pytorch).
 EMBED_BACKEND = os.getenv("EMBED_BACKEND", "onnx").lower()
+EMBED_SUB_BATCH = int(os.getenv("EMBED_SUB_BATCH", "8"))
 
-# Persistent directory for exported ONNX artifacts (survives restarts; avoids re-export).
 _default_onnx_cache = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    ".cache",
-    "onnx",
+    ".cache", "onnx",
 )
 ONNX_CACHE_DIR = os.getenv("ONNX_CACHE_DIR", _default_onnx_cache)
 
-# Pooling strategy for the token embeddings: "cls" (BGE-M3 dense) or "mean".
-POOLING = os.getenv("POOLING", "cls").lower()
+_default_onnx_int8_cache = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    ".cache", "onnx_int8",
+)
+ONNX_INT8_CACHE_DIR = os.getenv("ONNX_INT8_CACHE_DIR", _default_onnx_int8_cache)
 
-# L2-normalize the output embeddings (required for cosine / inner-product kNN).
+POOLING = os.getenv("POOLING", "cls").lower()
 NORMALIZE = os.getenv("NORMALIZE", "true").lower() != "false"
 
-# Server configuration
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", os.getenv("PORT2", "8000")))
 
-# GPU/CPU configuration
-USE_GPU = os.getenv("USE_GPU", "auto").lower()  # "auto", "true", "false"
-
-# --- CPU inference tuning ---
-# ONNX Runtime intra-op threads (0 = use OMP_NUM_THREADS or all cores).
-ORT_NUM_THREADS = int(os.getenv("OMP_NUM_THREADS", "0"))
-# Torch intra-op threads (0 = use all available cores). Only used with EMBED_BACKEND=torch.
-TORCH_THREADS = int(os.getenv("TORCH_THREADS", "0"))
-# Torch inter-op threads (parallel op queues). 1 is best for a single-model server.
-TORCH_INTEROP_THREADS = int(os.getenv("TORCH_INTEROP_THREADS", "1"))
-
-# Internal sub-batch size for one forward pass. Bounds peak activation memory:
-# a request of MAX_BATCH_SIZE texts is processed EMBED_SUB_BATCH at a time.
-EMBED_SUB_BATCH = int(os.getenv("EMBED_SUB_BATCH", "8"))
-
-# Offline-first model loading: try the local HuggingFace cache before any
-# network call. "true" = hard offline (never touch the network).
-HF_OFFLINE = os.getenv("HF_OFFLINE", "auto").lower()  # "auto", "true", "false"
-
-# Logging
+USE_GPU = os.getenv("USE_GPU", "auto").lower()
+HF_OFFLINE = os.getenv("HF_OFFLINE", "auto").lower()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-# --- Cross-encoder reranker configuration ---
+# ORT_NUM_THREADS — prefer the dedicated var, fall back to the legacy OMP alias.
+ORT_NUM_THREADS = int(os.getenv("ORT_NUM_THREADS", os.getenv("OMP_NUM_THREADS", "0")))
+TORCH_THREADS = int(os.getenv("TORCH_THREADS", "0"))
+TORCH_INTEROP_THREADS = int(os.getenv("TORCH_INTEROP_THREADS", "1"))
+
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_MODEL_NAME = os.getenv("RERANK_MODEL_NAME", "BAAI/bge-reranker-base")
 RERANK_MAX_LENGTH = int(os.getenv("RERANK_MAX_LENGTH", "320"))
-RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "100"))
-RERANK_SUB_BATCH = int(os.getenv("RERANK_SUB_BATCH", "16"))
+RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "50"))
+RERANK_SUB_BATCH = int(os.getenv("RERANK_SUB_BATCH", "8"))
+RERANK_QUANTIZE = os.getenv("RERANK_QUANTIZE", "true").lower() == "true"
 
-# --- Load Balancer / Gateway configuration ---
-# Comma-separated list of backend node URLs. Empty = standalone mode (load model locally).
-# Example: "http://10.0.0.1:8000,http://10.0.0.2:8000,http://10.0.0.3:8000"
 _backend_nodes_raw = os.getenv("BACKEND_NODES", "").strip()
 BACKEND_NODES: List[str] = [
     url.strip() for url in _backend_nodes_raw.split(",") if url.strip()
@@ -74,29 +55,36 @@ HEALTH_CHECK_INTERVAL_S = int(os.getenv("HEALTH_CHECK_INTERVAL_S", "10"))
 NODE_TIMEOUT_S = int(os.getenv("NODE_TIMEOUT_S", "60"))
 CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "3"))
 CIRCUIT_BREAKER_RECOVERY_S = int(os.getenv("CIRCUIT_BREAKER_RECOVERY_S", "30"))
-
-# Batches smaller than this go to a single node; larger batches are scattered across all healthy nodes.
 SCATTER_MIN_BATCH = int(os.getenv("SCATTER_MIN_BATCH", "16"))
-
-# --- Dynamic load balancing tunables ---
-# Max concurrent in-flight requests to a single backend node (per gateway process).
-# Set roughly to "uvicorn workers on that backend + 1 pipelined".
 MAX_INFLIGHT_PER_NODE = int(os.getenv("MAX_INFLIGHT_PER_NODE", "2"))
-
-# Latency normalizer for capacity scoring (ms). A node responding at this latency
-# with one in-flight request gets weight ~1.0.
 LATENCY_BASE_MS = float(os.getenv("LATENCY_BASE_MS", "100"))
-
-# Floor used when a node has no observed latency yet (cold start).
 LATENCY_FLOOR_MS = float(os.getenv("LATENCY_FLOOR_MS", "50"))
-
-# Minimum share a healthy node must receive in weighted scatter (fraction).
-# Prevents starvation of slow-but-up nodes; also keeps latency EMA fresh.
 MIN_NODE_WEIGHT = float(os.getenv("MIN_NODE_WEIGHT", "0.1"))
-
-# Max texts sent to a half-open (circuit recovery probe) node in scatter.
 HALF_OPEN_PROBE_TEXTS = int(os.getenv("HALF_OPEN_PROBE_TEXTS", "4"))
-
-# When acquiring a per-node semaphore for scatter chunks, skip this node and try
-# the next-best after this timeout (seconds). 0 = pure try-acquire (no wait).
 NODE_ACQUIRE_TIMEOUT_S = float(os.getenv("NODE_ACQUIRE_TIMEOUT_S", "0"))
+
+
+def validate() -> None:
+    errors = []
+
+    if EMBED_BACKEND not in ("onnx", "torch"):
+        errors.append(f"EMBED_BACKEND must be 'onnx' or 'torch', got {EMBED_BACKEND!r}")
+    if HF_OFFLINE not in ("auto", "true", "false"):
+        errors.append(f"HF_OFFLINE must be 'auto', 'true', or 'false', got {HF_OFFLINE!r}")
+    if USE_GPU not in ("auto", "true", "false"):
+        errors.append(f"USE_GPU must be 'auto', 'true', or 'false', got {USE_GPU!r}")
+    if POOLING not in ("cls", "mean"):
+        errors.append(f"POOLING must be 'cls' or 'mean', got {POOLING!r}")
+    if MAX_BATCH_SIZE <= 0:
+        errors.append(f"MAX_BATCH_SIZE must be > 0, got {MAX_BATCH_SIZE}")
+    if EMBED_DIM <= 0:
+        errors.append(f"EMBED_DIM must be > 0, got {EMBED_DIM}")
+    if LATENCY_BASE_MS <= LATENCY_FLOOR_MS or LATENCY_FLOOR_MS <= 0:
+        errors.append(
+            f"Required: LATENCY_BASE_MS ({LATENCY_BASE_MS}) > LATENCY_FLOOR_MS ({LATENCY_FLOOR_MS}) > 0"
+        )
+    if not (0.0 < MIN_NODE_WEIGHT <= 1.0):
+        errors.append(f"MIN_NODE_WEIGHT must be in (0, 1], got {MIN_NODE_WEIGHT}")
+
+    if errors:
+        raise ValueError("Invalid configuration:\n" + "\n".join(f"  - {e}" for e in errors))

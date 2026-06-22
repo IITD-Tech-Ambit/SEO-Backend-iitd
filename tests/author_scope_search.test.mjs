@@ -548,8 +548,8 @@ describe('Author-scoped search: multi-page score consistency', () => {
 
 // ── General search pagination quality ──
 
-describe('General search: pagination bounded by reranker window', () => {
-    it('total results are capped to candidateK (50) in advanced mode', async () => {
+describe('General search: full match set is navigable; reranking bounded to top-K', () => {
+    it('advanced total is the full match count, with only the top-K reranked', async () => {
         const { status, body } = await post('/search', {
             query: 'machine learning',
             mode: 'advanced',
@@ -557,17 +557,21 @@ describe('General search: pagination bounded by reranker window', () => {
             page: 1,
         });
         assert.equal(status, 200);
+        // Advanced must NOT cap the true match count — otherwise it could report fewer
+        // matches than basic, violating the basic-subset-of-advanced invariant.
+        assert.ok(body.pagination.total > 0, 'advanced should report a real total');
+        // Only the top candidateK (50) are cross-encoder reranked.
         assert.ok(
-            body.pagination.total <= 50,
-            `Total should be capped at candidateK (50), got ${body.pagination.total}`
-        );
-        assert.ok(
-            body.pagination.total_pages <= 5,
-            `Total pages should be <=5, got ${body.pagination.total_pages}`
+            body.pagination.ranked_window <= 50,
+            `ranked_window should be <=50, got ${body.pagination.ranked_window}`
         );
     });
 
-    it('page beyond reranker window returns empty results', async () => {
+    it('pages beyond the reranked window are still navigable (raw-order tail)', async () => {
+        const first = await post('/search', { query: 'machine learning', mode: 'advanced', per_page: 10, page: 1 });
+        assert.equal(first.status, 200);
+        // Only meaningful when there are more than candidateK matches.
+        if (first.body.pagination.total <= 50) return;
         const { status, body } = await post('/search', {
             query: 'machine learning',
             mode: 'advanced',
@@ -575,7 +579,7 @@ describe('General search: pagination bounded by reranker window', () => {
             page: 6,
         });
         assert.equal(status, 200);
-        assert.equal(body.results.length, 0, 'page 6 (beyond candidateK=50) should return empty results');
+        assert.ok(body.results.length > 0, 'page 6 should serve raw-order results when total > candidateK');
     });
 
     it('basic mode still returns all results (no candidateK cap)', async () => {

@@ -1,0 +1,713 @@
+{
+  "version": 1,
+  "description": "Hard golden set: corpus-analyzed difficult queries stressing all IR metrics",
+  "corpus_documents": 500,
+  "corpus_sample_size": 500,
+  "exported_at": "2026-06-21T22:44:52.640Z",
+  "categories": {
+    "hard_exact_rank1": "Truncated long title — MRR/P@1 must find exact source at rank 1",
+    "hard_partial_common": "Partial query with corpus-common words — precision under noise",
+    "hard_graded_cluster": "Multi-doc cluster with 3/2/1 grades — nDCG and recall",
+    "hard_ambiguous_recall": "Ambiguous single token with many sample matches — recall@50",
+    "hard_abstract_gap": "Abstract-only terms absent from title — semantic recall",
+    "hard_paraphrase": "NL paraphrase with low lexical overlap — vector recall",
+    "hard_author_disambiguation": "Faculty surname + topic keyword",
+    "hard_distractor_ranking": "Similar-title peers; anchor must outrank distractors",
+    "hard_cross_field": "Common keyword + field constraint"
+  },
+  "metric_definitions": {
+    "recall_50": "Fraction of judged relevant docs found in top 50",
+    "precision_1": "Relevant doc at rank 1 (strict top-1 accuracy)",
+    "precision_5": "Relevant docs in top 5 / 5",
+    "precision_10": "Relevant docs in top 10 / 10",
+    "ndcg_10": "Graded ranking quality in top 10",
+    "mrr": "Reciprocal rank of first relevant doc"
+  },
+  "queries": [
+    {
+      "id": "hard-exact-1",
+      "query": "High rate and temperature-dependent tensile characterisation with modelling for",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdfa1",
+      "source_title": "High rate and temperature-dependent tensile characterisation with modelling for gap-bridged remote laser welded (RLW) joint using automotive AA5182 alloy",
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdfa1": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:52.721Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-2",
+      "query": "Graphite-Si@TiO2 Core-Shell Nanoparticles as Composite Anode for Li-ion Batteries:",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f74e2d2a5b77ece6d9",
+      "source_title": "Graphite-Si@TiO2 Core-Shell Nanoparticles as Composite Anode for Li-ion Batteries: Electrochemical Response",
+      "relevant": {
+        "69dec9f74e2d2a5b77ece6d9": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:52.741Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-3",
+      "query": "Half sandwich complexes of chalcogenated pyridine based bi-(N, S/Se) and terdentate",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f94e2d2a5b77ecec3b",
+      "source_title": "Half sandwich complexes of chalcogenated pyridine based bi-(N, S/Se) and terdentate (N, S/Se, N) ligands with (η6-benzene)ruthenium(ii): Synthesis, structure and catalysis of transfer hydrogenation of ketones and oxidation of alcohols",
+      "relevant": {
+        "69dec9f94e2d2a5b77ecec3b": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:52.758Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-4",
+      "query": "Gain enhancement of a CPW-Fed monopole antenna using polarization- insensitive AMC",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9fd4e2d2a5b77ecf399",
+      "source_title": "Gain enhancement of a CPW-Fed monopole antenna using polarization- insensitive AMC structure",
+      "relevant": {
+        "69dec9fd4e2d2a5b77ecf399": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:52.772Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-5",
+      "query": "Experimental study of engine performance and emissions for hydrogen diesel dual fuel",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9fe4e2d2a5b77ecf7f7",
+      "source_title": "Experimental study of engine performance and emissions for hydrogen diesel dual fuel engine with exhaust gas recirculation",
+      "relevant": {
+        "69dec9fe4e2d2a5b77ecf7f7": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:52.787Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-6",
+      "query": "NMR based quality evaluation of mAb therapeutics: A proof of concept higher order",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca004e2d2a5b77ecfad8",
+      "source_title": "NMR based quality evaluation of mAb therapeutics: A proof of concept higher order structure biosimilarity assessment of trastuzumab biosimilars",
+      "relevant": {
+        "69deca004e2d2a5b77ecfad8": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:52.807Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-7",
+      "query": "User engagement for mobile payment service providers – introducing the social media",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca024e2d2a5b77ecff3b",
+      "source_title": "User engagement for mobile payment service providers – introducing the social media engagement model",
+      "relevant": {
+        "69deca024e2d2a5b77ecff3b": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:52.827Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-8",
+      "query": "Microstructure analysis of poly(styrene-co-vinylidene chloride) copolymers by NMR",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca034e2d2a5b77ed02e9",
+      "source_title": "Microstructure analysis of poly(styrene-co-vinylidene chloride) copolymers by NMR spectroscopy",
+      "relevant": {
+        "69deca034e2d2a5b77ed02e9": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:52.841Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-9",
+      "query": "Highly conducting silver nanowire-polyacrylonitrile hollow fibres for flexible",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca044e2d2a5b77ed05c0",
+      "source_title": "Highly conducting silver nanowire-polyacrylonitrile hollow fibres for flexible supercapacitors",
+      "relevant": {
+        "69deca044e2d2a5b77ed05c0": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:53.916Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-10",
+      "query": "A facile strategy to synthesize a novel and green nanocomposite based on gum Salai",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca074e2d2a5b77ed0bf4",
+      "source_title": "A facile strategy to synthesize a novel and green nanocomposite based on gum Salai guggal - Investigation of antimicrobial activity",
+      "relevant": {
+        "69deca074e2d2a5b77ed0bf4": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:53.934Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-11",
+      "query": "ATLHCAF and DMNGI-PLL Based Control Techniques for a Dual-Stage SPV Array and BES in",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca094e2d2a5b77ed101c",
+      "source_title": "ATLHCAF and DMNGI-PLL Based Control Techniques for a Dual-Stage SPV Array and BES in Shipboard Microgrid",
+      "relevant": {
+        "69deca094e2d2a5b77ed101c": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:53.952Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-exact-12",
+      "query": "High-Performance Visible-to-SWIR Photodetector Based on the Layered WS2",
+      "type": "hard_exact_rank1",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "precision_1",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca0c4e2d2a5b77ed186f",
+      "source_title": "High-Performance Visible-to-SWIR Photodetector Based on the Layered WS2 Heterojunction with Light-Trapping Pyramidal Black Germanium",
+      "relevant": {
+        "69deca0c4e2d2a5b77ed186f": 3
+      },
+      "notes": "Long title truncated; source must appear at rank 1",
+      "calibrated_at": "2026-06-21T22:44:53.968Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-partial-noise-13",
+      "query": "hybrid coherent energy detection",
+      "type": "hard_partial_common",
+      "difficulty": "high",
+      "metric_focus": [
+        "precision_10",
+        "mrr",
+        "recall_50"
+      ],
+      "source_mongo_id": "69deca474e2d2a5b77ed9e59",
+      "source_title": "Hybrid coherent/energy detection for cognitive radio networks",
+      "relevant": {
+        "69deca474e2d2a5b77ed9e59": 3
+      },
+      "notes": "Query terms are corpus-common; many distractors expected",
+      "calibrated_at": "2026-06-21T22:44:53.985Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-partial-noise-14",
+      "query": "energy wastewater treatment",
+      "type": "hard_partial_common",
+      "difficulty": "high",
+      "metric_focus": [
+        "precision_10",
+        "mrr",
+        "recall_50"
+      ],
+      "source_mongo_id": "69deca594e2d2a5b77edc8c7",
+      "source_title": "Energy from wastewater treatment",
+      "relevant": {
+        "69deca594e2d2a5b77edc8c7": 3
+      },
+      "notes": "Query terms are corpus-common; many distractors expected",
+      "calibrated_at": "2026-06-21T22:44:54.003Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-cluster-21",
+      "query": "communication system",
+      "type": "hard_graded_cluster",
+      "difficulty": "medium",
+      "metric_focus": [
+        "ndcg_10",
+        "recall_50"
+      ],
+      "matching_docs": 5,
+      "source_mongo_id": "69deca1b4e2d2a5b77ed3dd4",
+      "relevant": {
+        "69deca1a4e2d2a5b77ed3bd9": 3,
+        "69deca1b4e2d2a5b77ed3dd4": 2,
+        "69deca2f4e2d2a5b77ed6c45": 2
+      },
+      "notes": "Auto-mined title bigram cluster from corpus",
+      "calibrated_at": "2026-06-21T22:44:55.695Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-cluster-22",
+      "query": "indian cities",
+      "type": "hard_graded_cluster",
+      "difficulty": "medium",
+      "metric_focus": [
+        "ndcg_10",
+        "recall_50"
+      ],
+      "matching_docs": 3,
+      "source_mongo_id": "69deca494e2d2a5b77eda572",
+      "relevant": {
+        "69deca034e2d2a5b77ed0350": 3,
+        "69deca494e2d2a5b77eda572": 2
+      },
+      "notes": "Auto-mined title bigram cluster from corpus",
+      "calibrated_at": "2026-06-21T22:44:57.074Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-29",
+      "query": "present problem consists",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdecf",
+      "source_title": "A Block Minorization-Maximization Algorithm for Row-Sparse Principal Component Analysis",
+      "abstract_terms": [
+        "present",
+        "problem",
+        "consists",
+        "orthogonality"
+      ],
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdecf": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.187Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-30",
+      "query": "demonstrate technique enables",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f54e2d2a5b77ece245",
+      "source_title": "Gigahertz tuning of on-chip RF photonic delay line",
+      "abstract_terms": [
+        "demonstrate",
+        "technique",
+        "enables",
+        "three-fold"
+      ],
+      "relevant": {
+        "69dec9f54e2d2a5b77ece245": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.204Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-31",
+      "query": "present oscilloscopes utilizing",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f64e2d2a5b77ece5ca",
+      "source_title": "A new triggering method for oscilloscope based on associative memory technique",
+      "abstract_terms": [
+        "present",
+        "oscilloscopes",
+        "utilizing",
+        "weighted"
+      ],
+      "relevant": {
+        "69dec9f64e2d2a5b77ece5ca": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.217Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-32",
+      "query": "emerged critical globally",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f84e2d2a5b77eceaf8",
+      "source_title": "Strategic analysis of computer waste management options: Game-theoretic approach",
+      "abstract_terms": [
+        "emerged",
+        "critical",
+        "globally",
+        "because"
+      ],
+      "relevant": {
+        "69dec9f84e2d2a5b77eceaf8": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.235Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-33",
+      "query": "important synthetic strategy",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f94e2d2a5b77ecec3e",
+      "source_title": "Organosulphur and related ligands in Suzuki-Miyaura C-C coupling",
+      "abstract_terms": [
+        "important",
+        "synthetic",
+        "strategy",
+        "organic"
+      ],
+      "relevant": {
+        "69dec9f94e2d2a5b77ecec3e": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.252Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-34",
+      "query": "induction generally techniques",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9fc4e2d2a5b77ecf13d",
+      "source_title": "Performance Evaluation of Open-End Winding IM Drive Operated with Synchronous PWM with Even Non-Triplen Pulse Number",
+      "abstract_terms": [
+        "induction",
+        "generally",
+        "techniques",
+        "sine-triangle"
+      ],
+      "relevant": {
+        "69dec9fc4e2d2a5b77ecf13d": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.267Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-35",
+      "query": "vertically nanostructures synthesized",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9fd4e2d2a5b77ecf529",
+      "source_title": "High aspect ZnO nanorod growth over electrodeposited tubes for photocatalytic degradation of EtBr dye",
+      "abstract_terms": [
+        "vertically",
+        "nanostructures",
+        "synthesized",
+        "metallic"
+      ],
+      "relevant": {
+        "69dec9fd4e2d2a5b77ecf529": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.282Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-36",
+      "query": "advances envelopment provide",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9fe4e2d2a5b77ecf785",
+      "source_title": "Dynamic Metafrontier Malmquist–Luenberger Productivity Index in Network DEA: An Application to Banking Data",
+      "abstract_terms": [
+        "advances",
+        "envelopment",
+        "provide",
+        "insight"
+      ],
+      "relevant": {
+        "69dec9fe4e2d2a5b77ecf785": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.304Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-37",
+      "query": "essentially chemicals pathogens",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9ff4e2d2a5b77ecf8d1",
+      "source_title": "Scope of Electrospun Chitosan Nanofibrous Web for its Potential Application in Water Filtration",
+      "abstract_terms": [
+        "essentially",
+        "chemicals",
+        "pathogens",
+        "preserving"
+      ],
+      "relevant": {
+        "69dec9ff4e2d2a5b77ecf8d1": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.323Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-38",
+      "query": "combinations colloids binders",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca014e2d2a5b77ecfe0d",
+      "source_title": "On the effect of particle surface chemistry in film stratification and morphology regulation",
+      "abstract_terms": [
+        "combinations",
+        "colloids",
+        "binders",
+        "formulate"
+      ],
+      "relevant": {
+        "69deca014e2d2a5b77ecfe0d": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.337Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-39",
+      "query": "twitter customer acquisition",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca024e2d2a5b77ecff3b",
+      "source_title": "User engagement for mobile payment service providers – introducing the social media engagement model",
+      "abstract_terms": [
+        "twitter",
+        "customer",
+        "acquisition",
+        "relationship"
+      ],
+      "relevant": {
+        "69deca024e2d2a5b77ecff3b": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.351Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-abstract-40",
+      "query": "adducts between identified",
+      "type": "hard_abstract_gap",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca024e2d2a5b77ed0137",
+      "source_title": "Reactions of [Fe2(η-C5H5)2(CO)2(L)(CNMe)](L = CO or CNMe) with lewis acids resulting in adduct formation, dimer scission or both. Structure of[Fe(η-C5H5)(CO)(CNMe)2] [BF4]",
+      "abstract_terms": [
+        "adducts",
+        "between",
+        "identified",
+        "possible"
+      ],
+      "relevant": {
+        "69deca024e2d2a5b77ed0137": 3
+      },
+      "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
+      "calibrated_at": "2026-06-21T22:45:00.373Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-paraphrase-45",
+      "query": "energy work on inductance profiles",
+      "type": "hard_paraphrase",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9fc4e2d2a5b77ecf286",
+      "source_title": "Study of Different Inductance Profiles of SynRM Coupled to Constant Torque Load",
+      "lexical_overlap": 0.5,
+      "relevant": {
+        "69dec9fc4e2d2a5b77ecf286": 2
+      },
+      "notes": "Natural-language paraphrase with low title token overlap",
+      "calibrated_at": "2026-06-21T22:45:00.689Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-paraphrase-46",
+      "query": "research investigating diatom and source and biofuel mechanisms",
+      "type": "hard_paraphrase",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9fe4e2d2a5b77ecf6ac",
+      "source_title": "Diatom: Source of Biofuel and Active Green Anode Material for Advanced Energy Storage Application",
+      "lexical_overlap": 0.5,
+      "relevant": {
+        "69dec9fe4e2d2a5b77ecf6ac": 2
+      },
+      "notes": "Natural-language paraphrase with low title token overlap",
+      "calibrated_at": "2026-06-21T22:45:00.706Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-paraphrase-48",
+      "query": "materials science work on bifurcation first",
+      "type": "hard_paraphrase",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca014e2d2a5b77ecfe4a",
+      "source_title": "Bifurcation analysis of first and second order Benney equations for viscoelastic fluid flowing down a vertical plane",
+      "lexical_overlap": 0.4,
+      "relevant": {
+        "69deca014e2d2a5b77ecfe4a": 2
+      },
+      "notes": "Natural-language paraphrase with low title token overlap",
+      "calibrated_at": "2026-06-21T22:45:00.775Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-paraphrase-49",
+      "query": "research investigating spin and spectroscopy and shape mechanisms",
+      "type": "hard_paraphrase",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69deca024e2d2a5b77ed0073",
+      "source_title": "High spin spectroscopy and shape evolution in Cd 105",
+      "lexical_overlap": 0.5,
+      "relevant": {
+        "69deca024e2d2a5b77ed0073": 2
+      },
+      "notes": "Natural-language paraphrase with low title token overlap",
+      "calibrated_at": "2026-06-21T22:45:00.787Z",
+      "calibrated_top_k": 50
+    }
+  ]
+}

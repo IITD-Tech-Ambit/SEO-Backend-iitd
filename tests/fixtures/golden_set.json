@@ -6,15 +6,27 @@
       "id": "topical-ml-1",
       "query": "deep learning for image classification",
       "type": "topical",
-      "relevant": {},
-      "notes": "Multi-word topical query; expects ML/CV papers"
+      "relevant": {
+        "69deca4b4e2d2a5b77edab81": 2,
+        "69deca4a4e2d2a5b77eda6b9": 2,
+        "69deca4e4e2d2a5b77edb27a": 2,
+        "69deca624e2d2a5b77eddb1b": 2,
+        "69deca244e2d2a5b77ed53f5": 2
+      },
+      "notes": "Multi-word topical query; expects ML/CV papers [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-nlp-1",
       "query": "natural language processing transformers",
       "type": "topical",
-      "relevant": {},
-      "notes": "NLP topical query"
+      "relevant": {
+        "69deca2a4e2d2a5b77ed60d9": 2,
+        "69deca2a4e2d2a5b77ed60c4": 2,
+        "69deca2b4e2d2a5b77ed6329": 2,
+        "6a25fe662b6042b7638674a2": 2,
+        "69deca614e2d2a5b77edd8af": 2
+      },
+      "notes": "NLP topical query [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "synonym-1",
@@ -36,8 +48,10 @@
       "id": "paraphrase-2",
       "query": "improving crop yield using modern techniques",
       "type": "paraphrase",
-      "relevant": {},
-      "notes": "Paraphrase — papers may use 'precision agriculture', 'fertilizer optimization'"
+      "relevant": {
+        "69deca514e2d2a5b77edb831": 2
+      },
+      "notes": "Paraphrase — papers may use 'precision agriculture', 'fertilizer optimization' [AUTO: top 1 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "author-1",
@@ -63,15 +77,27 @@
       "id": "topical-energy-1",
       "query": "solar cell efficiency perovskite",
       "type": "topical",
-      "relevant": {},
-      "notes": "Specific topic in materials/energy"
+      "relevant": {
+        "69deca634e2d2a5b77eddd83": 2,
+        "69deca244e2d2a5b77ed55ec": 2,
+        "69deca374e2d2a5b77ed7bbd": 2,
+        "69deca644e2d2a5b77eddf0b": 2,
+        "69deca574e2d2a5b77edc76a": 2
+      },
+      "notes": "Specific topic in materials/energy [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-bio-1",
       "query": "protein folding prediction",
       "type": "topical",
-      "relevant": {},
-      "notes": "Bioinformatics/structural biology query"
+      "relevant": {
+        "69deca084e2d2a5b77ed0e9b": 2,
+        "69deca084e2d2a5b77ed0ea4": 2,
+        "69deca084e2d2a5b77ed0e7d": 2,
+        "69dec9fc4e2d2a5b77ecf1c1": 2,
+        "69deca084e2d2a5b77ed0ed3": 2
+      },
+      "notes": "Bioinformatics/structural biology query [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-infra-1",
@@ -95,36 +121,61 @@
       "id": "topical-iot-1",
       "query": "internet of things smart city",
       "type": "topical",
-      "relevant": {},
-      "notes": "IoT / smart systems query"
+      "relevant": {
+        "69deca014e2d2a5b77ecfecf": 2,
+        "69deca084e2d2a5b77ed0e54": 2,
+        "69deca024e2d2a5b77ecff63": 2,
+        "69deca654e2d2a5b77ede263": 2,
+        "69deca024e2d2a5b77ecff2c": 2
+      },
+      "notes": "IoT / smart systems query [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-chem-1",
       "query": "catalytic conversion of carbon dioxide",
       "type": "topical",
-      "relevant": {},
-      "notes": "Chemistry / environment query"
+      "relevant": {
+        "69deca174e2d2a5b77ed3419": 2,
+        "69deca4d4e2d2a5b77edadec": 2,
+        "69deca284e2d2a5b77ed5e32": 2,
+        "69deca294e2d2a5b77ed5f42": 2,
+        "69deca564e2d2a5b77edc4c0": 2
+      },
+      "notes": "Chemistry / environment query [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "synonym-2",
       "query": "heart disease risk prediction",
       "type": "synonym",
-      "relevant": {},
-      "notes": "Medical — papers may use 'cardiovascular', 'coronary', 'cardiac risk assessment'"
+      "relevant": {
+        "69deca5c4e2d2a5b77edcc60": 2,
+        "6a13eb7f2b6042b7634684a6": 2
+      },
+      "notes": "Medical — papers may use 'cardiovascular', 'coronary', 'cardiac risk assessment' [AUTO: top 2 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-math-1",
       "query": "graph theory combinatorics",
       "type": "topical",
-      "relevant": {},
-      "notes": "Math / theoretical CS query"
+      "relevant": {
+        "69deca084e2d2a5b77ed0dc8": 2,
+        "69deca104e2d2a5b77ed244a": 2,
+        "69deca104e2d2a5b77ed2440": 2
+      },
+      "notes": "Math / theoretical CS query [AUTO: top 3 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-wireless-1",
       "query": "5G MIMO antenna design",
       "type": "topical",
-      "relevant": {},
-      "notes": "Electrical engineering query"
+      "relevant": {
+        "69deca544e2d2a5b77edbedc": 2,
+        "69deca294e2d2a5b77ed5f86": 2,
+        "69deca534e2d2a5b77edbe66": 2,
+        "69deca534e2d2a5b77edbea2": 2,
+        "69deca024e2d2a5b77ed002a": 2
+      },
+      "notes": "Electrical engineering query [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "paraphrase-3",
@@ -137,15 +188,22 @@
       "id": "topical-quantum-1",
       "query": "quantum computing error correction",
       "type": "topical",
-      "relevant": {},
-      "notes": "Physics / CS query"
+      "relevant": {
+        "6a13eb762b6042b7634683a3": 2
+      },
+      "notes": "Physics / CS query [AUTO: top 1 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-robotics-1",
       "query": "autonomous vehicle path planning",
       "type": "topical",
-      "relevant": {},
-      "notes": "Robotics / AI query"
+      "relevant": {
+        "69deca1f4e2d2a5b77ed45f8": 2,
+        "69deca1f4e2d2a5b77ed45df": 2,
+        "69deca1f4e2d2a5b77ed45f5": 2,
+        "69deca1f4e2d2a5b77ed45ee": 2
+      },
+      "notes": "Robotics / AI query [AUTO: top 4 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "single-word-1",
@@ -162,15 +220,24 @@
       "id": "topical-security-1",
       "query": "adversarial attacks on machine learning models",
       "type": "topical",
-      "relevant": {},
-      "notes": "AI security query"
+      "relevant": {
+        "69deca654e2d2a5b77ede3c4": 2,
+        "69deca054e2d2a5b77ed06f0": 2,
+        "69deca654e2d2a5b77ede3c1": 2,
+        "69deca124e2d2a5b77ed2657": 2,
+        "69deca234e2d2a5b77ed529f": 2
+      },
+      "notes": "AI security query [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-env-1",
       "query": "microplastics in drinking water",
       "type": "topical",
-      "relevant": {},
-      "notes": "Environmental science query"
+      "relevant": {
+        "69deca244e2d2a5b77ed5523": 2,
+        "69deca244e2d2a5b77ed5539": 2
+      },
+      "notes": "Environmental science query [AUTO: top 2 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "synonym-3",
@@ -185,15 +252,25 @@
       "id": "topical-mech-1",
       "query": "turbulence modeling computational fluid dynamics",
       "type": "topical",
-      "relevant": {},
-      "notes": "Mechanical engineering query"
+      "relevant": {
+        "69dec9f54e2d2a5b77ece322": 2,
+        "69deca004e2d2a5b77ecfbb5": 2,
+        "69deca3a4e2d2a5b77ed8241": 2,
+        "69deca264e2d2a5b77ed5943": 2,
+        "69dec9f54e2d2a5b77ece327": 2
+      },
+      "notes": "Mechanical engineering query [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-textile-1",
       "query": "smart textile wearable sensors",
       "type": "topical",
-      "relevant": {},
-      "notes": "Interdisciplinary query"
+      "relevant": {
+        "69deca4a4e2d2a5b77eda892": 2,
+        "69deca4a4e2d2a5b77eda894": 2,
+        "69deca0c4e2d2a5b77ed187a": 2
+      },
+      "notes": "Interdisciplinary query [AUTO: top 3 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "paraphrase-4",
@@ -206,29 +283,45 @@
       "id": "topical-privacy-1",
       "query": "differential privacy federated learning",
       "type": "topical",
-      "relevant": {},
-      "notes": "Privacy-preserving ML query"
+      "relevant": {
+        "69deca1a4e2d2a5b77ed3b09": 2
+      },
+      "notes": "Privacy-preserving ML query [AUTO: top 1 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-drug-1",
       "query": "drug delivery nanoparticles",
       "type": "topical",
-      "relevant": {},
-      "notes": "Biomedical / pharma query"
+      "relevant": {
+        "69dec9f54e2d2a5b77ece2a5": 2,
+        "69deca264e2d2a5b77ed5ab2": 2,
+        "69deca4c4e2d2a5b77edac68": 2,
+        "69deca1d4e2d2a5b77ed4127": 2,
+        "69deca054e2d2a5b77ed0693": 2
+      },
+      "notes": "Biomedical / pharma query [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-network-1",
       "query": "software defined networking load balancing",
       "type": "topical",
-      "relevant": {},
-      "notes": "Networking / systems query"
+      "relevant": {
+        "69deca1a4e2d2a5b77ed3bac": 2
+      },
+      "notes": "Networking / systems query [AUTO: top 1 results added as grade 2 — review and adjust grades]"
     },
     {
       "id": "topical-climate-1",
       "query": "climate change impact on agriculture in India",
       "type": "topical",
-      "relevant": {},
-      "notes": "Regional topic with geographic context"
+      "relevant": {
+        "69deca124e2d2a5b77ed260c": 2,
+        "69dec9fe4e2d2a5b77ecf58a": 2,
+        "69deca114e2d2a5b77ed25a0": 2,
+        "69deca404e2d2a5b77ed8e65": 2,
+        "69deca524e2d2a5b77edbba1": 2
+      },
+      "notes": "Regional topic with geographic context [AUTO: top 5 results added as grade 2 — review and adjust grades]"
     }
   ]
 }

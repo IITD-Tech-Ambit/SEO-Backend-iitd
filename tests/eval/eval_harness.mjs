@@ -26,14 +26,16 @@ const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.P
 const ROOT_BASE = API_BASE.replace(/\/api\/v1$/, '');
 const RERANK_OVERRIDE = process.env.RERANK_OVERRIDE; // 'on', 'off', or unset (runs both)
 
-async function searchQuery(query, { mode = 'advanced', sort = 'relevance', perPage = 50 } = {}) {
+async function searchQuery(query, { mode = 'advanced', sort = 'relevance', perPage = 50, rerank } = {}) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
+        const body = { query, mode, sort, per_page: perPage, page: 1 };
+        if (rerank === false) body.rerank = false;
         const res = await fetch(`${API_BASE}/search`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, mode, sort, per_page: perPage, page: 1 }),
+            body: JSON.stringify(body),
             signal: controller.signal,
         });
         clearTimeout(timeoutId);
@@ -45,7 +47,7 @@ async function searchQuery(query, { mode = 'advanced', sort = 'relevance', perPa
     }
 }
 
-async function runConfig(goldenSet, configLabel, { mode = 'advanced', sort = 'relevance' } = {}) {
+async function runConfig(goldenSet, configLabel, { mode = 'advanced', sort = 'relevance', rerank } = {}) {
     const results = [];
     const skipped = [];
     const errors = [];
@@ -57,7 +59,7 @@ async function runConfig(goldenSet, configLabel, { mode = 'advanced', sort = 're
         }
 
         try {
-            const resp = await searchQuery(entry.query, { mode, sort });
+            const resp = await searchQuery(entry.query, { mode, sort, rerank });
             const retrievedIds = (resp.results || []).map(r => r.mongo_id || r._id);
             const metrics = computeAll(retrievedIds, entry.relevant);
             results.push({ id: entry.id, query: entry.query, type: entry.type, ...metrics });
@@ -83,6 +85,8 @@ function computeCategoryBreakdown(perQuery) {
         breakdown[type] = {
             count: n,
             recall_50: rows.reduce((s, r) => s + (r.recall_50 ?? 0), 0) / n,
+            precision_1: rows.reduce((s, r) => s + (r.precision_1 ?? 0), 0) / n,
+            precision_5: rows.reduce((s, r) => s + (r.precision_5 ?? 0), 0) / n,
             precision_10: rows.reduce((s, r) => s + (r.precision_10 ?? 0), 0) / n,
             ndcg_10: rows.reduce((s, r) => s + (r.ndcg_10 ?? 0), 0) / n,
             mrr: rows.reduce((s, r) => s + (r.mrr ?? 0), 0) / n,
@@ -108,15 +112,15 @@ function printReport(report, { verbose = false } = {}) {
 
     if (verbose && report.perQuery.length > 0) {
         console.log(`\n  Per-query results (${report.perQuery.length} evaluated):`);
-        console.log(`  ${'─'.repeat(66)}`);
+        console.log(`  ${'─'.repeat(86)}`);
         console.log(
-            `  ${'Query ID'.padEnd(22)} ${'Type'.padEnd(18)} R@50    P@10    nDCG@10 MRR`
+            `  ${'Query ID'.padEnd(22)} ${'Type'.padEnd(18)} R@50    P@1     P@5     P@10    nDCG@10 MRR`
         );
-        console.log(`  ${'─'.repeat(66)}`);
+        console.log(`  ${'─'.repeat(86)}`);
         for (const r of report.perQuery) {
             const fmt = (v) => v === null ? 'N/A   ' : v.toFixed(3).padStart(6);
             console.log(
-                `  ${r.id.padEnd(22)} ${r.type.padEnd(18)} ${fmt(r.recall_50)} ${fmt(r.precision_10)} ${fmt(r.ndcg_10)} ${fmt(r.mrr)}`
+                `  ${r.id.padEnd(22)} ${r.type.padEnd(18)} ${fmt(r.recall_50)} ${fmt(r.precision_1)} ${fmt(r.precision_5)} ${fmt(r.precision_10)} ${fmt(r.ndcg_10)} ${fmt(r.mrr)}`
             );
         }
     }
@@ -133,16 +137,16 @@ function printReport(report, { verbose = false } = {}) {
 
     if (catKeys.length > 0) {
         console.log(`\n  Per-category breakdown:`);
-        console.log(`  ${'─'.repeat(66)}`);
+        console.log(`  ${'─'.repeat(86)}`);
         console.log(
-            `  ${'Category'.padEnd(22)} ${'N'.padStart(3)}   R@50    P@10    nDCG@10 MRR`
+            `  ${'Category'.padEnd(22)} ${'N'.padStart(3)}   R@50    P@1     P@5     P@10    nDCG@10 MRR`
         );
-        console.log(`  ${'─'.repeat(66)}`);
+        console.log(`  ${'─'.repeat(86)}`);
         const fmt = (v) => v.toFixed(3).padStart(6);
         for (const type of catKeys) {
             const c = breakdown[type];
             console.log(
-                `  ${type.padEnd(22)} ${String(c.count).padStart(3)}  ${fmt(c.recall_50)} ${fmt(c.precision_10)} ${fmt(c.ndcg_10)} ${fmt(c.mrr)}`
+                `  ${type.padEnd(22)} ${String(c.count).padStart(3)}  ${fmt(c.recall_50)} ${fmt(c.precision_1)} ${fmt(c.precision_5)} ${fmt(c.precision_10)} ${fmt(c.ndcg_10)} ${fmt(c.mrr)}`
             );
         }
     }
@@ -150,6 +154,8 @@ function printReport(report, { verbose = false } = {}) {
     console.log(`\n  Aggregate metrics:`);
     const a = report.average;
     console.log(`    Recall@50:    ${a.recall_50 !== null ? a.recall_50.toFixed(4) : 'N/A'}`);
+    console.log(`    Precision@1:  ${a.precision_1 !== null ? a.precision_1.toFixed(4) : 'N/A'}`);
+    console.log(`    Precision@5:  ${a.precision_5 !== null ? a.precision_5.toFixed(4) : 'N/A'}`);
     console.log(`    Precision@10: ${a.precision_10 !== null ? a.precision_10.toFixed(4) : 'N/A'}`);
     console.log(`    nDCG@10:      ${a.ndcg_10 !== null ? a.ndcg_10.toFixed(4) : 'N/A'}`);
     console.log(`    MRR:          ${a.mrr !== null ? a.mrr.toFixed(4) : 'N/A'}`);
@@ -158,18 +164,18 @@ function printReport(report, { verbose = false } = {}) {
 }
 
 function printComparison(reports) {
-    console.log(`\n${'='.repeat(70)}`);
+    console.log(`\n${'='.repeat(90)}`);
     console.log(`  COMPARISON ACROSS CONFIGS`);
-    console.log(`${'='.repeat(70)}`);
+    console.log(`${'='.repeat(90)}`);
     console.log(
-        `  ${'Config'.padEnd(30)} R@50    P@10    nDCG@10 MRR`
+        `  ${'Config'.padEnd(30)} R@50    P@1     P@5     P@10    nDCG@10 MRR`
     );
-    console.log(`  ${'─'.repeat(60)}`);
+    console.log(`  ${'─'.repeat(80)}`);
     const fmt = (v) => v === null ? 'N/A   ' : v.toFixed(4).padStart(7);
     for (const r of reports) {
         const a = r.average;
         console.log(
-            `  ${r.configLabel.padEnd(30)} ${fmt(a.recall_50)} ${fmt(a.precision_10)} ${fmt(a.ndcg_10)} ${fmt(a.mrr)}`
+            `  ${r.configLabel.padEnd(30)} ${fmt(a.recall_50)} ${fmt(a.precision_1)} ${fmt(a.precision_5)} ${fmt(a.precision_10)} ${fmt(a.ndcg_10)} ${fmt(a.mrr)}`
         );
     }
 
@@ -186,7 +192,7 @@ function printComparison(reports) {
             };
             console.log(
                 `  ${'  Δ vs ' + reports[0].configLabel}`.substring(0,30).padEnd(30) +
-                ` ${delta('recall_50')} ${delta('precision_10')} ${delta('ndcg_10')} ${delta('mrr')}`
+                ` ${delta('recall_50')} ${delta('precision_1')} ${delta('precision_5')} ${delta('precision_10')} ${delta('ndcg_10')} ${delta('mrr')}`
             );
         }
     }
@@ -238,8 +244,8 @@ async function main() {
         reports.push(basicReport);
 
         // 2. Advanced mode — first stage only (rerank disabled via sort=impact which skips rerank)
-        console.log('\n[2/3] Advanced mode (hybrid BM25+kNN, no rerank)...');
-        const noRerankReport = await runConfig(goldenSet, 'advanced (no rerank)', { mode: 'advanced', sort: 'impact' });
+        console.log('\n[2/3] Advanced mode (normalized hybrid BM25+kNN, no rerank)...');
+        const noRerankReport = await runConfig(goldenSet, 'advanced (no rerank)', { mode: 'advanced', sort: 'normalized', rerank: false });
         printReport(noRerankReport, { verbose });
         reports.push(noRerankReport);
 
