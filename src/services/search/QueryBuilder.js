@@ -1,6 +1,25 @@
 import { getSpellingVariant } from './SpellingVariants.js';
 
 /**
+ * Coerce a refinement chain (array, single string, or null) into a clean ordered list of
+ * trimmed, non-empty, de-duplicated terms.
+ */
+export function normalizeChain(refineChain) {
+    const arr = Array.isArray(refineChain)
+        ? refineChain
+        : (refineChain != null && String(refineChain).trim() ? [refineChain] : []);
+    const seen = new Set();
+    const out = [];
+    for (const raw of arr) {
+        const term = (raw == null ? '' : String(raw)).trim();
+        if (!term || seen.has(term.toLowerCase())) continue;
+        seen.add(term.toLowerCase());
+        out.push(term);
+    }
+    return out;
+}
+
+/**
  * Constructs every OpenSearch query body and clause used by search: basic BM25,
  * hybrid (BM25 + kNN), impact-weighted, and normalized-hybrid, plus the shared
  * author/field clause builders.
@@ -207,18 +226,32 @@ export default class QueryBuilder {
     }
 
     /**
-     * Author-only search-on-search: `anchorText` pins the person; `queryNarrow`
-     * matches title + abstract inside that person's papers.
+     * Author-only search-on-search: `anchorText` pins the person; `queryNarrow` (plus any
+     * `extraNarrowTerms` from earlier refinement steps) matches title + abstract inside that
+     * person's papers. Each narrow term is its own MUST so the person's corpus narrows step by step.
      */
-    buildAuthorRefineNarrowMust(queryNarrow, anchorText, anchorFacultyIds, matchOpts = {}, anchorKerberosIds = null) {
+    buildAuthorRefineNarrowMust(queryNarrow, anchorText, anchorFacultyIds, matchOpts = {}, anchorKerberosIds = null, extraNarrowTerms = []) {
+        const narrowTerms = [...extraNarrowTerms, queryNarrow].filter(t => t && t.trim());
         return {
             bool: {
                 must: [
                     this.buildConstrainedSearchInClause(anchorText, ['author'], matchOpts, anchorFacultyIds, anchorKerberosIds),
-                    this.buildConstrainedSearchInClause(queryNarrow, ['title', 'abstract'], matchOpts)
+                    ...narrowTerms.map(t => this.buildConstrainedSearchInClause(t, ['title', 'abstract'], matchOpts))
                 ]
             }
         };
+    }
+
+    /**
+     * Strict lexical clauses (no fuzziness, no kNN) for each prior refinement term, intended for
+     * OpenSearch FILTER context. In filter context a term can only remove candidates from the
+     * intersection, never add, so the result set narrows monotonically as the chain grows.
+     */
+    buildRefineFilterClauses(refineChain = [], searchIn = null, { authorScoped = false } = {}) {
+        if (!Array.isArray(refineChain) || refineChain.length === 0) return [];
+        return refineChain
+            .filter(term => term && term.trim())
+            .map(term => this.buildLiteralPrimaryClause(term, searchIn, { authorScoped }));
     }
 
     /**
@@ -303,14 +336,14 @@ export default class QueryBuilder {
      * advanced — without flooring the looser fuzzy/partial matches that advanced additionally
      * recalls (which would let near-gibberish fuzzy matches clear the relevance bar).
      */
-    buildLiteralPrimaryClause(query, searchIn = null, { authorScoped = false, facultyAuthorIds = null, facultyKerberosIds = null, authorRefineNarrow = false, refineWithinAnchor = null } = {}) {
+    buildLiteralPrimaryClause(query, searchIn = null, { authorScoped = false, facultyAuthorIds = null, facultyKerberosIds = null, authorRefineNarrow = false, refineWithinAnchor = null, refineNarrowExtra = [] } = {}) {
         const literalFields = this.filters.getSearchFields(searchIn, { literalMatch: true });
         const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
         const csiOpts = { authorScoped, literalMatch: true };
 
         if (searchIn && searchIn.length > 0) {
             if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-                return this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
+                return this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds, refineNarrowExtra);
             }
             return this.buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         }
@@ -350,20 +383,28 @@ export default class QueryBuilder {
      * Basic mode: strict BM25 only (no embeddings, no fuzziness on the primary match).
      * cross_fields + operator:and for precise multi-word matching. Supports refine_within.
      */
-    buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineWithin = null, facultyAuthorIds = null, refineFacultyIds = null, authorRefineNarrow = false, facultyKerberosIds = null, refineKerberosIds = null, { authorScoped = false } = {}) {
+    buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineChain = [], facultyAuthorIds = null, refineFacultyIds = null, authorRefineNarrow = false, facultyKerberosIds = null, refineKerberosIds = null, { authorScoped = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
+        const chain = normalizeChain(refineChain);
 
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
         const searchAllFields = !searchIn || searchIn.length === 0;
         const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
+        const isAuthorNarrow = authorRefineNarrow && authorOnly;
 
-        const primaryOpts = { authorScoped, facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineWithinAnchor: refineWithin };
+        const primaryOpts = {
+            authorScoped, facultyAuthorIds, facultyKerberosIds, authorRefineNarrow,
+            refineWithinAnchor: isAuthorNarrow ? chain[0] : null,
+            refineNarrowExtra: isAuthorNarrow ? chain.slice(1) : []
+        };
         const mustClauses = [this.buildLiteralPrimaryClause(query, searchIn, primaryOpts)];
-        if (refineWithin && !(authorRefineNarrow && authorOnly)) {
-            const refineOpts = { authorScoped, facultyAuthorIds: refineFacultyIds, facultyKerberosIds: refineKerberosIds };
-            mustClauses.push(this.buildLiteralPrimaryClause(refineWithin, searchIn, refineOpts));
+
+        // Standard (non-author-narrow) prior terms become strict lexical FILTERS so the
+        // result set narrows monotonically without affecting scoring of the newest query.
+        if (!isAuthorNarrow) {
+            filterClauses.push(...this.buildRefineFilterClauses(chain, searchIn, { authorScoped }));
         }
 
         const boostClauses = [];
@@ -421,10 +462,11 @@ export default class QueryBuilder {
      * Advanced hybrid (BM25 + kNN) for date/citations sort, where primary ordering is by
      * field rather than score. Either BM25 or kNN can recall a candidate.
      */
-    buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false } = {}) {
+    buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [] } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
+        const refineNarrowExtra = normalizeChain(refineChain).slice(1);
 
         const searchAllFields = !searchIn || searchIn.length === 0;
         const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
@@ -449,7 +491,7 @@ export default class QueryBuilder {
         const csiOpts = { fuzziness: 'AUTO', authorScoped };
         let bm25Clause;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Clause = this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
+            bm25Clause = this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds, refineNarrowExtra);
         } else if (searchIn && searchIn.length > 0) {
             bm25Clause = this.buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
@@ -488,10 +530,11 @@ export default class QueryBuilder {
     /**
      * Impact-weighted hybrid: combines relevance with log-scale citation count and recency.
      */
-    buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false } = {}) {
+    buildImpactQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [] } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
+        const refineNarrowExtra = normalizeChain(refineChain).slice(1);
         const currentYear = new Date().getFullYear();
         const searchAllFields = !searchIn || searchIn.length === 0;
         const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
@@ -511,7 +554,7 @@ export default class QueryBuilder {
         const csiOpts = { fuzziness: 'AUTO', authorScoped };
         let bm25Clause;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Clause = this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
+            bm25Clause = this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds, refineNarrowExtra);
         } else if (searchIn && searchIn.length > 0) {
             bm25Clause = this.buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
@@ -606,11 +649,12 @@ export default class QueryBuilder {
         return base;
     }
 
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, bm25HitCount = null, candidateK = null } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, bm25HitCount = null, candidateK = null, refineChain = [] } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
         const weights = this._resolveHybridWeights(bm25HitCount, candidateK);
+        const refineNarrowExtra = normalizeChain(refineChain).slice(1);
         const searchAllFields = !searchIn || searchIn.length === 0;
         const authorOnly = searchIn?.length === 1 && searchIn[0] === 'author';
 
@@ -621,7 +665,7 @@ export default class QueryBuilder {
         const csiOpts = { ...fuzzSetting, authorScoped };
         let bm25Clause;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
-            bm25Clause = this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds);
+            bm25Clause = this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds, refineNarrowExtra);
         } else if (searchIn && searchIn.length > 0) {
             bm25Clause = this.buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
@@ -642,7 +686,7 @@ export default class QueryBuilder {
         // Floor only the STRICT literal matches basic mode would return (not the looser fuzzy
         // recall) so basic stays a subset of advanced without admitting near-gibberish fuzzy hits.
         const lexicalFloorClause = this.buildLiteralPrimaryClause(query, searchIn, {
-            authorScoped, facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineWithinAnchor
+            authorScoped, facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineWithinAnchor, refineNarrowExtra
         });
 
         const boostClauses = [];

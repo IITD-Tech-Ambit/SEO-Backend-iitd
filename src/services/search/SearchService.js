@@ -4,7 +4,7 @@ import '../../models/departments.js'; // Ensure Department model is registered f
 import { buildSearchConfig } from './constants.js';
 import FilterBuilder from './FilterBuilder.js';
 import FacultyRosterService from './FacultyRosterService.js';
-import QueryBuilder from './QueryBuilder.js';
+import QueryBuilder, { normalizeChain } from './QueryBuilder.js';
 import ResultHydrator from './ResultHydrator.js';
 import RerankService from './RerankService.js';
 import SuggestionService from './SuggestionService.js';
@@ -99,20 +99,22 @@ export default class SearchService {
      * Advanced: BM25 (fuzziness AUTO) + hybrid kNN, gated by a BM25 pre-check, with a fuzzy
      *   fallback if the primary query returns nothing.
      */
-    async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null, rerank = null }) {
+    async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null, refine_chain = null, rerank = null }) {
         const searchInNorm = this.filters.normalizeSearchIn(search_in);
+        // Multi-step refinement: each prior term narrows the corpus. chain[0] is the oldest.
+        const refineChain = this._normalizeRefineChain(refine_chain, refine_within);
         // Warm the IITD roster before building queries; all author-name matching is gated to it.
         await this.roster.getAll();
         await this._resolveAuthorKerberos(filters);
 
         const cachePayload = JSON.stringify({
             query, filters, sort, page, per_page,
-            search_in: searchInNorm, mode, refine_within: refine_within || null,
+            search_in: searchInNorm, mode, refine_chain: refineChain,
             rerank: rerank === false ? false : null
         });
         const cacheKey = `search:${crypto.createHash('sha256').update(cachePayload).digest('hex').slice(0, 16)}`;
 
-        this.logger.info({ cacheKey, query, filters, sort, search_in: searchInNorm, mode, refine_within }, 'Search request');
+        this.logger.info({ cacheKey, query, filters, sort, search_in: searchInNorm, mode, refine_chain: refineChain }, 'Search request');
 
         try {
             const cached = await this.redis.get(cacheKey);
@@ -130,8 +132,9 @@ export default class SearchService {
         const refineKerberosIds = null;
         let authorRefineNarrow = false;
         if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
-            if (refine_within?.trim()) {
-                const resolved = await this.roster.resolveScopusIdsForAuthorQuery(refine_within.trim());
+            // Author-only: chain[0] is the person anchor; the rest (+ query) narrow by topic.
+            if (refineChain.length >= 1) {
+                const resolved = await this.roster.resolveScopusIdsForAuthorQuery(refineChain[0]);
                 facultyAuthorIds = resolved.scopusIds;
                 facultyKerberosIds = resolved.kerberosIds;
                 authorRefineNarrow = true;
@@ -148,24 +151,33 @@ export default class SearchService {
 
         if (mode === 'basic') {
             return this._runBasicSearch({
-                query, filters, sort, page, per_page, searchInNorm, refine_within,
+                query, filters, sort, page, per_page, searchInNorm, refineChain,
                 facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds,
                 cacheKey
             });
         }
 
         return this._runAdvancedSearch({
-            query, filters, sort, page, per_page, searchInNorm, refine_within,
+            query, filters, sort, page, per_page, searchInNorm, refineChain,
             facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds,
             cacheKey, rerank
         });
     }
 
-    async _runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refine_within, facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds, cacheKey }) {
+    /**
+     * Normalize the refinement chain, preferring the explicit `refine_chain` array and falling
+     * back to the legacy single `refine_within` string. Returns ordered, trimmed, deduped terms.
+     */
+    _normalizeRefineChain(refine_chain, refine_within) {
+        const source = (Array.isArray(refine_chain) && refine_chain.length > 0) ? refine_chain : refine_within;
+        return normalizeChain(source);
+    }
+
+    async _runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds, cacheKey }) {
         this.logger.info({ query, mode: 'basic' }, 'Running BASIC (BM25-only) search');
 
         const osQuery = this.queryBuilder.buildBasicQuery(
-            query, filters, page, per_page, sort, searchInNorm, refine_within,
+            query, filters, page, per_page, sort, searchInNorm, refineChain,
             facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds
         );
 
@@ -175,7 +187,7 @@ export default class SearchService {
 
         // Basic mode: strict BM25 only — no fuzzy fallback.
         if (total === 0) {
-            this.logger.info({ query, refine_within: !!refine_within }, 'Basic search: no hits (strict match)');
+            this.logger.info({ query, refine_chain: refineChain.length }, 'Basic search: no hits (strict match)');
             const suggestions = query.trim() ? await this.suggestions.getSuggestions(query) : [];
             return {
                 results: [],
@@ -207,14 +219,15 @@ export default class SearchService {
         return { ...response, cacheHit: false };
     }
 
-    async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refine_within, facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds, cacheKey, rerank = null }) {
+    async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds, cacheKey, rerank = null }) {
         this.logger.info({ query, mode: 'advanced' }, 'Running ADVANCED (hybrid) search');
 
         const embedding = await this.embeddingService.embedQuery(query);
+        const refineAnchor = authorRefineNarrow ? refineChain[0] : null;
 
         // BM25 pre-check: if nothing matches lexically (even fuzzy), skip hybrid kNN entirely,
         // otherwise the kNN arm always returns nearest neighbors — even for gibberish.
-        const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
+        const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds);
         if (bm25HitCount === 0) {
             this.logger.info({ query }, 'BM25 pre-check returned 0 hits — skipping hybrid search');
             const suggestions = await this.suggestions.getSuggestions(query);
@@ -236,26 +249,23 @@ export default class SearchService {
         // 'impact' -> citation/recency weighting. 'date'/'citations' -> field-ordered hybrid.
         let osQuery;
         if (sort === 'impact') {
-            osQuery = this.queryBuilder.buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
+            osQuery = this.queryBuilder.buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain });
         } else if (sort === 'relevance' || sort === 'normalized') {
-            osQuery = this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds, { bm25HitCount, candidateK: this.candidateK });
+            osQuery = this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { bm25HitCount, candidateK: this.candidateK, refineChain });
         } else {
-            osQuery = this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
+            osQuery = this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain });
         }
 
-        // Search-on-search: add the prior query as an additional BM25 MUST so refinement narrows.
-        if (refine_within && !authorRefineNarrow) {
-            const searchFields = this.filters.getHybridSearchFields(searchInNorm);
-            const refineClause = searchInNorm && searchInNorm.length > 0
-                ? this.queryBuilder.buildConstrainedSearchInClause(refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds, refineKerberosIds)
-                : this.queryBuilder.buildStrictBm25Must(refine_within, searchFields);
-            const mustArrays = [
-                osQuery.query?.bool?.must,
-                osQuery.query?.script_score?.query?.bool?.must,
-                osQuery.query?.function_score?.query?.bool?.must
+        // Multi-step search-on-search: every prior term becomes a strict lexical FILTER so the
+        // candidate pool can only shrink (monotonic narrowing), never re-broaden via fuzzy/kNN.
+        if (refineChain.length > 0 && !authorRefineNarrow) {
+            const refineFilters = this.queryBuilder.buildRefineFilterClauses(refineChain, searchInNorm, {});
+            const filterArrays = [
+                osQuery.query?.bool?.filter,
+                osQuery.query?.function_score?.query?.bool?.filter
             ].filter(Boolean);
-            if (mustArrays.length) mustArrays[0].push(refineClause);
-            this.logger.info({ refine_within }, 'Added refine_within constraint to advanced query');
+            if (filterArrays.length) filterArrays[0].push(...refineFilters);
+            this.logger.info({ refine_chain: refineChain }, 'Added refine_chain lexical filters to advanced query');
         }
 
         // Pagination: the top `candidateK` matches form the reranked window; pages beyond it are
@@ -306,7 +316,7 @@ export default class SearchService {
 
         if (total === 0) {
             this.logger.info({ query }, 'Primary search returned 0 results, attempting fuzzy fallback');
-            return this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refine_within, facultyKerberosIds);
+            return this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds);
         }
 
         let results = await this.hydrator.hydrateFromMongoDB(hits);
@@ -377,13 +387,14 @@ export default class SearchService {
      * BM25 pre-check: does at least one query token appear in at least one document?
      * Lenient (OR across terms) so partial-vocabulary queries pass, but gibberish does not.
      */
-    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null, facultyKerberosIds = null) {
+    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null) {
+        const chain = normalizeChain(refineChain);
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
-        const useAuthorRefine = authorRefineNarrow && authorOnly && refine_within?.trim();
+        const useAuthorRefine = authorRefineNarrow && authorOnly && chain.length >= 1;
 
         let preCheckClause;
         if (useAuthorRefine) {
-            preCheckClause = this.queryBuilder.buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds);
+            preCheckClause = this.queryBuilder.buildAuthorRefineNarrowMust(query, chain[0], facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds, chain.slice(1));
         } else if (search_in && search_in.length > 0) {
             preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
         } else {
@@ -407,10 +418,13 @@ export default class SearchService {
                 : textMatch;
         }
 
-        const response = await this.opensearch.search({
-            index: this.indexName,
-            body: { size: 0, query: preCheckClause }
-        });
+        // Prior refinement terms (standard path) become strict lexical filters: the pre-check must
+        // reflect the narrowed pool, so a refinement that yields nothing reports 0 hits.
+        const body = (!useAuthorRefine && chain.length > 0)
+            ? { size: 0, query: { bool: { must: [preCheckClause], filter: this.queryBuilder.buildRefineFilterClauses(chain, search_in, {}) } } }
+            : { size: 0, query: preCheckClause };
+
+        const response = await this.opensearch.search({ index: this.indexName, body });
         return response.body.hits.total.value;
     }
 
@@ -418,9 +432,10 @@ export default class SearchService {
      * Fuzzy fallback when the primary advanced query returns nothing. Requires a (fuzzy) BM25
      * match; kNN only boosts ranking. Skipped when refining (narrowing must not expand results).
      */
-    async _fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in, facultyAuthorIds = null, authorRefineNarrow = false, refine_within = null, facultyKerberosIds = null) {
-        if (refine_within && !authorRefineNarrow) {
-            this.logger.info({ query, refine_within }, 'Skipping fuzzy fallback: refine_within is active');
+    async _fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, search_in, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null) {
+        const chain = normalizeChain(refineChain);
+        if (chain.length > 0 && !authorRefineNarrow) {
+            this.logger.info({ query, refine_chain: chain }, 'Skipping fuzzy fallback: refinement is active');
             const suggestions = await this.suggestions.getSuggestions(query);
             return {
                 results: [],
@@ -440,11 +455,11 @@ export default class SearchService {
         const filterClauses = this.filters.buildFilters(filters);
 
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
-        const useAuthorRefine = authorRefineNarrow && authorOnly && refine_within?.trim();
+        const useAuthorRefine = authorRefineNarrow && authorOnly && chain.length >= 1;
 
         let fuzzyMust;
         if (useAuthorRefine) {
-            fuzzyMust = this.queryBuilder.buildAuthorRefineNarrowMust(query, refine_within, facultyAuthorIds, { fuzziness: 2 }, facultyKerberosIds);
+            fuzzyMust = this.queryBuilder.buildAuthorRefineNarrowMust(query, chain[0], facultyAuthorIds, { fuzziness: 2 }, facultyKerberosIds, chain.slice(1));
         } else if (search_in && search_in.length > 0) {
             fuzzyMust = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 2 }, facultyAuthorIds, facultyKerberosIds);
         } else {
@@ -613,7 +628,7 @@ export default class SearchService {
         return this.authorScoped.search(params);
     }
 
-    getAllFacultyForQuery(query, mode = 'advanced', search_in = null, refine_within = null, filters = null) {
-        return this.facultyForQuery.getAllFacultyForQuery(query, mode, search_in, refine_within, filters);
+    getAllFacultyForQuery(query, mode = 'advanced', search_in = null, refine_within = null, filters = null, refine_chain = null) {
+        return this.facultyForQuery.getAllFacultyForQuery(query, mode, search_in, refine_within, filters, refine_chain);
     }
 }

@@ -15,6 +15,8 @@
     "test:hard": "node --test tests/hard_retrieval.test.mjs",
     "test:eval": "node tests/eval/eval_harness.mjs",
     "test:eval:hard": "node tests/eval/eval_hard.mjs",
+    "test:invariants": "node --test tests/integration/search_invariants.test.mjs tests/integration/refinement_chain.test.mjs",
+    "test:refine": "node --test tests/integration/refinement_chain.test.mjs",
     "test:retrieval": "node --test tests/retrieval_quality.test.mjs tests/corpus_retrieval.test.mjs tests/hard_retrieval.test.mjs"
   },
   "dependencies": {

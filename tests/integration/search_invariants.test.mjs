@@ -139,6 +139,50 @@ describe('Invariant: search-on-search only narrows', () => {
     }
 });
 
+describe('Invariant: multi-step refine_chain narrows monotonically (count[n] <= count[n-1])', () => {
+    // Each step appends a term; the newest term is `query`, all prior terms are `refine_chain`.
+    const chains = [
+        ['energy', 'solar', 'power'],
+        ['learning', 'machine', 'deep'],
+    ];
+    for (const mode of ['basic', 'advanced']) {
+        for (const chain of chains) {
+            it(`${mode}: ${chain.join(' -> ')}`, async (t) => {
+                if (!serverUp) return t.skip('API not reachable');
+                let prevTotal = Infinity;
+                for (let n = 0; n < chain.length; n++) {
+                    const query = chain[n];
+                    const refine_chain = chain.slice(0, n);
+                    const { status, body } = await post('/search', { query, mode, per_page: 5, refine_chain });
+                    assert.equal(status, 200, `step ${n} should return 200`);
+                    const total = totalOf(body);
+                    assert.ok(
+                        total <= prevTotal,
+                        `step ${n} ("${query}", chain=[${refine_chain}]) total ${total} must be <= previous ${prevTotal}`
+                    );
+                    prevTotal = total;
+                }
+            });
+        }
+    }
+});
+
+describe('Invariant: legacy refine_within == single-element refine_chain', () => {
+    for (const mode of ['basic', 'advanced']) {
+        it(`${mode}: "energy" refined by "solar"`, async (t) => {
+            if (!serverUp) return t.skip('API not reachable');
+            const legacy = await post('/search', { query: 'energy', mode, per_page: 5, refine_within: 'solar' });
+            const chained = await post('/search', { query: 'energy', mode, per_page: 5, refine_chain: ['solar'] });
+            assert.equal(legacy.status, 200);
+            assert.equal(chained.status, 200);
+            assert.equal(
+                totalOf(chained.body), totalOf(legacy.body),
+                'refine_chain=[solar] must behave identically to refine_within="solar"'
+            );
+        });
+    }
+});
+
 describe('Invariant: People sidebar total matches the papers list total', () => {
     for (const q of ['machine learning', 'solar energy']) {
         it(`"${q}"`, async (t) => {

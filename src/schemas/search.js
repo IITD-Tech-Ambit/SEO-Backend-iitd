@@ -97,7 +97,13 @@ export const searchRequestSchema = {
         refine_within: {
             type: 'string',
             maxLength: 500,
-            description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
+            description: 'Original query to refine within. When set, results must match BOTH this AND the main query. Legacy single-step form of refine_chain.'
+        },
+        refine_chain: {
+            type: 'array',
+            items: { type: 'string', maxLength: 500 },
+            maxItems: 8,
+            description: 'Ordered prior queries (oldest first) for multi-step refinement. Results must match the main query AND every entry; each entry is applied as a strict lexical filter so the result set narrows monotonically.'
         },
         rerank: {
             type: 'boolean',
@@ -273,7 +279,13 @@ export const authorScopedSearchRequestSchema = {
         refine_within: {
             type: 'string',
             maxLength: 500,
-            description: 'Original query to refine within. When set, results must match BOTH this AND the main query.'
+            description: 'Original query to refine within. When set, results must match BOTH this AND the main query. Legacy single-step form of refine_chain.'
+        },
+        refine_chain: {
+            type: 'array',
+            items: { type: 'string', maxLength: 500 },
+            maxItems: 8,
+            description: 'Ordered prior queries (oldest first) for multi-step refinement; each entry is a strict lexical filter that narrows the result set.'
         },
         search_in: {
             type: 'array',
@@ -392,6 +404,11 @@ export const facultyForQueryRequestSchema = {
             type: 'string',
             maxLength: 500,
             description: 'Optional base query when refining (same as POST /search refine_within)'
+        },
+        refine_chain: {
+            type: 'string',
+            maxLength: 2000,
+            description: 'JSON-encoded array of ordered prior queries (oldest first) for multi-step refinement, matching POST /search refine_chain. Parsed and applied as strict lexical filters.'
         },
         filters: {
             type: 'string',

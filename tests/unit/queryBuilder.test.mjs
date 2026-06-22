@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import QueryBuilder from '../../src/services/search/QueryBuilder.js';
+import QueryBuilder, { normalizeChain } from '../../src/services/search/QueryBuilder.js';
 import FilterBuilder from '../../src/services/search/FilterBuilder.js';
 import { buildSearchConfig } from '../../src/services/search/constants.js';
 
@@ -111,4 +111,70 @@ test('buildConstrainedSearchInClause (author-only, no resolved ids) gates to ros
     const qb = makeQB(['111']);
     const clause = qb.buildConstrainedSearchInClause('basu', ['author'], { fuzziness: 'AUTO' });
     assert.deepEqual(clause.nested.query.bool.filter[0].terms['authors.author_id'], ['111']);
+});
+
+test('normalizeChain: trims, drops empties, dedupes case-insensitively, preserves order', () => {
+    assert.deepEqual(normalizeChain(null), []);
+    assert.deepEqual(normalizeChain('solar'), ['solar']);
+    assert.deepEqual(normalizeChain(['solar', ' battery ', '', 'Solar', 'lithium']), ['solar', 'battery', 'lithium']);
+});
+
+test('buildRefineFilterClauses: one strict literal clause per non-empty term', () => {
+    const qb = makeQB();
+    assert.deepEqual(qb.buildRefineFilterClauses([], null), []);
+    const clauses = qb.buildRefineFilterClauses(['solar', 'battery'], null);
+    assert.equal(clauses.length, 2);
+    // Strict literal clauses carry no fuzziness (deterministic membership for narrowing).
+    assert.ok(!JSON.stringify(clauses).includes('fuzziness'));
+});
+
+test('buildBasicQuery: prior chain terms go into FILTER context (not scoring must/should)', () => {
+    const qb = makeQB();
+    const body = qb.buildBasicQuery('lithium', {}, 1, 20, 'relevance', null, ['solar', 'battery']);
+    // The newest query is the only scoring MUST; prior terms are strict filters.
+    assert.equal(body.query.bool.must.length, 1);
+    // Two refinement filter clauses are present in the filter array.
+    assert.ok(body.query.bool.filter.length >= 2);
+});
+
+test('buildAuthorRefineNarrowMust: anchor + every narrow term becomes its own MUST', () => {
+    const qb = makeQB();
+    const clause = qb.buildAuthorRefineNarrowMust('lithium', 'basu', null, { fuzziness: 'AUTO' }, null, ['solar', 'battery']);
+    // 1 author anchor + 3 narrow terms (solar, battery, lithium).
+    assert.equal(clause.bool.must.length, 4);
+});
+
+test('buildAuthorRefineNarrowMust: empty/whitespace narrow terms are dropped', () => {
+    const qb = makeQB();
+    const clause = qb.buildAuthorRefineNarrowMust('lithium', 'basu', null, {}, null, ['', '  ', 'solar']);
+    // 1 anchor + solar + lithium (the blanks are ignored).
+    assert.equal(clause.bool.must.length, 3);
+});
+
+// In the advanced author-narrow path, the BM25 recall arm must carry anchor + every prior
+// topic term + the newest query as separate MUSTs so each step strictly narrows.
+const advancedAuthorNarrowBm25 = (body) =>
+    body.query.function_score.query.bool.must[0].bool.should[0];
+
+test('buildNormalizedHybridQuery (author-narrow + chain): BM25 arm ANDs anchor + all narrow terms', () => {
+    const qb = makeQB(['111']);
+    const body = qb.buildNormalizedHybridQuery(
+        'lithium', EMBED, {}, 1, 20, ['author'], ['111'], true, 'basu', null,
+        { refineChain: ['basu', 'solar', 'battery'] }
+    );
+    const bm25 = advancedAuthorNarrowBm25(body);
+    // anchor (basu) + solar + battery + lithium = 4 MUST clauses.
+    assert.equal(bm25.bool.must.length, 4);
+});
+
+test('buildHybridQuery (author-narrow + chain): BM25 arm ANDs anchor + all narrow terms', () => {
+    const qb = makeQB(['111']);
+    const body = qb.buildHybridQuery(
+        'lithium', EMBED, {}, 1, 20, 'date', ['author'], ['111'], true, 'basu', null,
+        { refineChain: ['basu', 'solar'] }
+    );
+    // For date/citations sort the query is a plain bool with the recall gate in must[0].
+    const bm25 = body.query.bool.must[0].bool.should[0];
+    // anchor (basu) + solar + lithium = 3 MUST clauses.
+    assert.equal(bm25.bool.must.length, 3);
 });

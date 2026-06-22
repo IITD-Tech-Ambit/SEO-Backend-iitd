@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { normalizeChain } from './QueryBuilder.js';
 
 /**
  * People sidebar (GET /search/faculty-for-query): all IITD faculty matching a query across
@@ -60,8 +61,9 @@ export default class FacultyForQueryService {
         }));
     }
 
-    async getAllFacultyForQuery(query, mode = 'advanced', search_in = null, refine_within = null, filters = null) {
+    async getAllFacultyForQuery(query, mode = 'advanced', search_in = null, refine_within = null, filters = null, refine_chain = null) {
         const searchInNorm = this.filterBuilder.normalizeSearchIn(search_in);
+        const refineChain = normalizeChain((Array.isArray(refine_chain) && refine_chain.length > 0) ? refine_chain : refine_within);
         await this.rosterService.getAll();
 
         // Apply the SAME facet filters as POST /search so counts describe the identical
@@ -88,7 +90,7 @@ export default class FacultyForQueryService {
                 type: 'faculty_for_query_nested',
                 mode,
                 search_in: searchInNorm,
-                refine_within: refine_within || null,
+                refine_chain: refineChain,
                 filters: effFilters
             }))
             .digest('hex').slice(0, 16);
@@ -110,8 +112,8 @@ export default class FacultyForQueryService {
         const refineKerberosIds = null;
         let authorRefineNarrow = false;
         if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
-            if (refine_within?.trim()) {
-                const resolved = await this.rosterService.resolveScopusIdsForAuthorQuery(refine_within.trim());
+            if (refineChain.length >= 1) {
+                const resolved = await this.rosterService.resolveScopusIdsForAuthorQuery(refineChain[0]);
                 facultyAuthorIds = resolved.scopusIds;
                 facultyKerberosIds = resolved.kerberosIds;
                 authorRefineNarrow = true;
@@ -121,6 +123,7 @@ export default class FacultyForQueryService {
                 facultyKerberosIds = resolved.kerberosIds;
             }
         }
+        const refineAnchor = authorRefineNarrow ? refineChain[0] : null;
 
         const facultyAggs = this.filterBuilder.facultyForQueryAggregations();
         const queryFilters = effFilters;
@@ -146,7 +149,7 @@ export default class FacultyForQueryService {
         if (mode === 'basic') {
             const base = this.queryBuilder.buildBasicQuery(
                 query, queryFilters, 1, 1, 'relevance',
-                searchInNorm, refine_within,
+                searchInNorm, refineChain,
                 facultyAuthorIds, refineFacultyIds, authorRefineNarrow,
                 facultyKerberosIds, refineKerberosIds
             );
@@ -156,22 +159,18 @@ export default class FacultyForQueryService {
             const base = this.queryBuilder.buildNormalizedHybridQuery(
                 query, embedding, queryFilters, 1, 1,
                 searchInNorm, facultyAuthorIds, authorRefineNarrow,
-                refine_within, facultyKerberosIds
+                refineAnchor, facultyKerberosIds,
+                { refineChain }
             );
-            if (refine_within && !authorRefineNarrow) {
-                const refineSearchFields = this.filterBuilder.getHybridSearchFields(searchInNorm);
-                const refineClause =
-                    searchInNorm && searchInNorm.length > 0
-                        ? this.queryBuilder.buildConstrainedSearchInClause(
-                            refine_within, searchInNorm, { fuzziness: 'AUTO' }, refineFacultyIds, refineKerberosIds
-                        )
-                        : this.queryBuilder.buildStrictBm25Must(refine_within, refineSearchFields);
-                const mustArrays = [
-                    base.query?.bool?.must,
-                    base.query?.script_score?.query?.bool?.must,
-                    base.query?.function_score?.query?.bool?.must
+            // Prior refinement terms become strict lexical FILTERS so per-faculty counts reflect
+            // the same monotonically narrowed pool as the papers list.
+            if (refineChain.length > 0 && !authorRefineNarrow) {
+                const refineFilters = this.queryBuilder.buildRefineFilterClauses(refineChain, searchInNorm, {});
+                const filterArrays = [
+                    base.query?.bool?.filter,
+                    base.query?.function_score?.query?.bool?.filter
                 ].filter(Boolean);
-                if (mustArrays.length) mustArrays[0].push(refineClause);
+                if (filterArrays.length) filterArrays[0].push(...refineFilters);
             }
             osQuery = patchFacultyAggBody(base);
         }

@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { normalizeChain } from './QueryBuilder.js';
 
 /**
  * Author-scoped search: rank one author's papers for a query (Explore sidebar drill-down).
@@ -24,8 +25,9 @@ export default class AuthorScopedSearch {
         this.hydrator = hydrator;
     }
 
-    async search({ query, author_id, page = 1, per_page = 20, mode = 'advanced', refine_within = null, search_in = null, filters = null }) {
+    async search({ query, author_id, page = 1, per_page = 20, mode = 'advanced', refine_within = null, refine_chain = null, search_in = null, filters = null }) {
         const searchInNorm = this.filterBuilder.normalizeSearchIn(search_in);
+        const refineChain = normalizeChain((Array.isArray(refine_chain) && refine_chain.length > 0) ? refine_chain : refine_within);
         await this.rosterService.getAll();
 
         // Apply the SAME facet filters as the papers list / People sidebar so this faculty's
@@ -47,7 +49,7 @@ export default class AuthorScopedSearch {
         }
 
         const queryHash = crypto.createHash('sha256')
-            .update(JSON.stringify({ query, author_id, page, per_page, mode, refine_within, search_in: searchInNorm, filters: effFilters }))
+            .update(JSON.stringify({ query, author_id, page, per_page, mode, refine_chain: refineChain, search_in: searchInNorm, filters: effFilters }))
             .digest('hex').slice(0, 16);
         const cacheKey = `author_scope:${queryHash}`;
 
@@ -124,8 +126,8 @@ export default class AuthorScopedSearch {
         const refineKerberosIds = null;
         let authorRefineNarrow = false;
         if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
-            if (refine_within?.trim()) {
-                const resolved = await this.rosterService.resolveScopusIdsForAuthorQuery(refine_within.trim());
+            if (refineChain.length >= 1) {
+                const resolved = await this.rosterService.resolveScopusIdsForAuthorQuery(refineChain[0]);
                 facultyAuthorIds = resolved.scopusIds;
                 facultyKerberosIds = resolved.kerberosIds;
                 authorRefineNarrow = true;
@@ -135,6 +137,7 @@ export default class AuthorScopedSearch {
                 facultyKerberosIds = resolved.kerberosIds;
             }
         }
+        const refineAnchor = authorRefineNarrow ? refineChain[0] : null;
 
         // Phase 2: build query with the shared builders + author filter.
         let hits, total;
@@ -148,7 +151,7 @@ export default class AuthorScopedSearch {
                 // so a free-text query may match non-IITD co-authors within that corpus.
                 const base = this.queryBuilder.buildBasicQuery(
                     query, effFilters, page, per_page, 'relevance',
-                    searchInNorm, refine_within,
+                    searchInNorm, refineChain,
                     facultyAuthorIds, refineFacultyIds, authorRefineNarrow,
                     facultyKerberosIds, refineKerberosIds,
                     { authorScoped: true }
@@ -163,26 +166,19 @@ export default class AuthorScopedSearch {
                 const base = this.queryBuilder.buildNormalizedHybridQuery(
                     query, embedding, effFilters, page, per_page,
                     searchInNorm, facultyAuthorIds, authorRefineNarrow,
-                    refine_within, facultyKerberosIds,
-                    { authorScoped: true }
+                    refineAnchor, facultyKerberosIds,
+                    { authorScoped: true, refineChain }
                 );
 
-                if (refine_within && !authorRefineNarrow) {
-                    const refineSearchFields = this.filterBuilder.getHybridSearchFields(searchInNorm);
-                    const refineClause =
-                        searchInNorm && searchInNorm.length > 0
-                            ? this.queryBuilder.buildConstrainedSearchInClause(
-                                refine_within, searchInNorm,
-                                { fuzziness: 'AUTO', authorScoped: true },
-                                refineFacultyIds, refineKerberosIds
-                            )
-                            : this.queryBuilder.buildStrictBm25Must(refine_within, refineSearchFields);
-                    const mustArrays = [
-                        base.query?.bool?.must,
-                        base.query?.script_score?.query?.bool?.must,
-                        base.query?.function_score?.query?.bool?.must
+                // Prior refinement terms become strict lexical FILTERS so the result set narrows
+                // monotonically within this author's papers.
+                if (refineChain.length > 0 && !authorRefineNarrow) {
+                    const refineFilters = this.queryBuilder.buildRefineFilterClauses(refineChain, searchInNorm, { authorScoped: true });
+                    const filterArrays = [
+                        base.query?.bool?.filter,
+                        base.query?.function_score?.query?.bool?.filter
                     ].filter(Boolean);
-                    if (mustArrays.length) mustArrays[0].push(refineClause);
+                    if (filterArrays.length) filterArrays[0].push(...refineFilters);
                 }
 
                 const filterTargets = [
@@ -203,7 +199,7 @@ export default class AuthorScopedSearch {
                 query,
                 totalAuthorPapers,
                 mode: isBasic ? 'basic' : 'advanced',
-                refine_within: !!refine_within,
+                refine_chain: refineChain.length,
                 search_in: searchInNorm
             }, 'Author-scoped search: Phase 2 - querying OpenSearch');
 

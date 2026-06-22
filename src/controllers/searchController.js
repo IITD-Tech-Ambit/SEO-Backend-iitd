@@ -8,7 +8,7 @@
  */
 export async function search(request, reply) {
     const startTime = Date.now();
-    const { query, filters, sort, page, per_page, search_in, mode, refine_within, rerank } = request.body;
+    const { query, filters, sort, page, per_page, search_in, mode, refine_within, refine_chain, rerank } = request.body;
     const searchService = request.server.searchService;
 
     try {
@@ -21,6 +21,7 @@ export async function search(request, reply) {
             search_in,
             mode,
             refine_within,
+            refine_chain,
             rerank
         });
 
@@ -109,7 +110,7 @@ export async function searchHealth(request, reply) {
  */
 export async function authorScopedSearch(request, reply) {
     const startTime = Date.now();
-    const { query, author_id, page, per_page, mode, refine_within, search_in, filters } = request.body;
+    const { query, author_id, page, per_page, mode, refine_within, refine_chain, search_in, filters } = request.body;
     const searchService = request.server.searchService;
 
     try {
@@ -120,6 +121,7 @@ export async function authorScopedSearch(request, reply) {
             per_page,
             mode,
             refine_within,
+            refine_chain,
             search_in,
             filters
         });
@@ -158,7 +160,7 @@ export async function authorScopedSearch(request, reply) {
  */
 export async function getAllFacultyForQuery(request, reply) {
     const startTime = Date.now();
-    const { query, mode, search_in: searchInRaw, refine_within, filters: filtersRaw } = request.query;
+    const { query, mode, search_in: searchInRaw, refine_within, refine_chain: refineChainRaw, filters: filtersRaw } = request.query;
     const searchService = request.server.searchService;
 
     const parsedSearchIn =
@@ -177,8 +179,19 @@ export async function getAllFacultyForQuery(request, reply) {
         }
     }
 
+    // refine_chain arrives JSON-encoded (same pattern as filters) so the People sidebar narrows
+    // through the IDENTICAL chain as POST /search.
+    let parsedRefineChain = null;
+    if (typeof refineChainRaw === 'string' && refineChainRaw.trim()) {
+        try {
+            parsedRefineChain = JSON.parse(refineChainRaw);
+        } catch (err) {
+            request.log.warn({ err: err?.message, refineChainRaw }, 'Faculty-for-query: ignoring malformed refine_chain param');
+        }
+    }
+
     try {
-        const result = await searchService.getAllFacultyForQuery(query, mode, parsedSearchIn, refine_within, parsedFilters);
+        const result = await searchService.getAllFacultyForQuery(query, mode, parsedSearchIn, refine_within, parsedFilters, parsedRefineChain);
 
         const tookMs = Date.now() - startTime;
 
