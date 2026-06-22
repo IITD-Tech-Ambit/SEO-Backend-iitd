@@ -55,6 +55,25 @@ EMBEDDING_REQUESTS_TOTAL = Counter(
     labelnames=("mode", "outcome"),  # mode: standalone|gateway ; outcome: success|error
 )
 
+# ── Reranker domain metrics ──────────────────────────────────────────
+RERANKER_INFERENCE_SECONDS = Histogram(
+    "reranker_inference_seconds",
+    "Time spent reranking documents for one request (seconds)",
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5),
+)
+
+RERANKER_DOCS_PER_REQUEST = Histogram(
+    "reranker_docs_per_request",
+    "Number of documents per rerank request",
+    buckets=(1, 2, 4, 8, 16, 32, 64, 128),
+)
+
+RERANKER_REQUESTS_TOTAL = Counter(
+    "reranker_requests_total",
+    "Total rerank requests by outcome",
+    labelnames=("outcome",),  # outcome: success|error
+)
+
 
 def setup_metrics(app) -> None:
     """Attach the timing middleware and the /metrics endpoint to a FastAPI app."""

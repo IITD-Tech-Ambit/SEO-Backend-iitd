@@ -2,7 +2,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from . import config
+from . import config, metrics
 from .inference import run_embed, run_rerank, track_inflight
 from .models import (
     EmbedRequest,
@@ -23,23 +23,39 @@ node_pool = None
 
 @router.post("/embed", response_model=EmbedResponse)
 async def embed(request: EmbedRequest):
+    n = len(request.texts)
     if node_pool is not None:
+        start = time.time()
         try:
             result = await node_pool.scatter_gather(request.texts)
+            elapsed = time.time() - start
+            metrics.EMBEDDING_INFERENCE_SECONDS.observe(elapsed)
+            metrics.EMBEDDING_BATCH_SIZE.observe(n)
+            metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="gateway", outcome="success").inc()
             return EmbedResponse(**result)
         except RuntimeError as e:
+            metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="gateway", outcome="error").inc()
             raise HTTPException(status_code=502, detail=str(e))
         except Exception as e:
+            metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="gateway", outcome="error").inc()
             raise HTTPException(status_code=503, detail=f"All backend nodes unavailable: {e}")
 
     if emb_state is None or emb_state.model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     start = time.time()
-    async with track_inflight(emb_state):
-        embeddings = await run_embed(request.texts, emb_state)
+    try:
+        async with track_inflight(emb_state):
+            embeddings = await run_embed(request.texts, emb_state)
+        elapsed = time.time() - start
+        metrics.EMBEDDING_INFERENCE_SECONDS.observe(elapsed)
+        metrics.EMBEDDING_BATCH_SIZE.observe(n)
+        metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="standalone", outcome="success").inc()
+    except Exception:
+        metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="standalone", outcome="error").inc()
+        raise
 
-    took_ms = (time.time() - start) * 1000
+    took_ms = elapsed * 1000
     return EmbedResponse(
         embeddings=embeddings,
         took_ms=took_ms,
@@ -55,7 +71,16 @@ async def rerank(request: RerankRequest):
         raise HTTPException(status_code=503, detail="Reranker not loaded")
 
     start = time.time()
-    scores = await run_rerank(request.query, request.documents, reranker_state)
+    try:
+        scores = await run_rerank(request.query, request.documents, reranker_state)
+        metrics.RERANKER_REQUESTS_TOTAL.labels(outcome="success").inc()
+    except Exception:
+        metrics.RERANKER_REQUESTS_TOTAL.labels(outcome="error").inc()
+        raise
+    finally:
+        elapsed = time.time() - start
+        metrics.RERANKER_INFERENCE_SECONDS.observe(elapsed)
+        metrics.RERANKER_DOCS_PER_REQUEST.observe(len(request.documents))
 
     ranked = sorted(
         [RerankResult(index=i, score=s) for i, s in enumerate(scores)],

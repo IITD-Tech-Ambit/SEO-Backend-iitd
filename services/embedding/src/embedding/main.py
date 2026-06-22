@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from . import config, routes
+from . import config, metrics, routes
 from .device import get_device
 from .loader import load_embedding_model, load_reranker, tune_cpu_threads
 from .state import EmbeddingState, RerankerState
@@ -93,6 +93,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(routes.router)
+metrics.setup_metrics(app)
 
 
 if __name__ == "__main__":
