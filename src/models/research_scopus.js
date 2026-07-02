@@ -1,6 +1,72 @@
 import mongoose from "mongoose";
 
 
+/**
+ * IITD-faculty authorship, resolved once at write time by the taxonomy ingestion
+ * script (scripts/ingest-taxonomy-classification.js) via the union of the two
+ * matches ResultHydrator otherwise re-derives per request: kerberos → Faculty.email
+ * prefix, and authors[].author_id → Faculty.scopus_id.
+ */
+const IitdAuthorSchema = new mongoose.Schema({
+    kerberos: {
+        type: String,
+        default: null,
+    },
+    faculty_ref: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Faculty',
+        default: null,
+    },
+    department_ref: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Department',
+        default: null,
+    },
+    matched_via: {
+        type: String,
+        enum: ['kerberos', 'scopus_id', 'both'],
+        required: true,
+    },
+    // 'faculty' = department taken from the Faculty record (authoritative);
+    // 'csv_fallback' = kerberos had no Faculty record, department resolved
+    // from the classification CSV's own department column.
+    department_source: {
+        type: String,
+        enum: ['faculty', 'csv_fallback'],
+        required: true,
+    }
+}, { _id: false });
+
+/**
+ * Single-label classification on the two independent browse facets
+ * (thematic area, domain/subdomain), assigned by the ML classification
+ * pipeline and imported by the ingestion script. Topics are display-only
+ * tags, not taxonomy nodes.
+ */
+const ClassificationSchema = new mongoose.Schema({
+    thematic_area_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'ThematicArea',
+        default: null,
+    },
+    domain_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Domain',
+        default: null,
+    },
+    subdomain_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Subdomain',
+        default: null,
+    },
+    topics: [{
+        type: String,
+    }],
+    classified_at: {
+        type: Date,
+    }
+}, { _id: false });
+
 const AuthorSchema = new mongoose.Schema({
     author_id: {
         type: String,
@@ -63,6 +129,10 @@ const ResearchMetaDataScopus = new mongoose.Schema({
         type: String,
         required: true,
     },
+    // Resolved IITD authorship + taxonomy classification (set by the ingestion
+    // script; absent on papers not covered by the classification snapshot)
+    iitd_authors: [IitdAuthorSchema],
+    classification: ClassificationSchema,
     open_search_id: {
         type: String,
         required: true,
@@ -98,5 +168,20 @@ ResearchMetaDataScopus.index(
     { title: "text", abstract: "text" },
     { weights: { title: 10, abstract: 1 }, name: "text_search_fallback" }
 );
+
+// 6. Resolved IITD authorship lookups
+ResearchMetaDataScopus.index({ "iitd_authors.faculty_ref": 1 });
+ResearchMetaDataScopus.index({ "iitd_authors.kerberos": 1 });
+ResearchMetaDataScopus.index({ "iitd_authors.department_ref": 1 });
+
+// 7. Taxonomy browse — department-filtered live queries per facet level
+ResearchMetaDataScopus.index({ "classification.thematic_area_id": 1, "iitd_authors.department_ref": 1 });
+ResearchMetaDataScopus.index({ "classification.domain_id": 1, "iitd_authors.department_ref": 1 });
+ResearchMetaDataScopus.index({ "classification.subdomain_id": 1, "iitd_authors.department_ref": 1 });
+
+// 8. Faculty-papers-in-taxonomy-context (kerberos-keyed, matching the browse flow)
+ResearchMetaDataScopus.index({ "classification.thematic_area_id": 1, "iitd_authors.kerberos": 1 });
+ResearchMetaDataScopus.index({ "classification.domain_id": 1, "iitd_authors.kerberos": 1 });
+ResearchMetaDataScopus.index({ "classification.subdomain_id": 1, "iitd_authors.kerberos": 1 });
 
 export default mongoose.model("ResearchMetaDataScopus", ResearchMetaDataScopus);

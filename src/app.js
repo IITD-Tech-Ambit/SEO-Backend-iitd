@@ -11,8 +11,10 @@ import redisPlugin from './plugins/redis.js';
 import EmbeddingService from './services/embeddingService.js';
 import SearchService from './services/searchService.js';
 import SuggestService from './services/suggestService.js';
+import TaxonomyService from './services/taxonomy/TaxonomyService.js';
 import searchRoutes from './routes/search.js';
 import documentRoutes from './routes/documents.js';
+import taxonomyRoutes from './routes/taxonomy.js';
 
 // Import MongoDB models
 import './models/index.js';
@@ -84,7 +86,7 @@ async function registerPlugins() {
 }
 
 // Initialize services
-function initializeServices() {
+async function initializeServices() {
     // Embedding service client
     const embeddingService = new EmbeddingService(
         config.embeddingService,
@@ -103,6 +105,13 @@ function initializeServices() {
     const suggestService = new SuggestService(fastify, config);
     suggestService.init();
     fastify.decorate('suggestService', suggestService);
+
+    // Taxonomy browse service (Explore section) — loads the node/department
+    // catalog into memory before routes come up.
+    const taxonomyService = new TaxonomyService(fastify, config);
+    await taxonomyService.init();
+    fastify.decorate('taxonomyService', taxonomyService);
+    fastify.addHook('onClose', async () => taxonomyService.close());
 }
 
 // Register routes
@@ -116,6 +125,7 @@ async function registerRoutes() {
         await instance.register(documentRoutes, {
             searchService: fastify.searchService
         });
+        await instance.register(taxonomyRoutes);
     }, { prefix: '/api/v1' });
 
     // Root health check
@@ -130,7 +140,7 @@ async function registerRoutes() {
 async function start() {
     try {
         await registerPlugins();
-        initializeServices();
+        await initializeServices();
         await registerRoutes();
 
         await fastify.listen({

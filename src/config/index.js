@@ -78,6 +78,17 @@ export default {
         }
     },
 
+    // Taxonomy browse (Explore section)
+    taxonomy: {
+        // Rollup-backed reads change only when the offline rollup job runs,
+        // so they cache long; papers-in-context is a live query, cached short.
+        redisTtl: parseInt(process.env.TAXONOMY_CACHE_TTL || '3600'),
+        papersRedisTtl: parseInt(process.env.TAXONOMY_PAPERS_CACHE_TTL || '300'),
+        catalogRefreshMs: parseInt(process.env.TAXONOMY_CATALOG_REFRESH_MS || '600000'),
+        defaultPerPage: 20,
+        maxPerPage: 100
+    },
+
     // Search defaults
     search: {
         // User-facing relevance threshold (normalized hybrid score) that defines a
