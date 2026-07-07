@@ -33,7 +33,9 @@ export default {
         url: process.env.REDIS_URL || 'redis://localhost:6379',
         ttl: {
             searchResults: 300,
-            queryEmbedding: 86400
+            queryEmbedding: 86400,
+            authorDocuments: 300,
+            coAuthors: 600
         }
     },
 

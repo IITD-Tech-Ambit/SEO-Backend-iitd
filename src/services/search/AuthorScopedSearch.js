@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { normalizeChain } from './QueryBuilder.js';
+import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
 
 /**
  * Author-scoped search: rank one author's papers for a query (Explore sidebar drill-down).
@@ -37,12 +38,8 @@ export default class AuthorScopedSearch {
         if (effFilters.author_id && !effFilters._authorKerberos) {
             try {
                 const Faculty = this.mongoose.model('Faculty');
-                let f = await Faculty.findOne({ scopus_id: effFilters.author_id }).select('email').lean();
-                if (!f) f = await Faculty.findOne({ expert_id: effFilters.author_id }).select('email').lean();
-                if (f?.email) {
-                    const k = f.email.split('@')[0].trim().toLowerCase();
-                    if (k) effFilters._authorKerberos = k;
-                }
+                const { kerberos } = await resolveFacultyByAuthorId(Faculty, effFilters.author_id);
+                if (kerberos) effFilters._authorKerberos = kerberos;
             } catch (err) {
                 this.logger.warn({ err: err?.message }, 'Author-scoped: failed to resolve kerberos for author_id filter');
             }

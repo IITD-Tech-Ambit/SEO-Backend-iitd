@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import '../../models/departments.js'; // Ensure Department model is registered for populate
 
+import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
 import { buildSearchConfig } from './constants.js';
 import FilterBuilder from './FilterBuilder.js';
 import FacultyRosterService from './FacultyRosterService.js';
@@ -81,12 +82,8 @@ export default class SearchService {
         if (!filters?.author_id || filters._authorKerberos) return;
         try {
             const Faculty = this.mongoose.model('Faculty');
-            let f = await Faculty.findOne({ scopus_id: filters.author_id }).select('email').lean();
-            if (!f) f = await Faculty.findOne({ expert_id: filters.author_id }).select('email').lean();
-            if (f?.email) {
-                const k = f.email.split('@')[0].trim().toLowerCase();
-                if (k) filters._authorKerberos = k;
-            }
+            const { kerberos } = await resolveFacultyByAuthorId(Faculty, filters.author_id);
+            if (kerberos) filters._authorKerberos = kerberos;
         } catch (err) {
             this.logger.warn({ err: err?.message }, 'Failed to resolve kerberos for author_id filter');
         }
@@ -246,15 +243,17 @@ export default class SearchService {
         }
 
         // 'relevance'/'normalized' -> normalized hybrid (comparable BM25/kNN scales).
-        // 'impact' -> citation/recency weighting. 'date'/'citations' -> field-ordered hybrid.
-        let osQuery;
-        if (sort === 'impact') {
-            osQuery = this.queryBuilder.buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain });
-        } else if (sort === 'relevance' || sort === 'normalized') {
-            osQuery = this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { bm25HitCount, candidateK: this.candidateK, refineChain });
-        } else {
-            osQuery = this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain });
-        }
+        // 'impact' -> citation/recency weighting. Anything else ('date'/'citations'/unknown)
+        // -> field-ordered hybrid, keyed off `sort` itself rather than an explicit branch, so
+        // adding a new field-ordered sort mode needs no change here.
+        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain };
+        const hybridQueryBuildersBySort = {
+            impact: () => this.queryBuilder.buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain }),
+            relevance: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, normalizedHybridArgs),
+            normalized: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, normalizedHybridArgs)
+        };
+        const buildFieldOrderedHybridQuery = () => this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain });
+        const osQuery = (hybridQueryBuildersBySort[sort] || buildFieldOrderedHybridQuery)();
 
         // Multi-step search-on-search: every prior term becomes a strict lexical FILTER so the
         // candidate pool can only shrink (monotonic narrowing), never re-broaden via fuzzy/kNN.
@@ -565,12 +564,17 @@ export default class SearchService {
      * Co-authors for a faculty member, found via both nested Scopus author_id and kerberos.
      */
     async getCoAuthors(authorId) {
-        const Faculty = this.mongoose.model('Faculty');
-        let faculty = await Faculty.findOne({ scopus_id: authorId }).select('email scopus_id').lean();
-        if (!faculty) faculty = await Faculty.findOne({ expert_id: authorId }).select('email scopus_id').lean();
+        const cacheKey = `coauthors:${authorId}`;
+        try {
+            const cached = await this.redis.get(cacheKey);
+            if (cached) return JSON.parse(cached);
+        } catch (err) {
+            this.logger.warn({ err }, 'Redis cache read failed (getCoAuthors)');
+        }
 
-        const kerberosId = faculty?.email ? faculty.email.split('@')[0].trim().toLowerCase() : null;
-        const allScopusIds = (faculty?.scopus_id || [authorId]).map(String);
+        const Faculty = this.mongoose.model('Faculty');
+        const { kerberos: kerberosId, scopusIds } = await resolveFacultyByAuthorId(Faculty, authorId);
+        const allScopusIds = scopusIds.length > 0 ? scopusIds : [authorId];
 
         const shouldClauses = [
             { nested: { path: 'authors', query: { terms: { 'authors.author_id': allScopusIds } } } }
@@ -601,7 +605,7 @@ export default class SearchService {
 
         const coauthors = result.body.aggregations?.author_papers?.coauthors?.buckets || [];
 
-        return {
+        const response = {
             author_id: authorId,
             total_papers: result.body.aggregations?.total_papers?.value || 0,
             collaborators: coauthors.map(c => ({
@@ -610,6 +614,14 @@ export default class SearchService {
                 name: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_name
             }))
         };
+
+        try {
+            await this.redis.setex(cacheKey, this.redisTTL.coAuthors, JSON.stringify(response));
+        } catch (err) {
+            this.logger.warn({ err }, 'Redis cache write failed (getCoAuthors)');
+        }
+
+        return response;
     }
 
     /**

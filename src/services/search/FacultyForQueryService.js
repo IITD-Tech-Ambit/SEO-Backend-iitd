@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { normalizeChain } from './QueryBuilder.js';
+import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
 
 /**
  * People sidebar (GET /search/faculty-for-query): all IITD faculty matching a query across
@@ -61,29 +62,22 @@ export default class FacultyForQueryService {
         }));
     }
 
-    async getAllFacultyForQuery(query, mode = 'advanced', search_in = null, refine_within = null, filters = null, refine_chain = null) {
-        const searchInNorm = this.filterBuilder.normalizeSearchIn(search_in);
-        const refineChain = normalizeChain((Array.isArray(refine_chain) && refine_chain.length > 0) ? refine_chain : refine_within);
-        await this.rosterService.getAll();
-
-        // Apply the SAME facet filters as POST /search so counts describe the identical
-        // filtered corpus, and pre-resolve kerberos for an author_id filter so the author
-        // union clause matches across endpoints.
+    /** Apply the SAME facet filters as POST /search, pre-resolving kerberos for author_id. */
+    async _resolveEffectiveFilters(filters) {
         const effFilters = filters ? { ...filters } : {};
         if (effFilters.author_id && !effFilters._authorKerberos) {
             try {
                 const Faculty = this.mongoose.model('Faculty');
-                let f = await Faculty.findOne({ scopus_id: effFilters.author_id }).select('email').lean();
-                if (!f) f = await Faculty.findOne({ expert_id: effFilters.author_id }).select('email').lean();
-                if (f?.email) {
-                    const k = f.email.split('@')[0].trim().toLowerCase();
-                    if (k) effFilters._authorKerberos = k;
-                }
+                const { kerberos } = await resolveFacultyByAuthorId(Faculty, effFilters.author_id);
+                if (kerberos) effFilters._authorKerberos = kerberos;
             } catch (err) {
                 this.logger.warn({ err: err?.message }, 'Faculty-for-query: failed to resolve kerberos for author_id filter');
             }
         }
+        return effFilters;
+    }
 
+    _buildCacheKey(query, mode, searchInNorm, refineChain, effFilters) {
         const queryHash = crypto.createHash('sha256')
             .update(JSON.stringify({
                 query,
@@ -94,8 +88,10 @@ export default class FacultyForQueryService {
                 filters: effFilters
             }))
             .digest('hex').slice(0, 16);
-        const cacheKey = `faculty_query:${queryHash}`;
+        return `faculty_query:${queryHash}`;
+    }
 
+    async _readCache(cacheKey, query, mode) {
         try {
             const cached = await this.redis.get(cacheKey);
             if (cached) {
@@ -105,28 +101,29 @@ export default class FacultyForQueryService {
         } catch (err) {
             this.logger.warn({ err }, 'Redis cache read failed for faculty-for-query');
         }
+        return null;
+    }
 
+    /** Author-only search_in: resolve the roster's scopus/kerberos ids to narrow the query. */
+    async _resolveAuthorNarrowing(searchInNorm, refineChain, query) {
         let facultyAuthorIds = null;
         let facultyKerberosIds = null;
-        const refineFacultyIds = null;
-        const refineKerberosIds = null;
         let authorRefineNarrow = false;
         if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
-            if (refineChain.length >= 1) {
-                const resolved = await this.rosterService.resolveScopusIdsForAuthorQuery(refineChain[0]);
-                facultyAuthorIds = resolved.scopusIds;
-                facultyKerberosIds = resolved.kerberosIds;
-                authorRefineNarrow = true;
-            } else {
-                const resolved = await this.rosterService.resolveScopusIdsForAuthorQuery(query);
-                facultyAuthorIds = resolved.scopusIds;
-                facultyKerberosIds = resolved.kerberosIds;
-            }
+            const anchor = refineChain.length >= 1 ? refineChain[0] : query;
+            const resolved = await this.rosterService.resolveScopusIdsForAuthorQuery(anchor);
+            facultyAuthorIds = resolved.scopusIds;
+            facultyKerberosIds = resolved.kerberosIds;
+            authorRefineNarrow = refineChain.length >= 1;
         }
         const refineAnchor = authorRefineNarrow ? refineChain[0] : null;
+        return { facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineAnchor };
+    }
 
+    /** Build the size:0 OpenSearch aggregation query (basic BM25 or hybrid) for the People sidebar. */
+    async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing) {
+        const { facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineAnchor } = narrowing;
         const facultyAggs = this.filterBuilder.facultyForQueryAggregations();
-        const queryFilters = effFilters;
 
         const patchFacultyAggBody = (base) => {
             const body = { ...base };
@@ -145,40 +142,38 @@ export default class FacultyForQueryService {
             return body;
         };
 
-        let osQuery;
         if (mode === 'basic') {
             const base = this.queryBuilder.buildBasicQuery(
                 query, queryFilters, 1, 1, 'relevance',
                 searchInNorm, refineChain,
-                facultyAuthorIds, refineFacultyIds, authorRefineNarrow,
-                facultyKerberosIds, refineKerberosIds
+                facultyAuthorIds, null, authorRefineNarrow,
+                facultyKerberosIds, null
             );
-            osQuery = patchFacultyAggBody(base);
-        } else {
-            const embedding = await this.embeddingService.embedQuery(query);
-            const base = this.queryBuilder.buildNormalizedHybridQuery(
-                query, embedding, queryFilters, 1, 1,
-                searchInNorm, facultyAuthorIds, authorRefineNarrow,
-                refineAnchor, facultyKerberosIds,
-                { refineChain }
-            );
-            // Prior refinement terms become strict lexical FILTERS so per-faculty counts reflect
-            // the same monotonically narrowed pool as the papers list.
-            if (refineChain.length > 0 && !authorRefineNarrow) {
-                const refineFilters = this.queryBuilder.buildRefineFilterClauses(refineChain, searchInNorm, {});
-                const filterArrays = [
-                    base.query?.bool?.filter,
-                    base.query?.function_score?.query?.bool?.filter
-                ].filter(Boolean);
-                if (filterArrays.length) filterArrays[0].push(...refineFilters);
-            }
-            osQuery = patchFacultyAggBody(base);
+            return patchFacultyAggBody(base);
         }
 
-        this.logger.info({ query, mode, search_in: searchInNorm }, 'Faculty-for-query: querying OpenSearch aggregation');
+        const embedding = await this.embeddingService.embedQuery(query);
+        const base = this.queryBuilder.buildNormalizedHybridQuery(
+            query, embedding, queryFilters, 1, 1,
+            searchInNorm, facultyAuthorIds, authorRefineNarrow,
+            refineAnchor, facultyKerberosIds,
+            { refineChain }
+        );
+        // Prior refinement terms become strict lexical FILTERS so per-faculty counts reflect
+        // the same monotonically narrowed pool as the papers list.
+        if (refineChain.length > 0 && !authorRefineNarrow) {
+            const refineFilters = this.queryBuilder.buildRefineFilterClauses(refineChain, searchInNorm, {});
+            const filterArrays = [
+                base.query?.bool?.filter,
+                base.query?.function_score?.query?.bool?.filter
+            ].filter(Boolean);
+            if (filterArrays.length) filterArrays[0].push(...refineFilters);
+        }
+        return patchFacultyAggBody(base);
+    }
 
-        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
-
+    /** Merge the aggregation buckets into per-author info, applying the dynamic relevance threshold. */
+    _extractAuthorInfos(osResponse, query) {
         const totalDocs = osResponse.body.hits.total.value;
         const flatBuckets = osResponse.body.aggregations?.from_author_ids?.by_scopus_author?.buckets || [];
         const nestedBuckets = osResponse.body.aggregations?.from_nested_authors?.by_scopus_author?.buckets || [];
@@ -193,7 +188,7 @@ export default class FacultyForQueryService {
         }, 'Faculty-for-query: aggregation results');
 
         if (expertBuckets.length === 0 && kerberosBuckets.length === 0) {
-            return { departments: [], total_faculty: 0, total_matching_papers: totalDocs, cacheHit: false };
+            return { totalDocs, kerberosBuckets, authorInfos: [], isEmpty: true };
         }
 
         let authorInfos = expertBuckets.map(bucket => {
@@ -223,6 +218,11 @@ export default class FacultyForQueryService {
             }, 'Faculty-for-query: applied dynamic relevance threshold');
         }
 
+        return { totalDocs, kerberosBuckets, authorInfos, isEmpty: false };
+    }
+
+    /** Resolve the Faculty docs backing the scopus/kerberos buckets. */
+    async _lookupFacultyDocs(authorInfos, kerberosBuckets) {
         const scopusIds = authorInfos.map(a => a.scopus_author_id);
         const Faculty = this.mongoose.model('Faculty');
 
@@ -259,6 +259,11 @@ export default class FacultyForQueryService {
             kerberosFaculty: kerberosFacultyDocs.length
         }, 'Faculty-for-query: scopus_id + kerberos lookup');
 
+        return { facultyDocs, kerberosFacultyDocs, facultyByScopusId, facultyByKerberos };
+    }
+
+    /** Dedup scopus + kerberos hits into one per-faculty record, keyed by expert_id. */
+    _dedupFacultyByExpertId(authorInfos, facultyByScopusId, kerberosBuckets, facultyByKerberos) {
         const facultyDedup = new Map();
 
         for (const author of authorInfos) {
@@ -279,14 +284,6 @@ export default class FacultyForQueryService {
                     deptName: faculty?.department?.name || 'Other'
                 });
             }
-        }
-
-        const expertScopusIds = new Map();
-        for (const author of authorInfos) {
-            const faculty = facultyByScopusId.get(String(author.scopus_author_id));
-            if (!faculty) continue;
-            if (!expertScopusIds.has(faculty.expert_id)) expertScopusIds.set(faculty.expert_id, new Set());
-            expertScopusIds.get(faculty.expert_id).add(String(author.scopus_author_id));
         }
 
         for (const bucket of kerberosBuckets) {
@@ -315,50 +312,59 @@ export default class FacultyForQueryService {
             }
         }
 
-        // OpenSearch counts scopus_id and kerberos independently; neither alone captures the
-        // union. Recount per-faculty over the matching mongo_ids using $or to correct undercounts.
-        if (facultyDedup.size > 0) {
-            try {
-                const idsQuery = { ...osQuery, size: totalDocs, _source: ['mongo_id'], aggs: undefined };
-                delete idsQuery.aggs;
-                const idsResponse = await this.opensearch.search({ index: this.indexName, body: idsQuery });
-                const mongoIds = idsResponse.body.hits.hits.map(h => h._source?.mongo_id).filter(Boolean);
+        return facultyDedup;
+    }
 
-                if (mongoIds.length > 0) {
-                    const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
-                    const facultyLookup = new Map();
-                    for (const f of [...facultyDocs, ...kerberosFacultyDocs]) facultyLookup.set(f.expert_id, f);
+    /**
+     * OpenSearch counts scopus_id and kerberos independently; neither alone captures the
+     * union. Recount per-faculty over the matching mongo_ids using $or to correct undercounts.
+     * Mutates facultyDedup's entries in place.
+     */
+    async _correctPaperCountsViaMongo(osQuery, totalDocs, facultyDedup, facultyDocs, kerberosFacultyDocs) {
+        if (facultyDedup.size === 0) return;
+        try {
+            const idsQuery = { ...osQuery, size: totalDocs, _source: ['mongo_id'], aggs: undefined };
+            delete idsQuery.aggs;
+            const idsResponse = await this.opensearch.search({ index: this.indexName, body: idsQuery });
+            const mongoIds = idsResponse.body.hits.hits.map(h => h._source?.mongo_id).filter(Boolean);
 
-                    const { ObjectId } = this.mongoose.Types;
-                    const objectIds = mongoIds.filter(id => ObjectId.isValid(id)).map(id => new ObjectId(id));
+            if (mongoIds.length === 0) return;
 
-                    await Promise.all([...facultyDedup.values()].map(async (merged) => {
-                        const f = facultyLookup.get(merged.expert_id);
-                        if (!f) return;
-                        const kerbId = (f.email || '').split('@')[0].toLowerCase();
-                        const sids = (f.scopus_id || []).map(String);
-                        const orClauses = [];
-                        if (kerbId) orClauses.push({ kerberos: kerbId });
-                        if (sids.length > 0) orClauses.push({ 'authors.author_id': { $in: sids } });
-                        if (orClauses.length === 0) return;
-                        const count = await ResearchDocument.countDocuments({ _id: { $in: objectIds }, $or: orClauses });
-                        if (count > merged.paper_count) {
-                            this.logger.info(
-                                { faculty: merged.name, oldCount: merged.paper_count, newCount: count },
-                                'Faculty-for-query: MongoDB union correction applied'
-                            );
-                            merged.paper_count = count;
-                        }
-                    }));
+            const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
+            const facultyLookup = new Map();
+            for (const f of [...facultyDocs, ...kerberosFacultyDocs]) facultyLookup.set(f.expert_id, f);
+
+            const { ObjectId } = this.mongoose.Types;
+            const objectIds = mongoIds.filter(id => ObjectId.isValid(id)).map(id => new ObjectId(id));
+
+            await Promise.all([...facultyDedup.values()].map(async (merged) => {
+                const f = facultyLookup.get(merged.expert_id);
+                if (!f) return;
+                const kerbId = (f.email || '').split('@')[0].toLowerCase();
+                const sids = (f.scopus_id || []).map(String);
+                const orClauses = [];
+                if (kerbId) orClauses.push({ kerberos: kerbId });
+                if (sids.length > 0) orClauses.push({ 'authors.author_id': { $in: sids } });
+                if (orClauses.length === 0) return;
+                const count = await ResearchDocument.countDocuments({ _id: { $in: objectIds }, $or: orClauses });
+                if (count > merged.paper_count) {
+                    this.logger.info(
+                        { faculty: merged.name, oldCount: merged.paper_count, newCount: count },
+                        'Faculty-for-query: MongoDB union correction applied'
+                    );
+                    merged.paper_count = count;
                 }
-            } catch (correctionErr) {
-                this.logger.warn({
-                    err: correctionErr?.message || String(correctionErr),
-                    stack: correctionErr?.stack
-                }, 'Faculty-for-query: MongoDB correction failed, using aggregation counts');
-            }
+            }));
+        } catch (correctionErr) {
+            this.logger.warn({
+                err: correctionErr?.message || String(correctionErr),
+                stack: correctionErr?.stack
+            }, 'Faculty-for-query: MongoDB correction failed, using aggregation counts');
         }
+    }
 
+    /** Group deduped faculty by department, scored by avg top-3 relevance with a size bonus. */
+    _groupByDepartment(facultyDedup) {
         const deptMap = new Map();
         let includedCount = 0;
 
@@ -379,8 +385,6 @@ export default class FacultyForQueryService {
             includedCount++;
         }
 
-        // Score departments by the average of their top-3 faculty scores, with a small bonus
-        // for having more relevant faculty, so large low-relevance departments do not win.
         const departments = Array.from(deptMap.values())
             .map(dept => {
                 const topScores = dept.facultyScores.sort((a, b) => b - a).slice(0, 3);
@@ -399,6 +403,39 @@ export default class FacultyForQueryService {
                 return b._deptScore - a._deptScore;
             })
             .map(({ _deptScore, ...dept }) => dept);
+
+        return { departments, includedCount };
+    }
+
+    async getAllFacultyForQuery(query, mode = 'advanced', search_in = null, refine_within = null, filters = null, refine_chain = null) {
+        const searchInNorm = this.filterBuilder.normalizeSearchIn(search_in);
+        const refineChain = normalizeChain((Array.isArray(refine_chain) && refine_chain.length > 0) ? refine_chain : refine_within);
+        await this.rosterService.getAll();
+
+        const effFilters = await this._resolveEffectiveFilters(filters);
+        const cacheKey = this._buildCacheKey(query, mode, searchInNorm, refineChain, effFilters);
+        const cached = await this._readCache(cacheKey, query, mode);
+        if (cached) return cached;
+
+        const narrowing = await this._resolveAuthorNarrowing(searchInNorm, refineChain, query);
+        const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing);
+
+        this.logger.info({ query, mode, search_in: searchInNorm }, 'Faculty-for-query: querying OpenSearch aggregation');
+        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
+
+        const { totalDocs, kerberosBuckets, authorInfos, isEmpty } = this._extractAuthorInfos(osResponse, query);
+        if (isEmpty) {
+            return { departments: [], total_faculty: 0, total_matching_papers: totalDocs, cacheHit: false };
+        }
+
+        const { facultyDocs, kerberosFacultyDocs, facultyByScopusId, facultyByKerberos } =
+            await this._lookupFacultyDocs(authorInfos, kerberosBuckets);
+
+        const facultyDedup = this._dedupFacultyByExpertId(authorInfos, facultyByScopusId, kerberosBuckets, facultyByKerberos);
+
+        await this._correctPaperCountsViaMongo(osQuery, totalDocs, facultyDedup, facultyDocs, kerberosFacultyDocs);
+
+        const { departments, includedCount } = this._groupByDepartment(facultyDedup);
 
         const response = { departments, total_faculty: includedCount, total_matching_papers: totalDocs };
 

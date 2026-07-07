@@ -1,5 +1,3 @@
-import Faculty from '../models/faculty.js';
-
 /**
  * Suggest Service — blended, intent-aware typeahead.
  *
@@ -54,6 +52,7 @@ class TTLLRU {
 export default class SuggestService {
     constructor(fastify, config) {
         this.opensearch = fastify.opensearch;
+        this.mongoose = fastify.mongoose;
         this.authorsIndex = config.opensearch.authorsSuggestIndex;
         this.papersIndex = fastify.opensearchIndex;
         this.redis = fastify.redis;
@@ -83,6 +82,7 @@ export default class SuggestService {
     async _refreshTokenSet() {
         if (this._tokensInflight) return this._tokensInflight;
         this._tokensInflight = (async () => {
+            const Faculty = this.mongoose.model('Faculty');
             const docs = await Faculty.find({}, { firstName: 1, lastName: 1 }).lean();
             const set = new Set();
             for (const d of docs) {
