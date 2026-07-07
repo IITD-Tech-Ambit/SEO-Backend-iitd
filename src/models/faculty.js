@@ -102,4 +102,9 @@ facultySchema.index({
 facultySchema.index({ department: 1 });
 facultySchema.index({ firstName: 1, lastName: 1 });
 
+// This service does $in lookups on scopus_id on every search-result
+// hydration — was previously unindexed, forcing a collection scan on
+// Faculty's hottest read path from here.
+facultySchema.index({ scopus_id: 1 });
+
 export default mongoose.model("Faculty", facultySchema);

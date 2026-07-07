@@ -151,8 +151,8 @@ ResearchMetaDataScopus.index({
     document_type: 1
 });
 
-// 2. Author-based queries
-ResearchMetaDataScopus.index({ "authors.author_id": 1 });
+// 2. Author-based queries (getDocumentsByAuthor matches + sorts publication_year)
+ResearchMetaDataScopus.index({ "authors.author_id": 1, publication_year: -1 });
 
 // 3. Subject area filtering
 ResearchMetaDataScopus.index({ subject_area: 1, publication_year: -1 });
@@ -160,8 +160,8 @@ ResearchMetaDataScopus.index({ subject_area: 1, publication_year: -1 });
 // 4. Citation-based sorting
 ResearchMetaDataScopus.index({ citation_count: -1 });
 
-// 5. Kerberos-based sorting
-ResearchMetaDataScopus.index({ kerberos: 1 });
+// 5. Kerberos-based sorting (getDocumentsByAuthor matches + sorts publication_year)
+ResearchMetaDataScopus.index({ kerberos: 1, publication_year: -1 });
 
 // 5. Text index for fallback keyword search
 ResearchMetaDataScopus.index(
@@ -169,9 +169,13 @@ ResearchMetaDataScopus.index(
     { weights: { title: 10, abstract: 1 }, name: "text_search_fallback" }
 );
 
-// 6. Resolved IITD authorship lookups
+// 6. Resolved IITD authorship lookups. The kerberos one carries
+// publication_year/citation_count as trailing keys since findPapersInContext
+// (TaxonomyRepository) matches on kerberos alone (no theme/domain/subdomain
+// filter) and sorts by both — without the trailing keys that fell back to
+// an in-memory sort per request.
 ResearchMetaDataScopus.index({ "iitd_authors.faculty_ref": 1 });
-ResearchMetaDataScopus.index({ "iitd_authors.kerberos": 1 });
+ResearchMetaDataScopus.index({ "iitd_authors.kerberos": 1, publication_year: -1, citation_count: -1 });
 ResearchMetaDataScopus.index({ "iitd_authors.department_ref": 1 });
 
 // 7. Taxonomy browse — department-filtered live queries per facet level
@@ -179,9 +183,11 @@ ResearchMetaDataScopus.index({ "classification.thematic_area_id": 1, "iitd_autho
 ResearchMetaDataScopus.index({ "classification.domain_id": 1, "iitd_authors.department_ref": 1 });
 ResearchMetaDataScopus.index({ "classification.subdomain_id": 1, "iitd_authors.department_ref": 1 });
 
-// 8. Faculty-papers-in-taxonomy-context (kerberos-keyed, matching the browse flow)
-ResearchMetaDataScopus.index({ "classification.thematic_area_id": 1, "iitd_authors.kerberos": 1 });
-ResearchMetaDataScopus.index({ "classification.domain_id": 1, "iitd_authors.kerberos": 1 });
-ResearchMetaDataScopus.index({ "classification.subdomain_id": 1, "iitd_authors.kerberos": 1 });
+// 8. Faculty-papers-in-taxonomy-context (kerberos-keyed, matching the browse
+// flow) — trailing publication_year/citation_count cover findPapersInContext's
+// sort so it doesn't fall back to an in-memory sort after the index match.
+ResearchMetaDataScopus.index({ "classification.thematic_area_id": 1, "iitd_authors.kerberos": 1, publication_year: -1, citation_count: -1 });
+ResearchMetaDataScopus.index({ "classification.domain_id": 1, "iitd_authors.kerberos": 1, publication_year: -1, citation_count: -1 });
+ResearchMetaDataScopus.index({ "classification.subdomain_id": 1, "iitd_authors.kerberos": 1, publication_year: -1, citation_count: -1 });
 
 export default mongoose.model("ResearchMetaDataScopus", ResearchMetaDataScopus);

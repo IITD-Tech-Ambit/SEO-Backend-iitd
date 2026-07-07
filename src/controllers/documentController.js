@@ -3,6 +3,8 @@
  * Handles document-related HTTP requests
  */
 
+import { resolveFacultyByAuthorId } from '../utils/facultyIdentity.js';
+
 /**
  * Get a single document by ID
  */
@@ -43,28 +45,26 @@ export async function getDocumentsByAuthor(request, reply) {
     const { authorId } = request.params;
     const { page = 1, per_page = 20 } = request.query;
     const mongoose = request.server.mongoose;
+    const redis = request.server.redis;
+    const cacheKey = `author-docs:${authorId}:${page}:${per_page}`;
 
     try {
+        try {
+            const cached = await redis.get(cacheKey);
+            if (cached) return JSON.parse(cached);
+        } catch (err) {
+            request.log.warn({ err }, 'Redis cache read failed (getDocumentsByAuthor)');
+        }
+
         const ResearchDocument = mongoose.model('ResearchMetaDataScopus');
         const Faculty = mongoose.model('Faculty');
         const skip = (page - 1) * per_page;
 
-        // authorId may be a scopus_id or an expert_id — try both lookups
-        let faculty = await Faculty.findOne({ scopus_id: authorId })
-            .select('email scopus_id')
-            .lean();
-        if (!faculty) {
-            faculty = await Faculty.findOne({ expert_id: authorId })
-                .select('email scopus_id')
-                .lean();
-        }
+        // authorId may be a scopus_id or an expert_id — resolveFacultyByAuthorId tries both
+        const { kerberos, scopusIds } = await resolveFacultyByAuthorId(Faculty, authorId);
 
         const orClauses = [];
-        if (faculty?.email) {
-            const k = faculty.email.split('@')[0].trim().toLowerCase();
-            if (k) orClauses.push({ kerberos: k });
-        }
-        const scopusIds = faculty?.scopus_id?.map(String).filter(Boolean) || [];
+        if (kerberos) orClauses.push({ kerberos });
         if (scopusIds.length > 0) {
             orClauses.push({ 'authors.author_id': { $in: scopusIds } });
         } else {
@@ -83,7 +83,7 @@ export async function getDocumentsByAuthor(request, reply) {
             ResearchDocument.countDocuments(filter)
         ]);
 
-        return {
+        const response = {
             documents,
             pagination: {
                 page,
@@ -92,6 +92,14 @@ export async function getDocumentsByAuthor(request, reply) {
                 total_pages: Math.ceil(total / per_page)
             }
         };
+
+        try {
+            await redis.setex(cacheKey, request.server.redisTTL.authorDocuments, JSON.stringify(response));
+        } catch (err) {
+            request.log.warn({ err }, 'Redis cache write failed (getDocumentsByAuthor)');
+        }
+
+        return response;
 
     } catch (error) {
         request.log.error({ error, authorId }, 'Author documents fetch failed');

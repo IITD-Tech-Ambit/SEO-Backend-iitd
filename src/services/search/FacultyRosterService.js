@@ -93,22 +93,12 @@ export default class FacultyRosterService {
 
         let candidates = [];
 
-        const pattern = `^${esc(q).replace(/\s+/g, '\\s+')}$`;
-        try {
-            candidates = await Faculty.find({
-                $expr: {
-                    $regexMatch: {
-                        input: { $trim: { input: { $concat: ['$firstName', ' ', '$lastName'] } } },
-                        regex: pattern,
-                        options: 'i'
-                    }
-                }
-            }).select('scopus_id email').limit(25).lean();
-        } catch (err) {
-            this.logger.warn({ err }, 'Faculty full-name regex lookup failed');
-        }
-
-        if (candidates.length === 0 && tokens.length >= 2) {
+        // Try the indexed (firstName, lastName) / single-field matches first —
+        // anchored regex on indexed fields — before falling back to the
+        // unindexed computed full-name regex below, which can't use an index
+        // (the field doesn't exist on disk, it's trimmed/concatenated at query
+        // time) and forces a full collection scan.
+        if (tokens.length >= 2) {
             const first = tokens[0];
             const last = tokens.slice(1).join(' ');
             candidates = await Faculty.find({
@@ -131,6 +121,26 @@ export default class FacultyRosterService {
             candidates = await Faculty.find({
                 $or: [{ firstName: re }, { lastName: re }]
             }).select('scopus_id email').limit(25).lean();
+        }
+
+        // Last resort: names that don't split cleanly into the first/last
+        // token patterns tried above (e.g. multi-part surnames, extra
+        // whitespace) still need this catch-all.
+        if (candidates.length === 0) {
+            const pattern = `^${esc(q).replace(/\s+/g, '\\s+')}$`;
+            try {
+                candidates = await Faculty.find({
+                    $expr: {
+                        $regexMatch: {
+                            input: { $trim: { input: { $concat: ['$firstName', ' ', '$lastName'] } } },
+                            regex: pattern,
+                            options: 'i'
+                        }
+                    }
+                }).select('scopus_id email').limit(25).lean();
+            } catch (err) {
+                this.logger.warn({ err }, 'Faculty full-name regex lookup failed');
+            }
         }
 
         const ids = new Set();

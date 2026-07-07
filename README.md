@@ -1,438 +1,207 @@
-![Research Search Engine Banner](assets/banner.png)
+![Research Ambit Search API](assets/banner.png)
 
-# 🔬 Research Search Engine
+# Research Ambit Search API
 
-> **Production-grade academic research discovery platform powered by hybrid AI search**
+Hybrid search backend for the **IIT Delhi Research Ambit** portal. Indexes ~70k Scopus papers and faculty metadata from MongoDB into OpenSearch, combines BM25 keyword retrieval with dense embeddings, and exposes a Fastify REST API used by [tech-ambit-explorer](https://github.com/IITD-Tech-Ambit/tech-ambit-explorer) and the [research chatbot](https://github.com/IITD-Tech-Ambit/chatbot-service).
 
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Node.js-18+-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js">
-  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/OpenSearch-2.x-005EB8?style=for-the-badge&logo=opensearch&logoColor=white" alt="OpenSearch">
-  <img src="https://img.shields.io/badge/MongoDB-6.0+-47A248?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB">
-  <img src="https://img.shields.io/badge/Redis-7.0+-DC382D?style=for-the-badge&logo=redis&logoColor=white" alt="Redis">
-</p>
-
-<p align="center">
-  <a href="#-features">Features</a> •
-  <a href="#-architecture">Architecture</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-api-reference">API Reference</a> •
-  <a href="#-performance">Performance</a>
-</p>
+**Live demo (search UI):** [iitd-tech-ambit.github.io/SEO-Backend-iitd](https://iitd-tech-ambit.github.io/SEO-Backend-iitd/)  
+**API reference (Postman):** [documenter.getpostman.com/view/32690520/2sB3dWqmb1](https://documenter.getpostman.com/view/32690520/2sB3dWqmb1)
 
 ---
 
-## ✨ Features
+## What it does
 
-<table>
-<tr>
-<td width="50%">
-
-### 🎯 Hybrid Search
-Combines **BM25 keyword matching** with **SPECTER2 semantic embeddings** for superior relevance. Find papers by exact terms OR conceptual similarity.
-
-</td>
-<td width="50%">
-
-### ⚡ Sub-100ms Latency
-Optimized query pipeline with Redis caching, connection pooling, and efficient vector similarity. P99 latency under 100ms.
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 🔍 Flexible Filtering
-Filter by year range, department, document type, subject area. Combine with full-text search for precise results.
-
-</td>
-<td width="50%">
-
-### 🧠 AI-Powered Embeddings
-SPECTER2 model generates 768-dimensional embeddings optimized for scientific literature understanding.
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 📊 Faceted Navigation
-Dynamic aggregations for years, document types, fields, and subject areas. Build powerful filter UIs.
-
-</td>
-<td width="50%">
-
-### 🔄 Incremental Indexing
-Batch indexer tracks indexed documents. Supports full reindex or incremental updates.
-
-</td>
-</tr>
-</table>
+| Capability | Description |
+|---|---|
+| **Hybrid search** | BM25 + k-NN over BGE-base embeddings, with optional cross-encoder reranking (`bge-reranker-base`) |
+| **Faceted filtering** | Year, department, document type, subject area, and field filters with aggregation counts |
+| **Typeahead suggest** | Blended, intent-aware autocomplete across authors and papers |
+| **Author discovery** | Faculty-for-query aggregation and author-scoped semantic search |
+| **Taxonomy browse** | Explore API over the 9-theme classification taxonomy (themes → domains → subdomains → faculty) |
+| **Related work** | Similar-paper lookup (k-NN) and co-author collaboration graphs |
+| **Incremental indexing** | Python and Go indexers sync MongoDB → OpenSearch; Redis caches queries and embeddings |
 
 ---
 
-## 🏗 Architecture
+## Architecture
 
 <p align="center">
-  <img src="assets/architecture.png" alt="System Architecture" width="90%">
+  <img src="assets/architecture.png" alt="System architecture" width="90%">
 </p>
-
-### Component Overview
-
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| **API Gateway** | Fastify (Node.js) | RESTful API, request validation, caching |
-| **Search Engine** | OpenSearch 2.x | BM25 + k-NN vector search |
-| **Embedding Service** | Python + SPECTER2 | Generate semantic embeddings |
-| **Batch Indexer** | Python | MongoDB → OpenSearch sync |
-| **Cache Layer** | Redis | Query & embedding caching |
-| **Database** | MongoDB | Source of truth for documents |
-
-### Data Flow
 
 ```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Client     │────▶│  Fastify API │────▶│    Redis     │
-│   Request    │     │   Gateway    │◀────│    Cache     │
-└──────────────┘     └──────┬───────┘     └──────────────┘
-                            │
-              ┌────────────-┼────────────┐
-              ▼             ▼            ▼
-       ┌──────────┐  ┌──────────┐  ┌──────────┐
-       │Embedding │  │OpenSearch│  │ MongoDB  │
-       │ Service  │  │  Cluster │  │ Hydration│
-       └──────────┘  └──────────┘  └──────────┘
+Client  →  Fastify API  →  Redis (query / embedding cache)
+                ├─→ Embedding service (BGE-base + reranker, Python/FastAPI)
+                ├─→ OpenSearch 2.x (BM25 + HNSW k-NN)
+                └─→ MongoDB (document hydration + faculty directory)
 ```
+
+| Component | Stack | Role |
+|---|---|---|
+| Search API | Node.js 18+, Fastify | REST endpoints, validation, caching, metrics |
+| Embedding service | Python 3.10+, FastAPI, Gunicorn | 768-dim BGE-base embeddings + ONNX reranker |
+| Indexers | Python (`services/indexer/`) + Go (`indexer_go/`) | MongoDB → OpenSearch batch sync |
+| Search engine | OpenSearch 2.x | Inverted index + vector search |
+| Cache | Redis 7 | Query results, embeddings, rerank scores |
+| Source DB | MongoDB 6 | Scopus metadata, faculty, taxonomy tables |
+
+In production the service sits behind nginx as `/search/` alongside the CMS backend, frontend, embedding service, and chatbot. See [`deploy/README.md`](deploy/README.md) for the full VM layout.
 
 ---
 
-## 🚀 Quick Start
+## Related repositories
+
+| Repository | Role |
+|---|---|
+| [tech-ambit-explorer](https://github.com/IITD-Tech-Ambit/tech-ambit-explorer) | React frontend (search, explore, faculty profiles) |
+| [research-ambit-main](https://github.com/IITD-Tech-Ambit/research-ambit-main) | CMS / directory backend |
+| [chatbot-service](https://github.com/IITD-Tech-Ambit/chatbot-service) | Agentic RAG chatbot (consumes this search API) |
+| [classification-pipeline](https://github.com/IITD-Tech-Ambit/classification-pipeline) | Paper taxonomy classification architecture |
+
+---
+
+## Quick start (local)
 
 ### Prerequisites
 
-- **Docker & Docker Compose** (for OpenSearch cluster)
-- **Node.js 18+** (API server)
-- **Python 3.10+** (Embedding service & Indexer)
-- **MongoDB** (with research documents)
+- Docker & Docker Compose (OpenSearch cluster)
+- Node.js 18+
+- Python 3.10+ (embedding service and Python indexer)
+- MongoDB with Research Ambit Scopus documents
+- Redis
 
-### 1️⃣ Start Infrastructure
+### 1. Clone and configure
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/research-search-engine.git
-cd research-search-engine
+git clone https://github.com/IITD-Tech-Ambit/SEO-Backend-iitd.git
+cd SEO-Backend-iitd
+cp .env.example .env
+# Set OPENSEARCH_PASSWORD, MONGODB_URI, and other values
+```
 
-# Start OpenSearch cluster (2 nodes + Dashboards)
-docker-compose up -d
+### 2. Start infrastructure
 
-# Verify cluster health (~30 seconds to start)
+```bash
+# OpenSearch (2-node cluster + Dashboards)
+docker compose up -d
+
+# Verify cluster health (~30 s)
 curl -k -u admin:$OPENSEARCH_PASSWORD https://localhost:9200/_cluster/health
 ```
 
-### 2️⃣ Configure Environment
-
-```bash
-# Copy example environment file
-cp .env.example .env
-
-# Edit with your credentials
-nano .env
-```
-
-<details>
-<summary>📄 Environment Variables Reference</summary>
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPENSEARCH_NODE` | OpenSearch cluster URL | `https://localhost:9200` |
-| `OPENSEARCH_USER` | OpenSearch username | `admin` |
-| `OPENSEARCH_PASSWORD` | OpenSearch password | - |
-| `MONGODB_URI` | MongoDB connection string | - |
-| `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
-| `EMBEDDING_SERVICE_URL` | Python embedding service | `http://localhost:8001` |
-| `PORT` | API server port | `3000` |
-
-</details>
-
-### 3️⃣ Start Embedding Service
+### 3. Start the embedding service
 
 ```bash
 cd services/embedding
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# Start the service (downloads SPECTER2 model on first run)
-python run.py
+python run.py   # downloads BGE-base on first run
 ```
 
-### 4️⃣ Index Your Documents
+### 4. Index documents
 
 ```bash
 cd services/indexer
-python -m venv venv
-source venv/bin/activate
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# Create index and process all documents
 python run.py --create-index --reindex-all
-
-# Or index incrementally (only new documents)
-python run.py --limit 1000
+# incremental: python run.py --limit 1000
 ```
 
-### 5️⃣ Start API Server
+Alternatively, use the Go indexer in `indexer_go/` for high-throughput batch runs.
+
+### 5. Start the API
 
 ```bash
-# From project root
 npm install
-npm run dev
+npm run dev    # http://localhost:3000
 ```
 
-🎉 **Your search engine is now running at `http://localhost:3000`!**
-
----
-
-## 📚 API Reference
-
-### 🔍 Search Documents
-
-```http
-POST /api/v1/search
-Content-Type: application/json
-```
-
-<details>
-<summary><strong>Request Body</strong></summary>
-
-```json
-{
-  "query": "carbon nanotubes thermal conductivity",
-  "filters": {
-    "year_from": 2020,
-    "year_to": 2024,
-    "field_associated": "Chemical Engineering",
-    "document_type": "Article",
-    "subject_area": ["CENG", "CHEM"]
-  },
-  "search_in": ["title", "abstract", "author"],
-  "sort": "relevance",
-  "page": 1,
-  "per_page": 20
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `query` | string | **Required.** Search query text |
-| `filters` | object | Optional filters (year, field, type, subject) |
-| `search_in` | array | Fields to search: `title`, `abstract`, `author`, `subject_area`, `field` |
-| `sort` | string | Sort by: `relevance`, `date`, `citations` |
-| `page` | integer | Page number (default: 1) |
-| `per_page` | integer | Results per page (default: 20, max: 100) |
-
-</details>
-
-<details>
-<summary><strong>Response</strong></summary>
-
-```json
-{
-  "results": [
-    {
-      "_id": "507f1f77bcf86cd799439011",
-      "title": "Thermal Conductivity of Carbon Nanotube Composites",
-      "abstract": "This study investigates...",
-      "authors": [{"author_name": "John Smith", "author_id": "12345"}],
-      "publication_year": 2023,
-      "citation_count": 42,
-      "document_type": "Article"
-    }
-  ],
-  "facets": {
-    "years": [{"value": 2023, "count": 150}],
-    "document_types": [{"value": "Article", "count": 89}],
-    "fields": [{"value": "Chemical Engineering", "count": 200}],
-    "subject_areas": [{"value": "CENG", "count": 180}]
-  },
-  "pagination": {
-    "page": 1,
-    "per_page": 20,
-    "total": 342,
-    "total_pages": 18
-  },
-  "meta": {
-    "took_ms": 45,
-    "cache_hit": false
-  }
-}
-```
-
-</details>
-
-#### Example Queries
+Or run the full application stack with Docker:
 
 ```bash
-# Basic search
+docker compose -f docker-compose.services.yml up -d
+```
+
+---
+
+## API overview
+
+All routes are prefixed with `/api/v1`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/search` | Hybrid BM25 + semantic search with filters and facets |
+| `POST` | `/search/author-scope` | Semantic search within one author's papers |
+| `GET` | `/search/faculty-for-query` | All IITD faculty matching a query |
+| `GET` | `/suggest` | Blended typeahead (authors + papers) |
+| `GET` | `/search/health` | OpenSearch, embedding, and Redis health |
+| `GET` | `/document/:id` | Full document from MongoDB |
+| `GET` | `/document/:id/similar` | k-NN similar papers |
+| `GET` | `/documents/by-author/:authorId` | Paginated papers by author |
+| `GET` | `/author/:id/collaborators` | Co-author network |
+| `GET` | `/taxonomy/themes` | Thematic areas with counts |
+| `GET` | `/taxonomy/domains` | Domains (optionally filtered by theme) |
+| `GET` | `/taxonomy/domains/:slug/subdomains` | Subdomains of a domain |
+| `GET` | `/taxonomy/faculty` | Faculty kerberos IDs for a browse configuration |
+| `GET` | `/taxonomy/faculty/:kerberos/papers` | One faculty member's papers in a configuration |
+
+Example:
+
+```bash
 curl -X POST http://localhost:3000/api/v1/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "machine learning polymer"}'
+  -d '{"query": "carbon nanotubes thermal conductivity", "page": 1, "per_page": 20}'
+```
 
-# Search by author only
-curl -X POST http://localhost:3000/api/v1/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Kumar", "search_in": ["author"]}'
+Full request/response schemas: [Postman collection](https://documenter.getpostman.com/view/32690520/2sB3dWqmb1).
 
-# Filtered search with sorting
-curl -X POST http://localhost:3000/api/v1/search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "synthesis",
-    "filters": {"year_from": 2022},
-    "sort": "citations"
-  }'
+---
+
+## Taxonomy ingest
+
+The Explore section reads a precomputed taxonomy (themes, domains, subdomains) from MongoDB. To rebuild it from classification CSVs:
+
+```bash
+npm run taxonomy:ingest      # load taxonomy nodes + facet membership
+npm run taxonomy:rollup      # recompute facet counts
 ```
 
 ---
 
-### 📄 Get Document
+## Testing
 
-```http
-GET /api/v1/document/:id
+```bash
+npm test   # unit tests (runs in CI)
 ```
 
-Returns full document details from MongoDB.
+CI (`.github/workflows/ci.yml`) runs the unit suite on GitHub-hosted runners. Integration, performance, and retrieval-evaluation suites require live OpenSearch/MongoDB/Redis on the IITD network.
 
 ---
 
-### 📄 Get Documents by Author
+## Project structure
 
-```http
-GET /api/v1/documents/by-author/:authorId?page=1&per_page=20
 ```
-
-Returns all documents by a specific author.
-
----
-
-### ❤️ Health Check
-
-```http
-GET /api/v1/search/health
-```
-
-```json
-{
-  "status": "healthy",
-  "checks": {
-    "opensearch": true,
-    "embedding": true,
-    "redis": true
-  },
-  "timestamp": "2024-12-15T08:30:00.000Z"
-}
+SEO-Backend-iitd/
+├── src/                    # Fastify search API
+├── services/
+│   ├── embedding/          # BGE embedding + reranker (Python)
+│   └── indexer/            # Python batch indexer
+├── indexer_go/             # Go batch indexer
+├── scripts/taxonomy/       # Taxonomy ingest + rollup
+├── deploy/                 # Production docker-compose + nginx (VM layout)
+├── tests/                  # Unit, integration, and retrieval eval suites
+└── assets/                 # README diagrams
 ```
 
 ---
 
-## ⚡ Performance
+## Production deployment
 
-<table>
-<tr>
-<th>Metric</th>
-<th>Target</th>
-<th>Achieved</th>
-</tr>
-<tr>
-<td>Search Latency (P50)</td>
-<td>&lt; 50ms</td>
-<td>✅ ~35ms</td>
-</tr>
-<tr>
-<td>Search Latency (P99)</td>
-<td>&lt; 100ms</td>
-<td>✅ ~85ms</td>
-</tr>
-<tr>
-<td>Cache Hit Latency</td>
-<td>&lt; 10ms</td>
-<td>✅ ~5ms</td>
-</tr>
-<tr>
-<td>Indexing Rate</td>
-<td>50+ docs/sec</td>
-<td>✅ ~80 docs/sec</td>
-</tr>
-<tr>
-<td>Throughput</td>
-<td>100+ RPS</td>
-<td>✅ 150+ RPS</td>
-</tr>
-</table>
-
-### Optimization Techniques
-
-- **Query Embedding Cache**: Embeddings cached in Redis (TTL: 1 hour)
-- **Search Result Cache**: Full results cached (TTL: 5 minutes)
-- **Connection Pooling**: Persistent connections to all services
-- **Hydration Pattern**: Minimal data in OpenSearch, full docs from MongoDB
-- **HNSW Index**: Optimized k-NN with ef_construction=128, m=16
+Production orchestration lives in [`deploy/`](deploy/). On the VM, copy `deploy/docker-compose.yml` and `deploy/nginx/nginx.conf` into `~/main/` alongside sibling repos (`tech-ambit-explorer`, `research-ambit-main`, `chatbot-service`). Nginx routes `/search/` to this API and `/embed/` to the embedding service.
 
 ---
 
-## 📁 Project Structure
+## License
 
-```
-research-search-engine/
-├── 📄 .env.example           # Environment template
-├── 📄 docker-compose.yml     # OpenSearch cluster
-├── 📄 package.json           # Node.js dependencies
-│
-├── 📂 src/                   # Fastify API
-│   ├── 📄 app.js             # Application entry point
-│   ├── 📂 config/            # Environment configuration
-│   ├── 📂 controllers/       # Request handlers
-│   ├── 📂 models/            # MongoDB schemas
-│   ├── 📂 plugins/           # Fastify plugins
-│   ├── 📂 routes/            # API route definitions
-│   ├── 📂 schemas/           # Request validation
-│   └── 📂 services/          # Business logic
-│
-├── 📂 services/
-│   ├── 📂 embedding/         # SPECTER2 Embedding Service
-│   │   ├── 📄 run.py         # Entry point
-│   │   └── 📂 src/embedding/ # Package code
-│   │
-│   └── 📂 indexer/           # Batch Indexer
-│       ├── 📄 run.py         # Entry point
-│       └── 📂 src/indexer/   # Package code
-│
-└── 📂 assets/                # README images
-```
-
----
-
-## 🛠 Tech Stack
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Fastify-000000?style=flat-square&logo=fastify&logoColor=white" alt="Fastify">
-  <img src="https://img.shields.io/badge/OpenSearch-005EB8?style=flat-square&logo=opensearch&logoColor=white" alt="OpenSearch">
-  <img src="https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white" alt="MongoDB">
-  <img src="https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white" alt="Redis">
-  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/HuggingFace-FFD21E?style=flat-square&logo=huggingface&logoColor=black" alt="HuggingFace">
-  <img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker">
-</p>
-
----
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-<p align="center">
-  Built with ❤️ for academic research discovery
-</p>
+MIT — see [LICENSE](LICENSE).

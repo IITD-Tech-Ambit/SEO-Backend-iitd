@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, prod]
+  push:
+    branches: [main, prod]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # Only the unit suite runs in CI — it's pure/mocked (no OpenSearch/Mongo/Redis
+      # dependency). The integration/perf/eval suites under tests/ require live
+      # infra reachable only from the IITD network and can't run on GitHub-hosted
+      # runners.
+      - run: node --test tests/unit/*.test.mjs
