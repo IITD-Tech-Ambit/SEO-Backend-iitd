@@ -9,7 +9,6 @@ async function redisPlugin(fastify, options) {
 
     fastify.log.info('Redis connected successfully');
 
-    // Add TTL config to fastify
     fastify.decorate('redisTTL', options.ttl);
 }
 

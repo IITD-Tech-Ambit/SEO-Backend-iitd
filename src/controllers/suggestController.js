@@ -1,11 +1,5 @@
-/**
- * Suggest Controller
- * Handles the blended, intent-aware typeahead endpoint.
- */
-
-export async function suggest(request, reply) {
+export async function suggest(request, reply, suggestService) {
     const { q, limit } = request.query;
-    const suggestService = request.server.suggestService;
 
     try {
         const result = await suggestService.suggest(q, limit);

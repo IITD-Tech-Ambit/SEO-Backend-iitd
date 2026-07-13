@@ -1,10 +1,7 @@
-// Environment Configuration
 export default {
-    // Server
     port: parseInt(process.env.PORT || '3001'),
     host: process.env.HOST || '0.0.0.0',
 
-    // MongoDB
     mongodb: {
         uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/research_db',
         options: {
@@ -14,7 +11,6 @@ export default {
         }
     },
 
-    // OpenSearch
     opensearch: {
         node: process.env.OPENSEARCH_NODE || 'http://localhost:9200',
         auth: process.env.OPENSEARCH_USER ? {
@@ -28,7 +24,6 @@ export default {
         authorsSuggestIndex: process.env.OPENSEARCH_AUTHORS_INDEX || 'authors_suggest'
     },
 
-    // Redis
     redis: {
         url: process.env.REDIS_URL || 'redis://localhost:6379',
         ttl: {
@@ -39,14 +34,22 @@ export default {
         }
     },
 
-    // Embedding Service
     embeddingService: {
+        // 'grpc' routes Embed/Rerank through Envoy (production mesh);
+        // 'http' keeps the legacy REST client for local dev without Envoy.
+        transport: (process.env.EMBEDDING_TRANSPORT || 'http').toLowerCase(),
+        envoyTarget: process.env.ENVOY_GRPC_TARGET || 'envoy:10000',
         url: process.env.EMBEDDING_SERVICE_URL || 'http://localhost:8000',
         timeout: 10000,
         rerankTimeout: parseInt(process.env.RERANK_TIMEOUT_MS || '800')
     },
 
-    // Timeouts
+    // East-west gRPC listener (search.v1.SearchService)
+    grpc: {
+        enabled: (process.env.GRPC_ENABLED || 'true').toLowerCase() === 'true',
+        bindAddress: process.env.GRPC_BIND_ADDRESS || '0.0.0.0:50053'
+    },
+
     timeouts: {
         embedding: 10000,    // 10s for embedding generation
         opensearch: 10000,  // 10s for search query
@@ -54,7 +57,6 @@ export default {
         total: 15000        // 15s total request timeout
     },
 
-    // Typeahead / suggest (blended autocomplete)
     suggest: {
         minPrefix: 2,           // queries shorter than this return empty groups
         defaultLimit: 8,
@@ -80,7 +82,6 @@ export default {
         }
     },
 
-    // Taxonomy browse (Explore section)
     taxonomy: {
         // Rollup-backed reads change only when the offline rollup job runs,
         // so they cache long; papers-in-context is a live query, cached short.
@@ -91,7 +92,6 @@ export default {
         maxPerPage: 100
     },
 
-    // Search defaults
     search: {
         // User-facing relevance threshold (normalized hybrid score) that defines a
         // "matching paper". Set via env so it can be tuned against the eval harness.
@@ -113,7 +113,6 @@ export default {
         maxResultWindow: parseInt(process.env.MAX_RESULT_WINDOW || '10000')
     },
 
-    // Reranker
     reranker: {
         timeout: parseInt(process.env.RERANK_TIMEOUT_MS || '800'),
         modelVersion: process.env.RERANK_MODEL_VERSION || 'bge-reranker-base-v1',

@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     config.validate()
 
+    grpc_server = None
+
     if config.BACKEND_NODES:
         from .load_balancer import NodePool
 
@@ -49,7 +51,6 @@ async def lifespan(app: FastAPI):
             emb.model = emb.model.to(emb.device)
             emb.model.eval()
 
-        # Warmup forward pass
         dummy = emb.tokenizer(
             ["warmup"],
             return_tensors="np" if config.EMBED_BACKEND == "onnx" else "pt",
@@ -71,7 +72,6 @@ async def lifespan(app: FastAPI):
         if config.RERANK_ENABLED:
             rnk = RerankerState()
             rnk.tokenizer, rnk.session = await asyncio.to_thread(load_reranker)
-            # Warmup reranker
             from .inference import rerank_sync
             await asyncio.to_thread(
                 rerank_sync, "warmup query", ["doc one", "doc two"], rnk
@@ -80,8 +80,16 @@ async def lifespan(app: FastAPI):
             routes.reranker_state = rnk
             logger.info("Reranker ready")
 
+    # East-west gRPC listener (embedding.v1) — REST stays only for /health
+    # and legacy internal callers; public /embed/ is no longer routed by nginx.
+    from .grpc_server import start_grpc_server
+
+    grpc_server = await start_grpc_server()
+
     yield
 
+    if grpc_server is not None:
+        await grpc_server.stop(grace=5)
     if routes.node_pool is not None:
         await routes.node_pool.stop()
     logger.info("Embedding service shut down")

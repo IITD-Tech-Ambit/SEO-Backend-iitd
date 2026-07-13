@@ -44,7 +44,6 @@ const taxonomyFacetMembersSchema = new mongoose.Schema({
     }
 });
 
-// === INDEXES ===
 taxonomyFacetMembersSchema.index(
     { thematic_area_id: 1, domain_id: 1, subdomain_id: 1, department_id: 1 },
     { unique: true }

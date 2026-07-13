@@ -5,11 +5,10 @@ import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
 /**
  * Author-scoped search: rank one author's papers for a query (Explore sidebar drill-down).
  *
- * Phase 1: resolve author identity (Faculty expert_id/scopus_id, else raw id) and build an
- *   OpenSearch-native author filter using the SAME methodology as the People sidebar.
- * Phase 2: query with the shared builders + author filter (basic: strict BM25; advanced:
- *   normalized hybrid so BM25 and kNN are comparable).
- * Phase 3: hydrate from MongoDB in hit order and attach similarity scores.
+ * Resolves author identity (Faculty expert_id/scopus_id, else raw id) with the SAME
+ * dual-identity methodology as the People sidebar, queries via shared builders plus an
+ * author filter (basic: strict BM25; advanced: normalized hybrid), then hydrates from
+ * MongoDB in hit order and attaches similarity scores.
  */
 export default class AuthorScopedSearch {
     constructor({ opensearch, indexName, mongoose, redis, redisTTL, logger, queryBuilder, filterBuilder, rosterService, embeddingService, hydrator }) {
@@ -60,7 +59,7 @@ export default class AuthorScopedSearch {
             this.logger.warn({ err }, 'Redis cache read failed for author-scoped search');
         }
 
-        // Phase 1: resolve author identity and build the OpenSearch-native author filter.
+        // Resolve author identity and build the OpenSearch-native author filter.
         let authorName, totalAuthorPapers, authorFilter;
         try {
             const Faculty = this.mongoose.model('Faculty');
@@ -91,7 +90,7 @@ export default class AuthorScopedSearch {
                 totalPapers: totalAuthorPapers,
                 scopusIds: scopusAuthorIds.length,
                 hasKerberos: !!kerberosId
-            }, 'Author-scoped search: Phase 1 - resolved author identity');
+            }, 'Author-scoped search: resolved author identity');
 
             if (totalAuthorPapers === 0) {
                 return {
@@ -113,14 +112,12 @@ export default class AuthorScopedSearch {
                 authorName = authorNameDoc?.authors?.[0]?.author_name || 'Unknown';
             }
         } catch (err) {
-            this.logger.error({ err, author_id }, 'Author-scoped search: Phase 1 FAILED');
+            this.logger.error({ err, author_id }, 'Author-scoped search: author identity resolution FAILED');
             throw err;
         }
 
         let facultyAuthorIds = null;
         let facultyKerberosIds = null;
-        const refineFacultyIds = null;
-        const refineKerberosIds = null;
         let authorRefineNarrow = false;
         if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
             if (refineChain.length >= 1) {
@@ -136,7 +133,6 @@ export default class AuthorScopedSearch {
         }
         const refineAnchor = authorRefineNarrow ? refineChain[0] : null;
 
-        // Phase 2: build query with the shared builders + author filter.
         let hits, total;
         try {
             const isBasic = mode === 'basic';
@@ -149,8 +145,7 @@ export default class AuthorScopedSearch {
                 const base = this.queryBuilder.buildBasicQuery(
                     query, effFilters, page, per_page, 'relevance',
                     searchInNorm, refineChain,
-                    facultyAuthorIds, refineFacultyIds, authorRefineNarrow,
-                    facultyKerberosIds, refineKerberosIds,
+                    facultyAuthorIds, authorRefineNarrow, facultyKerberosIds,
                     { authorScoped: true }
                 );
                 const filterClauses = base.query.bool.filter || [];
@@ -198,19 +193,19 @@ export default class AuthorScopedSearch {
                 mode: isBasic ? 'basic' : 'advanced',
                 refine_chain: refineChain.length,
                 search_in: searchInNorm
-            }, 'Author-scoped search: Phase 2 - querying OpenSearch');
+            }, 'Author-scoped search: querying OpenSearch');
 
             const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
             hits = osResponse.body.hits.hits;
             total = osResponse.body.hits.total.value;
 
-            this.logger.info({ hitsCount: hits.length, total }, 'Author-scoped search: Phase 2 - OpenSearch results');
+            this.logger.info({ hitsCount: hits.length, total }, 'Author-scoped search: OpenSearch results');
         } catch (err) {
-            this.logger.error({ err, author_id, query }, 'Author-scoped search: Phase 2 FAILED (OpenSearch)');
+            this.logger.error({ err, author_id, query }, 'Author-scoped search: OpenSearch query FAILED');
             throw err;
         }
 
-        // Phase 3: hydrate from MongoDB and attach similarity scores.
+        // Hydrate from MongoDB and attach similarity scores.
         let scoredResults;
         try {
             const results = await this.hydrator.hydrateFromMongoDB(hits);
@@ -218,7 +213,7 @@ export default class AuthorScopedSearch {
             scoredResults = results.map(r => ({ ...r, similarity_score: scoreMap.get(r._id.toString()) }));
             await this.hydrator.applyFacultyDisplayNames(scoredResults);
         } catch (err) {
-            this.logger.error({ err, author_id }, 'Author-scoped search: Phase 3 FAILED (Hydration)');
+            this.logger.error({ err, author_id }, 'Author-scoped search: hydration FAILED');
             throw err;
         }
 

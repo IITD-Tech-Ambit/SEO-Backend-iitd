@@ -18,7 +18,6 @@ const departmentSchema = new mongoose.Schema({
     }
 })
 
-// === INDEXES ===
 departmentSchema.index({ name: 1 });
 departmentSchema.index({ category: 1 });
 

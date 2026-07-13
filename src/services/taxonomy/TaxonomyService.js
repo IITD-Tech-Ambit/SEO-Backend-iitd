@@ -10,17 +10,17 @@ import { TaxonomyNotFoundError, TaxonomyBadRequestError } from './errors.js';
  * Nothing here computes counts — the rollup job already did.
  */
 export default class TaxonomyService {
-    constructor(fastify, config) {
-        this.logger = fastify.log;
+    constructor({ mongoose, redis, logger, config }) {
+        this.logger = logger;
         this.cfg = config.taxonomy;
 
         this.catalog = new TaxonomyCatalog({
-            mongoose: fastify.mongoose,
-            logger: fastify.log,
+            mongoose,
+            logger,
             refreshMs: this.cfg.catalogRefreshMs
         });
-        this.repository = new TaxonomyRepository({ mongoose: fastify.mongoose });
-        this.cache = new TaxonomyCache({ redis: fastify.redis, logger: fastify.log });
+        this.repository = new TaxonomyRepository({ mongoose });
+        this.cache = new TaxonomyCache({ redis, logger });
     }
 
     async init() {

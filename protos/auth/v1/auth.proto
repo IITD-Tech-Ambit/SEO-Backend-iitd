@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package auth.v1;
+
+// Identity plane: session verification and user lookup.
+// Served by auth-service; consumed by api-gateway (and any service that
+// needs to resolve a trusted identity) through Envoy.
+service AuthService {
+  // Validates an application session JWT (issued by auth-service, never an
+  // IITD access_token) and returns the identity claims embedded in it.
+  rpc VerifyToken(VerifyTokenRequest) returns (VerifyTokenResponse);
+
+  // Fetches the persisted user profile from the auth-service users store.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+}
+
+message User {
+  // IITD OAuth user_id (kerberos login id, e.g. "ch7221511").
+  string user_id = 1;
+  string email = 2;
+  string name = 3;
+  // Derived login id (email prefix / user_id); stable per person.
+  string kerberos = 4;
+  string department = 5;
+  // IITD category (student / faculty / staff ...).
+  string category = 6;
+  string uniqueiitdid = 7;
+}
+
+message VerifyTokenRequest {
+  string token = 1;
+}
+
+message VerifyTokenResponse {
+  bool valid = 1;
+  User user = 2;
+  // Machine-readable reason when valid=false (expired, malformed, ...).
+  string error = 3;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  bool found = 1;
+  User user = 2;
+}

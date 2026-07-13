@@ -41,7 +41,6 @@ export const searchRequestSchema = {
                     items: { type: 'string' },
                     description: 'Subject area codes'
                 },
-                // Nested author filters (Phase 2)
                 author_id: {
                     type: 'string',
                     description: 'Filter by specific author ID'

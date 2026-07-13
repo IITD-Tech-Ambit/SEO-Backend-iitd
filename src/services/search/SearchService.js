@@ -22,15 +22,15 @@ import AuthorScopedSearch from './AuthorScopedSearch.js';
  * the People sidebar (FacultyForQueryService), and author drill-down (AuthorScopedSearch).
  */
 export default class SearchService {
-    constructor(fastify, config) {
-        this.opensearch = fastify.opensearch;
-        this.indexName = fastify.opensearchIndex;
-        this.redis = fastify.redis;
-        this.redisTTL = fastify.redisTTL;
-        this.mongoose = fastify.mongoose;
-        this.embeddingService = fastify.embeddingService;
+    constructor({ opensearch, opensearchIndex, redis, redisTTL, mongoose, embeddingService, logger, config }) {
+        this.opensearch = opensearch;
+        this.indexName = opensearchIndex;
+        this.redis = redis;
+        this.redisTTL = redisTTL;
+        this.mongoose = mongoose;
+        this.embeddingService = embeddingService;
         this.config = config;
-        this.logger = fastify.log;
+        this.logger = logger;
 
         this.searchConfig = buildSearchConfig(config);
         this.candidateK = config.search?.candidateK || 50;
@@ -56,7 +56,7 @@ export default class SearchService {
             filterBuilder: this.filters,
             rosterService: this.roster
         });
-        this.hydrator = new ResultHydrator(deps);
+        this.hydrator = new ResultHydrator({ mongoose: this.mongoose, logger: this.logger });
         this.reranker = new RerankService({ ...deps, rerankConfig: this.rerankConfig });
         this.suggestions = new SuggestionService(deps);
         this.facultyForQuery = new FacultyForQueryService({
@@ -125,8 +125,6 @@ export default class SearchService {
 
         let facultyAuthorIds = null;
         let facultyKerberosIds = null;
-        const refineFacultyIds = null;
-        const refineKerberosIds = null;
         let authorRefineNarrow = false;
         if (searchInNorm?.length === 1 && searchInNorm[0] === 'author') {
             // Author-only: chain[0] is the person anchor; the rest (+ query) narrow by topic.
@@ -149,14 +147,14 @@ export default class SearchService {
         if (mode === 'basic') {
             return this._runBasicSearch({
                 query, filters, sort, page, per_page, searchInNorm, refineChain,
-                facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds,
+                facultyAuthorIds, authorRefineNarrow, facultyKerberosIds,
                 cacheKey
             });
         }
 
         return this._runAdvancedSearch({
             query, filters, sort, page, per_page, searchInNorm, refineChain,
-            facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds,
+            facultyAuthorIds, authorRefineNarrow, facultyKerberosIds,
             cacheKey, rerank
         });
     }
@@ -170,12 +168,12 @@ export default class SearchService {
         return normalizeChain(source);
     }
 
-    async _runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds, cacheKey }) {
+    async _runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], facultyAuthorIds, authorRefineNarrow, facultyKerberosIds, cacheKey }) {
         this.logger.info({ query, mode: 'basic' }, 'Running BASIC (BM25-only) search');
 
         const osQuery = this.queryBuilder.buildBasicQuery(
             query, filters, page, per_page, sort, searchInNorm, refineChain,
-            facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds
+            facultyAuthorIds, authorRefineNarrow, facultyKerberosIds
         );
 
         const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
@@ -216,7 +214,7 @@ export default class SearchService {
         return { ...response, cacheHit: false };
     }
 
-    async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], facultyAuthorIds, refineFacultyIds, authorRefineNarrow, facultyKerberosIds, refineKerberosIds, cacheKey, rerank = null }) {
+    async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], facultyAuthorIds, authorRefineNarrow, facultyKerberosIds, cacheKey, rerank = null }) {
         this.logger.info({ query, mode: 'advanced' }, 'Running ADVANCED (hybrid) search');
 
         const embedding = await this.embeddingService.embedQuery(query);
@@ -516,124 +514,6 @@ export default class SearchService {
                 cacheHit: false
             };
         }
-    }
-
-    /**
-     * Find semantically similar papers using k-NN on an existing document's embedding.
-     */
-    async findSimilar(documentId, limit = 10) {
-        const sourceQuery = await this.opensearch.search({
-            index: this.indexName,
-            body: {
-                query: { term: { mongo_id: documentId } },
-                _source: ['embedding', 'title', 'subject_area']
-            }
-        });
-
-        if (!sourceQuery.body.hits.hits.length) {
-            throw new Error('Document not found in search index');
-        }
-
-        const source = sourceQuery.body.hits.hits[0]._source;
-        const embedding = source.embedding;
-
-        const similarQuery = await this.opensearch.search({
-            index: this.indexName,
-            body: {
-                size: limit,
-                _source: ['mongo_id'],
-                query: {
-                    bool: {
-                        must: [{ knn: { embedding: { vector: embedding, k: limit + 5 } } }],
-                        must_not: [{ term: { mongo_id: documentId } }]
-                    }
-                }
-            }
-        });
-
-        const results = await this.hydrator.hydrateFromMongoDB(similarQuery.body.hits.hits);
-        const scoreMap = new Map(similarQuery.body.hits.hits.map(h => [h._source.mongo_id, h._score]));
-
-        return {
-            source: { id: documentId, title: source.title, subject_areas: source.subject_area },
-            similar: results.map(r => ({ ...r, similarity_score: scoreMap.get(r._id.toString()) }))
-        };
-    }
-
-    /**
-     * Co-authors for a faculty member, found via both nested Scopus author_id and kerberos.
-     */
-    async getCoAuthors(authorId) {
-        const cacheKey = `coauthors:${authorId}`;
-        try {
-            const cached = await this.redis.get(cacheKey);
-            if (cached) return JSON.parse(cached);
-        } catch (err) {
-            this.logger.warn({ err }, 'Redis cache read failed (getCoAuthors)');
-        }
-
-        const Faculty = this.mongoose.model('Faculty');
-        const { kerberos: kerberosId, scopusIds } = await resolveFacultyByAuthorId(Faculty, authorId);
-        const allScopusIds = scopusIds.length > 0 ? scopusIds : [authorId];
-
-        const shouldClauses = [
-            { nested: { path: 'authors', query: { terms: { 'authors.author_id': allScopusIds } } } }
-        ];
-        if (kerberosId) shouldClauses.push({ term: { kerberos: kerberosId } });
-
-        const result = await this.opensearch.search({
-            index: this.indexName,
-            body: {
-                size: 0,
-                query: { bool: { should: shouldClauses, minimum_should_match: 1 } },
-                aggs: {
-                    author_papers: {
-                        nested: { path: 'authors' },
-                        aggs: {
-                            coauthors: {
-                                terms: { field: 'authors.author_id', size: 50, exclude: allScopusIds },
-                                aggs: {
-                                    author_info: { top_hits: { size: 1, _source: ['authors.author_name'] } }
-                                }
-                            }
-                        }
-                    },
-                    total_papers: { value_count: { field: 'mongo_id' } }
-                }
-            }
-        });
-
-        const coauthors = result.body.aggregations?.author_papers?.coauthors?.buckets || [];
-
-        const response = {
-            author_id: authorId,
-            total_papers: result.body.aggregations?.total_papers?.value || 0,
-            collaborators: coauthors.map(c => ({
-                author_id: c.key,
-                collaboration_count: c.doc_count,
-                name: c.author_info?.hits?.hits?.[0]?._source?.authors?.author_name
-            }))
-        };
-
-        try {
-            await this.redis.setex(cacheKey, this.redisTTL.coAuthors, JSON.stringify(response));
-        } catch (err) {
-            this.logger.warn({ err }, 'Redis cache write failed (getCoAuthors)');
-        }
-
-        return response;
-    }
-
-    /**
-     * Single document by Mongo `_id` or `open_search_id`.
-     */
-    async getDocument(id) {
-        const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
-        let doc = null;
-        if (id.match(/^[0-9a-fA-F]{24}$/)) doc = await ResearchDocument.findById(id).lean();
-        if (!doc) doc = await ResearchDocument.findOne({ open_search_id: id }).lean();
-        if (doc) await this.hydrator.filterAuthorsToFacultyRoster([doc]);
-        return doc;
     }
 
     authorScopedSearch(params) {

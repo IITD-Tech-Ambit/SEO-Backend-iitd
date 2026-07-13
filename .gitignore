@@ -17,15 +17,15 @@ pip-selfcheck.json
 
 # ==================== ENVIRONMENT FILES ====================
 .env
-.env.local
-.env.*.local
-.env.docker
-services/embedding/.env.docker
+.env.*
+!.env.example
 
 # ==================== LOGS ====================
 logs/
 *.log
 npm-debug.log*
+yarn-*.log*
+pnpm-debug.log*
 
 # ==================== BUILD / OUTPUT ====================
 dist/
@@ -48,16 +48,6 @@ Thumbs.db
 *.sublime-project
 *.sublime-workspace
 
-# ==================== GO BINARIES ====================
-*.exe
-*.exe~
-*.dll
-*.dylib
-*.test
-*.out
-indexer_go/indexer
-indexer_go/bin/
-
 # ==================== PYTHON / ML MODELS ====================
 *.so
 *.pt
@@ -79,9 +69,13 @@ embedding_cache/
 # Regenerate via: node tests/scripts/dump_test_corpus.mjs
 tests/fixtures/test_corpus.json
 
+# ==================== RUNTIME ====================
+*.pid
+.pm2/
+tmp/
+
 # ==================== MISC ====================
 *.tgz
 .eslintcache
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
-/indexer_go/.cache1
 /tmp/

@@ -11,7 +11,7 @@
  *   - MongoDB running with research documents
  *   - OpenSearch running
  *   - Embedding service running
- *   - Go indexer built (cd indexer_go && go build -o indexer ./cmd/indexer)
+ *   - Go indexer built (cd ../indexing_pipeline && go build -o indexer ./cmd/indexer)
  *
  * Usage:
  *   MONGODB_URI=mongodb://localhost:27017/research_db node tests/scripts/setup_test_index.mjs
@@ -25,7 +25,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/research_db';
-const INDEXER_DIR = path.resolve(__dirname, '../../indexer_go');
+const INDEXER_DIR = path.resolve(__dirname, '../../../indexing_pipeline');
 const INDEXER_BIN = path.join(INDEXER_DIR, 'indexer');
 
 async function main() {

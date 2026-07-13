@@ -1,35 +1,27 @@
 import crypto from 'crypto';
 
 /**
- * Embedding Service Client
- * Communicates with Python FastAPI embedding service
+ * Redis-cached facade over an injected EmbeddingTransport (HTTP for local
+ * dev, gRPC-via-Envoy in production — see services/embedding/*). Callers
+ * only ever see embedQuery/embedBatch/rerank/health, so the wire protocol
+ * is swappable without touching search code.
  */
 export default class EmbeddingService {
-    constructor(config, redis, redisTTL, logger) {
-        this.baseUrl = config.url;
-        this.timeout = config.timeout;
-        this.rerankTimeout = config.rerankTimeout || 800;
+    constructor(config, redis, redisTTL, logger, transport) {
+        this.transport = transport;
         this.redis = redis;
         this.redisTTL = redisTTL;
         this.logger = logger;
     }
 
-    /**
-     * Generate cache key for query embedding
-     */
     _getCacheKey(text) {
         const hash = crypto.createHash('sha256').update(text).digest('hex').slice(0, 16);
         return `embed:${hash}`;
     }
 
-    /**
-     * Get embedding for a single query text
-     * Uses Redis cache to avoid redundant embedding generation
-     */
     async embedQuery(text) {
         const cacheKey = this._getCacheKey(text);
 
-        // Check cache first
         try {
             const cached = await this.redis.get(cacheKey);
             if (cached) {
@@ -40,133 +32,37 @@ export default class EmbeddingService {
             this.logger.warn({ err }, 'Redis cache read failed');
         }
 
-        // Call embedding service
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+        const embeddings = await this.transport.embed([text]);
+        const embedding = embeddings[0];
 
         try {
-            const response = await fetch(`${this.baseUrl}/embed`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ texts: [text] }),
-                signal: controller.signal
-            });
-
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-                throw new Error(`Embedding service error: ${response.status}`);
-            }
-
-            const data = await response.json();
-            const embedding = data.embeddings[0];
-
-            // Cache the embedding
-            try {
-                await this.redis.setex(
-                    cacheKey,
-                    this.redisTTL.queryEmbedding,
-                    JSON.stringify(embedding)
-                );
-            } catch (err) {
-                this.logger.warn({ err }, 'Redis cache write failed');
-            }
-
-            return embedding;
-
-        } catch (error) {
-            clearTimeout(timeoutId);
-
-            if (error.name === 'AbortError') {
-                throw new Error('Embedding service timeout');
-            }
-            throw error;
+            await this.redis.setex(
+                cacheKey,
+                this.redisTTL.queryEmbedding,
+                JSON.stringify(embedding)
+            );
+        } catch (err) {
+            this.logger.warn({ err }, 'Redis cache write failed');
         }
+
+        return embedding;
     }
 
-    /**
-     * Batch embed multiple texts (used by indexer)
-     */
+    /** Batch embed (used by indexer). */
     async embedBatch(texts) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.timeout * 2);
-
-        try {
-            const response = await fetch(`${this.baseUrl}/embed`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ texts }),
-                signal: controller.signal
-            });
-
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-                throw new Error(`Embedding service error: ${response.status}`);
-            }
-
-            const data = await response.json();
-            return data.embeddings;
-
-        } catch (error) {
-            clearTimeout(timeoutId);
-
-            if (error.name === 'AbortError') {
-                throw new Error('Embedding service timeout');
-            }
-            throw error;
-        }
+        return this.transport.embed(texts);
     }
 
     /**
-     * Rerank documents against a query via the cross-encoder endpoint.
+     * Rerank documents against a query via the cross-encoder.
      * Returns [{ index, score }] sorted by score descending.
      * Throws on timeout/error — callers should catch and fall back to first-stage order.
      */
     async rerank(query, documents, topN = null) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.rerankTimeout);
-
-        try {
-            const body = { query, documents };
-            if (topN != null) body.top_n = topN;
-
-            const response = await fetch(`${this.baseUrl}/rerank`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-                signal: controller.signal
-            });
-
-            clearTimeout(timeoutId);
-
-            if (!response.ok) {
-                throw new Error(`Rerank service error: ${response.status}`);
-            }
-
-            const data = await response.json();
-            return data.results;
-        } catch (error) {
-            clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                throw new Error('Rerank service timeout');
-            }
-            throw error;
-        }
+        return this.transport.rerank(query, documents, topN);
     }
 
-    /**
-     * Health check
-     */
     async health() {
-        try {
-            const response = await fetch(`${this.baseUrl}/health`, {
-                method: 'GET',
-                signal: AbortSignal.timeout(2000)
-            });
-            return response.ok;
-        } catch {
-            return false;
-        }
+        return this.transport.health();
     }
 }

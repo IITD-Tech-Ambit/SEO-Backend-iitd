@@ -40,7 +40,7 @@ Client  →  Fastify API  →  Redis (query / embedding cache)
 |---|---|---|
 | Search API | Node.js 18+, Fastify | REST endpoints, validation, caching, metrics |
 | Embedding service | Python 3.10+, FastAPI, Gunicorn | 768-dim BGE-base embeddings + ONNX reranker |
-| Indexers | Python (`services/indexer/`) + Go (`indexer_go/`) | MongoDB → OpenSearch batch sync |
+| Indexers | Python (`services/indexer/`) + Go ([`indexing_pipeline`](https://github.com/IITD-Tech-Ambit/indexing_pipeline)) | MongoDB → OpenSearch batch sync |
 | Search engine | OpenSearch 2.x | Inverted index + vector search |
 | Cache | Redis 7 | Query results, embeddings, rerank scores |
 | Source DB | MongoDB 6 | Scopus metadata, faculty, taxonomy tables |
@@ -108,7 +108,7 @@ python run.py --create-index --reindex-all
 # incremental: python run.py --limit 1000
 ```
 
-Alternatively, use the Go indexer in `indexer_go/` for high-throughput batch runs.
+Alternatively, use the Go indexer in the sibling [`indexing_pipeline`](https://github.com/IITD-Tech-Ambit/indexing_pipeline) repo for high-throughput batch runs.
 
 ### 5. Start the API
 
@@ -187,7 +187,6 @@ SEO-Backend-iitd/
 ├── services/
 │   ├── embedding/          # BGE embedding + reranker (Python)
 │   └── indexer/            # Python batch indexer
-├── indexer_go/             # Go batch indexer
 ├── scripts/taxonomy/       # Taxonomy ingest + rollup
 ├── deploy/                 # Production docker-compose + nginx (VM layout)
 ├── tests/                  # Unit, integration, and retrieval eval suites

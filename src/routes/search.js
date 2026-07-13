@@ -3,15 +3,9 @@ import { suggestRequestSchema, suggestResponseSchema } from '../schemas/suggest.
 import { search, searchHealth, authorScopedSearch, getAllFacultyForQuery } from '../controllers/searchController.js';
 import { suggest } from '../controllers/suggestController.js';
 
-/**
- * Search Routes
- * POST /search - Hybrid semantic + keyword search
- * POST /search/author-scope - Author-scoped semantic search
- * GET /search/faculty-for-query - Get all faculty for a query (aggregation)
- * GET /suggest - Blended, intent-aware typeahead (authors + papers)
- * GET /search/health - Health check for search services
- */
 export default async function searchRoutes(fastify, options) {
+    const { searchService, suggestService } = options;
+
     fastify.get('/suggest', {
         schema: {
             description: 'Blended, intent-aware autocomplete across authors and papers',
@@ -21,7 +15,7 @@ export default async function searchRoutes(fastify, options) {
                 200: suggestResponseSchema
             }
         },
-        handler: suggest
+        handler: (request, reply) => suggest(request, reply, suggestService)
     });
 
     fastify.post('/search', {
@@ -35,7 +29,7 @@ export default async function searchRoutes(fastify, options) {
                 500: errorResponseSchema
             }
         },
-        handler: search
+        handler: (request, reply) => search(request, reply, searchService)
     });
 
     fastify.post('/search/author-scope', {
@@ -49,7 +43,7 @@ export default async function searchRoutes(fastify, options) {
                 500: errorResponseSchema
             }
         },
-        handler: authorScopedSearch
+        handler: (request, reply) => authorScopedSearch(request, reply, searchService)
     });
 
     fastify.get('/search/faculty-for-query', {
@@ -63,7 +57,7 @@ export default async function searchRoutes(fastify, options) {
                 500: errorResponseSchema
             }
         },
-        handler: getAllFacultyForQuery
+        handler: (request, reply) => getAllFacultyForQuery(request, reply, searchService)
     });
 
     fastify.get('/search/health', {

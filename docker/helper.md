@@ -62,16 +62,16 @@ curl http://localhost:3000/api/v1/search/health
 
 ---
 
-# Go Indexer (services_go/indexer_go)
+# Go Indexer (sibling repo: indexing_pipeline)
 
-Path: [services_go/indexer_go](services_go/indexer_go)
+Path: [IITD-Tech-Ambit/indexing_pipeline](https://github.com/IITD-Tech-Ambit/indexing_pipeline)
 
 ### Run locally (recommended for development)
 
 Build the indexer:
 
 ```bash
-cd indexer_go
+cd ../indexing_pipeline
 go build -o indexer ./cmd/indexer
 ```
 
@@ -87,7 +87,7 @@ export OPENSEARCH_PASSWORD=your_admin_password
 Start the indexer (example flags):
 
 ```bash
-./indexer --create-index --reindex-all
+./indexer run --reindex-all
 ```
 
 ---

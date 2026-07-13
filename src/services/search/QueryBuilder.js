@@ -383,7 +383,7 @@ export default class QueryBuilder {
      * Basic mode: strict BM25 only (no embeddings, no fuzziness on the primary match).
      * cross_fields + operator:and for precise multi-word matching. Supports refine_within.
      */
-    buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineChain = [], facultyAuthorIds = null, refineFacultyIds = null, authorRefineNarrow = false, facultyKerberosIds = null, refineKerberosIds = null, { authorScoped = false } = {}) {
+    buildBasicQuery(query, filters, page, perPage, sort, searchIn = null, refineChain = [], facultyAuthorIds = null, authorRefineNarrow = false, facultyKerberosIds = null, { authorScoped = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const chain = normalizeChain(refineChain);

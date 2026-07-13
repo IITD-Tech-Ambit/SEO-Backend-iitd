@@ -43,7 +43,7 @@ ENV PYTHONPATH=/app/src
 
 USER appuser
 
-EXPOSE 8000
+EXPOSE 8000 50052
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
@@ -63,7 +63,7 @@ CMD ["sh", "-c", \
         --worker-class uvicorn.workers.UvicornWorker \
         --workers ${WEB_CONCURRENCY:-3} \
         --bind 0.0.0.0:${PORT:-8000} \
-        --timeout 120 \
+        --timeout ${GUNICORN_TIMEOUT:-120} \
         --graceful-timeout 30 \
         --keep-alive 5 \
         --log-level info \

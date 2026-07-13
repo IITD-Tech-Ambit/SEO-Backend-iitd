@@ -1,7 +1,6 @@
 import { TaxonomyNotFoundError, TaxonomyBadRequestError } from '../services/taxonomy/errors.js';
 
 /**
- * Taxonomy Controller
  * Thin HTTP layer over TaxonomyService: unpack request, map typed domain
  * errors to statuses, attach meta. No data logic here.
  */
@@ -38,45 +37,45 @@ async function respond(request, reply, serve) {
     }
 }
 
-export async function listDepartments(request, reply) {
+export async function listDepartments(request, reply, taxonomyService) {
     return respond(request, reply, () =>
-        request.server.taxonomyService.listDepartments());
+        taxonomyService.listDepartments());
 }
 
-export async function listThemes(request, reply) {
+export async function listThemes(request, reply, taxonomyService) {
     const { department } = request.query;
     return respond(request, reply, () =>
-        request.server.taxonomyService.listThemes({ department }));
+        taxonomyService.listThemes({ department }));
 }
 
-export async function listDomains(request, reply) {
+export async function listDomains(request, reply, taxonomyService) {
     const { theme, department } = request.query;
     return respond(request, reply, () =>
-        request.server.taxonomyService.listDomains({ theme, department }));
+        taxonomyService.listDomains({ theme, department }));
 }
 
-export async function listSubdomains(request, reply) {
+export async function listSubdomains(request, reply, taxonomyService) {
     const { domainSlug } = request.params;
     const { theme, department } = request.query;
     return respond(request, reply, () =>
-        request.server.taxonomyService.listSubdomains({ domain: domainSlug, theme, department }));
+        taxonomyService.listSubdomains({ domain: domainSlug, theme, department }));
 }
 
-export async function getCounts(request, reply) {
+export async function getCounts(request, reply, taxonomyService) {
     const { theme, domain, subdomain, department } = request.query;
     return respond(request, reply, () =>
-        request.server.taxonomyService.getCounts({ theme, domain, subdomain, department }));
+        taxonomyService.getCounts({ theme, domain, subdomain, department }));
 }
 
-export async function getFaculty(request, reply) {
+export async function getFaculty(request, reply, taxonomyService) {
     const { theme, domain, subdomain, department, page, per_page } = request.query;
     return respond(request, reply, () =>
-        request.server.taxonomyService.getFaculty({ theme, domain, subdomain, department, page, per_page }));
+        taxonomyService.getFaculty({ theme, domain, subdomain, department, page, per_page }));
 }
 
-export async function getFacultyPapers(request, reply) {
+export async function getFacultyPapers(request, reply, taxonomyService) {
     const { kerberos } = request.params;
     const { theme, domain, subdomain, page, per_page } = request.query;
     return respond(request, reply, () =>
-        request.server.taxonomyService.getFacultyPapers({ kerberos, theme, domain, subdomain, page, per_page }));
+        taxonomyService.getFacultyPapers({ kerberos, theme, domain, subdomain, page, per_page }));
 }
