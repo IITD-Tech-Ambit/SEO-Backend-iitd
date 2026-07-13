@@ -49,12 +49,35 @@ test('buildNormalizedHybridQuery includes the lexical-floor function', () => {
     const qb = makeQB();
     const body = qb.buildNormalizedHybridQuery('machine learning', EMBED, {}, 1, 20);
     const fns = body.query.function_score.functions;
-    assert.equal(fns.length, 3, 'expected bm25 + knn + lexical floor');
+    // knn_score moved to `rescore` (bounded window) — the base function_score keeps only the
+    // cheap bm25 sigmoid + lexical floor, so min_score filtering stays O(1)/doc regardless of
+    // how many documents match the recall gate.
+    assert.equal(fns.length, 2, 'expected bm25 + lexical floor');
     const floor = fns.find(f => f.filter && f.weight === searchConfig.minScore.relevant);
     assert.ok(floor, 'lexical-floor function missing');
     assert.equal(body.query.function_score.score_mode, 'sum');
     assert.equal(body.query.function_score.boost_mode, 'replace');
     assert.equal(body.min_score, searchConfig.minScore.relevant);
+});
+
+test('buildNormalizedHybridQuery bounds knn_score to a rescore window', () => {
+    const qb = makeQB();
+    const body = qb.buildNormalizedHybridQuery('machine learning', EMBED, {}, 1, 20);
+    assert.ok(body.rescore, 'rescore block missing');
+    assert.equal(body.rescore.window_size, searchConfig.rescoreWindow);
+    const rescoreFns = body.rescore.query.rescore_query.function_score.functions;
+    assert.equal(rescoreFns.length, 1);
+    assert.equal(rescoreFns[0].script_score.script.lang, 'knn');
+    assert.equal(rescoreFns[0].weight, searchConfig.hybridWeights.vector);
+    assert.equal(body.rescore.query.query_weight, 1);
+    assert.equal(body.rescore.query.rescore_query_weight, 1);
+    assert.equal(body.rescore.query.score_mode, 'total');
+});
+
+test('buildNormalizedHybridQuery: rescore window covers deep pagination', () => {
+    const qb = makeQB();
+    const body = qb.buildNormalizedHybridQuery('machine learning', EMBED, {}, 50, 20); // from = 980
+    assert.ok(body.rescore.window_size >= 980 + 20, 'rescore window must cover the requested page');
 });
 
 test('_resolveHybridWeights: lexical-rich leans BM25, sparse leans vector', () => {

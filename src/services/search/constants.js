@@ -12,6 +12,7 @@
 export function buildSearchConfig(config) {
     const relevant = config.search?.relevantMinScore ?? 1.20;
     return {
+        rescoreWindow: config.search?.rescoreWindow ?? 300,
         hybridWeights: { bm25: 0.4, vector: 0.6 },
         // Adaptive weighting: lexical-rich queries (many BM25 matches) lean on BM25 for
         // precision; sparse-lexical (paraphrase/semantic) queries lean on the vector arm.
