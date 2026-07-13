@@ -703,18 +703,6 @@ export default class QueryBuilder {
             if (coverageClause) boostClauses.push(coverageClause);
         }
 
-        // The knn_score painless script is exact (brute-force) vector distance — O(matched
-        // docs) per query. Scoring it via function_score over the FULL recall gate (every doc
-        // matching BM25 OR the approximate kNN recall) is fine for narrow queries but scales
-        // linearly with match count, which is what makes broad/popular queries slow as the
-        // corpus grows (306k+ docs and counting). `rescore` bounds that exact script to just
-        // the top `rescoreWindow` docs per shard — already ranked by the cheap BM25 + lexical
-        // floor score below — then adds the vector term on top of that, reproducing the same
-        // score_mode:'sum' composition (query_weight:1 + rescore_query_weight:1 = totals sum).
-        // Docs outside the window keep their BM25-only score; rescoreWindow is kept comfortably
-        // above candidateK (the app's own reranked/paginated window) so that never shows.
-        const rescoreWindow = Math.max(this.searchConfig.rescoreWindow, from + perPage);
-
         return {
             size: perPage,
             from,
@@ -732,36 +720,20 @@ export default class QueryBuilder {
                                 script: { source: `${weights.bm25} * (_score / (1.0 + _score))`, lang: 'painless' }
                             }
                         },
+                        {
+                            script_score: {
+                                script: {
+                                    source: 'knn_score',
+                                    lang: 'knn',
+                                    params: { field: 'embedding', query_value: embedding, space_type: 'cosinesimil' }
+                                }
+                            },
+                            weight: weights.vector
+                        },
                         { filter: lexicalFloorClause, weight: this.searchConfig.minScore.relevant }
                     ],
                     score_mode: 'sum',
                     boost_mode: 'replace'
-                }
-            },
-            rescore: {
-                window_size: rescoreWindow,
-                query: {
-                    rescore_query: {
-                        function_score: {
-                            query: { match_all: {} },
-                            functions: [
-                                {
-                                    script_score: {
-                                        script: {
-                                            source: 'knn_score',
-                                            lang: 'knn',
-                                            params: { field: 'embedding', query_value: embedding, space_type: 'cosinesimil' }
-                                        }
-                                    },
-                                    weight: weights.vector
-                                }
-                            ],
-                            boost_mode: 'replace'
-                        }
-                    },
-                    query_weight: 1,
-                    rescore_query_weight: 1,
-                    score_mode: 'total'
                 }
             },
             aggs: this.filters.getAggregations()

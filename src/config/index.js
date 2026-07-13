@@ -105,12 +105,6 @@ export default {
             vector: 0.6
         },
         candidateK: parseInt(process.env.CANDIDATE_K || '50'),
-        // Bounds the knn_score painless script (exact vector distance, O(matched docs)) to the
-        // top rescoreWindow docs per shard instead of the full BM25-OR-kNN match set — that
-        // full-set scoring is what makes broad-topic advanced search slow as the corpus grows
-        // (see QueryBuilder.buildNormalizedHybridQuery). Comfortably above candidateK so the
-        // reranked/paginated window downstream always has real vector scores.
-        rescoreWindow: parseInt(process.env.RESCORE_WINDOW || '300'),
         rerankEnabled: (process.env.RERANK_ENABLED || 'true').toLowerCase() === 'true',
         // OpenSearch's index.max_result_window bound on `from + size`. Deep pagination
         // (pages beyond the reranked window) uses from/size, so a requested page whose
