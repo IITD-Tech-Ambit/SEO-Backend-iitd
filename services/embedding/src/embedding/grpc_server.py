@@ -2,8 +2,17 @@
 
 Thin adapter over the same inference paths the FastAPI routes use — the model
 state lives in `routes` (populated by the lifespan) so REST and gRPC share
-one loaded model. Each gunicorn worker binds the port with SO_REUSEPORT
-(grpc default on Linux), so the kernel load-balances across workers.
+one loaded model.
+
+Each gunicorn worker claims its OWN port instead of sharing one via
+SO_REUSEPORT. SO_REUSEPORT only load-balances at TCP-connection-accept time —
+Envoy (and any other gRPC/HTTP2 client) holds a small number of long-lived,
+multiplexed connections, so with one shared port nearly all traffic funnels
+through whichever one worker happened to accept those connections, leaving
+the other workers idle while that one queues. Binding a distinct port per
+worker and listing all of them in Envoy's cluster (see envoy/envoy.yaml)
+lets Envoy's own per-request load balancing actually spread work across
+every worker.
 """
 
 import logging
@@ -19,6 +28,9 @@ from embedding.v1 import embedding_pb2, embedding_pb2_grpc
 logger = logging.getLogger(__name__)
 
 GRPC_PORT = int(os.getenv("GRPC_PORT", "50052"))
+# Pool size must cover every gunicorn worker (WEB_CONCURRENCY) so each one can
+# claim a distinct port; keep envoy.yaml's embedding_grpc endpoint list in sync.
+GRPC_PORT_POOL_SIZE = int(os.getenv("GRPC_PORT_POOL_SIZE", os.getenv("WEB_CONCURRENCY", "3")))
 
 
 class EmbeddingServicer(embedding_pb2_grpc.EmbeddingServiceServicer):
@@ -91,9 +103,34 @@ class EmbeddingServicer(embedding_pb2_grpc.EmbeddingServiceServicer):
 
 
 async def start_grpc_server() -> grpc.aio.Server:
-    server = grpc.aio.server()
-    embedding_pb2_grpc.add_EmbeddingServiceServicer_to_server(EmbeddingServicer(), server)
-    server.add_insecure_port(f"0.0.0.0:{GRPC_PORT}")
-    await server.start()
-    logger.info("embedding.v1 gRPC server listening on :%d", GRPC_PORT)
-    return server
+    """Claim the first free port in [GRPC_PORT, GRPC_PORT + GRPC_PORT_POOL_SIZE).
+
+    `grpc.so_reuseport=0` disables the default SO_REUSEPORT behavior so a
+    port already held by a sibling worker genuinely fails to bind instead of
+    silently sharing it — that's what makes each worker land on its own
+    distinct port. Concurrent workers racing for the same port is safe: the
+    OS bind() is atomic, so at most one of them wins per attempt. A failed
+    bind raises RuntimeError (not a 0 return, despite what the grpc-python
+    docs imply) — caught below so the loop can fall through to the next port.
+    """
+    servicer = EmbeddingServicer()
+    last_error = None
+    for offset in range(GRPC_PORT_POOL_SIZE):
+        port = GRPC_PORT + offset
+        server = grpc.aio.server(options=(("grpc.so_reuseport", 0),))
+        embedding_pb2_grpc.add_EmbeddingServiceServicer_to_server(servicer, server)
+        try:
+            bound_port = server.add_insecure_port(f"0.0.0.0:{port}")
+        except RuntimeError as exc:
+            last_error = f"port {port}: {exc}"
+            continue
+        if bound_port == 0:
+            last_error = f"port {port} already in use"
+            continue
+        await server.start()
+        logger.info("embedding.v1 gRPC server listening on :%d", port)
+        return server
+    raise RuntimeError(
+        f"embedding.v1 gRPC server could not bind any port in "
+        f"[{GRPC_PORT}, {GRPC_PORT + GRPC_PORT_POOL_SIZE}): {last_error}"
+    )
