@@ -5,7 +5,6 @@ from opensearchpy import OpenSearch, helpers
 import config
 from indexer import BatchIndexer
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
