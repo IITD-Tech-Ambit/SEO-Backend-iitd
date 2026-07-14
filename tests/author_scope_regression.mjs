@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import Redis from 'ioredis';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
-const REDIS_URL = process.env.REDIS_URL || 'redis://10.17.8.24:6379';
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const AUTHOR_ID = process.env.AUTHOR_ID || '60800'; // Basu expert_id
 
 const api = async (path, body, method = 'POST') => {

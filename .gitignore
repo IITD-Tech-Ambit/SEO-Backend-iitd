@@ -19,6 +19,7 @@ pip-selfcheck.json
 .env
 .env.*
 !.env.example
+deploy/mongodb.env
 
 # ==================== LOGS ====================
 logs/
