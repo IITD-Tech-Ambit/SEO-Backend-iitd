@@ -101,19 +101,41 @@ def rerank_sync(query: str, documents: List[str], state: RerankerState) -> List[
     return all_scores
 
 
+class InferenceQueueTimeout(Exception):
+    """Raised when a request waits too long for a free inference slot.
+
+    Distinct from the old pattern of wrapping the inference call itself in
+    asyncio.wait_for: asyncio.to_thread runs on a real OS thread, which
+    Python cannot forcibly cancel. Timing out the *call* left the "cancelled"
+    work running in the background while the lock/semaphore slot it held was
+    already released to the next request - the exact race the lock existed
+    to prevent. Timing out the *wait for a slot* instead means nothing has
+    started yet when we give up, so there's nothing left running.
+    """
+
+
+async def _acquire_or_timeout(sem: asyncio.Semaphore, timeout: float) -> None:
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=timeout)
+    except asyncio.TimeoutError as e:
+        raise InferenceQueueTimeout(
+            f"timed out after {timeout}s waiting for a free inference slot"
+        ) from e
+
+
 async def run_embed(texts: List[str], state: EmbeddingState) -> List[List[float]]:
-    async with state.infer_lock:
-        return await asyncio.wait_for(
-            asyncio.to_thread(encode, texts, state),
-            timeout=60.0,
-        )
+    await _acquire_or_timeout(state.infer_sem, config.INFER_QUEUE_TIMEOUT_S)
+    try:
+        return await asyncio.to_thread(encode, texts, state)
+    finally:
+        state.infer_sem.release()
 
 
 async def run_rerank(
     query: str, documents: List[str], state: RerankerState
 ) -> List[float]:
-    async with state.lock:
-        return await asyncio.wait_for(
-            asyncio.to_thread(rerank_sync, query, documents, state),
-            timeout=60.0,
-        )
+    await _acquire_or_timeout(state.sem, config.INFER_QUEUE_TIMEOUT_S)
+    try:
+        return await asyncio.to_thread(rerank_sync, query, documents, state)
+    finally:
+        state.sem.release()

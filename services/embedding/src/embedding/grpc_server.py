@@ -22,7 +22,7 @@ import time
 import grpc
 
 from . import config, metrics, routes
-from .inference import run_embed, run_rerank, track_inflight
+from .inference import InferenceQueueTimeout, run_embed, run_rerank, track_inflight
 from embedding.v1 import embedding_pb2, embedding_pb2_grpc
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,9 @@ class EmbeddingServicer(embedding_pb2_grpc.EmbeddingServiceServicer):
                 async with track_inflight(routes.emb_state):
                     embeddings = await run_embed(texts, routes.emb_state)
                 metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="standalone", outcome="success").inc()
+            except InferenceQueueTimeout as exc:
+                metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="standalone", outcome="error").inc()
+                await context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
             except Exception:
                 metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="standalone", outcome="error").inc()
                 raise
@@ -80,6 +83,9 @@ class EmbeddingServicer(embedding_pb2_grpc.EmbeddingServiceServicer):
         try:
             scores = await run_rerank(request.query, list(request.documents), routes.reranker_state)
             metrics.RERANKER_REQUESTS_TOTAL.labels(outcome="success").inc()
+        except InferenceQueueTimeout as exc:
+            metrics.RERANKER_REQUESTS_TOTAL.labels(outcome="error").inc()
+            await context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
         except Exception:
             metrics.RERANKER_REQUESTS_TOTAL.labels(outcome="error").inc()
             raise

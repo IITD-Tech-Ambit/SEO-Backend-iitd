@@ -46,6 +46,19 @@ RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "50"))
 RERANK_SUB_BATCH = int(os.getenv("RERANK_SUB_BATCH", "8"))
 RERANK_QUANTIZE = os.getenv("RERANK_QUANTIZE", "true").lower() == "true"
 
+# In-process concurrency per worker for the local embed/rerank calls (distinct
+# from MAX_INFLIGHT_PER_NODE below, which governs multi-node gateway mode).
+# Each ONNX session already runs with ORT_NUM_THREADS threads internally, so
+# WEB_CONCURRENCY workers x this x ORT_NUM_THREADS should stay near the host's
+# core count - raise cautiously and re-check CPU headroom.
+EMBED_MAX_CONCURRENCY = int(os.getenv("EMBED_MAX_CONCURRENCY", "2"))
+RERANK_MAX_CONCURRENCY = int(os.getenv("RERANK_MAX_CONCURRENCY", "2"))
+# How long a request waits for a free inference slot before failing with 503.
+# Once a slot is acquired, inference runs to completion - asyncio can't
+# actually cancel work already handed to a native ONNX/torch call, so we
+# don't pretend to bound it with a second timeout after this one.
+INFER_QUEUE_TIMEOUT_S = float(os.getenv("INFER_QUEUE_TIMEOUT_S", "30"))
+
 _backend_nodes_raw = os.getenv("BACKEND_NODES", "").strip()
 BACKEND_NODES: List[str] = [
     url.strip() for url in _backend_nodes_raw.split(",") if url.strip()
