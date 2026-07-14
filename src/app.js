@@ -177,6 +177,13 @@ async function start() {
 
         fastify.log.info(`Search API running on http://${config.host}:${config.port}`);
 
+        // Signals PM2 (wait_ready: true in ecosystem.config.cjs) that this
+        // worker has finished booting - without it PM2 waits out the full
+        // listen_timeout on every deploy/reload and treats it as a failed start.
+        if (process.send) {
+            process.send('ready');
+        }
+
     } catch (error) {
         fastify.log.error(error);
         process.exit(1);
