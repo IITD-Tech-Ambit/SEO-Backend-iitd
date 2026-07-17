@@ -1,9 +1,11 @@
 # Search API - Fastify with PM2
 FROM node:20-alpine
 
-# Proxy for IITD network
+# Proxy for IITD network, plus auth for the private @iitd-tech-ambit GitHub
+# Packages registry (@iitd-tech-ambit/protos).
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
+ARG NODE_AUTH_TOKEN
 ENV HTTP_PROXY=$HTTP_PROXY
 ENV HTTPS_PROXY=$HTTPS_PROXY
 
@@ -13,14 +15,14 @@ WORKDIR /app
 RUN npm install -g pm2
 
 # Copy package files
-COPY package*.json ./
+COPY package*.json .npmrc ./
 
 # Install production dependencies only
 RUN npm ci --only=production
 
-# Copy source code and config
+# Copy source code and config. search.v1/embedding.v1 contracts now come from
+# @iitd-tech-ambit/protos (installed above), not a committed protos/ copy.
 COPY src ./src
-COPY protos ./protos
 COPY ecosystem.config.cjs ./
 
 # Create non-root user
