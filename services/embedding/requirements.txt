@@ -13,6 +13,11 @@ httpx>=0.27.0
 # ONNX Runtime for cross-encoder reranker (bge-reranker-base INT8)
 onnxruntime>=1.17.0
 optimum[onnxruntime]>=1.17.0
-# East-west gRPC server (embedding.v1); stubs are committed (protos/gen_python.sh)
+# East-west gRPC server (embedding.v1); stubs come from proto-registry (see below),
+# not a committed copy.
 grpcio>=1.62.0
+# Generated gRPC stubs (embedding.v1, etc.) from the shared proto-registry repo.
+# Pinned to a release/vX.Y.Z branch (immutable tags hold source .proto only; the
+# generated Python lives on the matching release branch — see that repo's README).
+iitd-tech-ambit-proto-stubs @ git+https://github.com/IITD-Tech-Ambit/proto-registry.git@release/v0.1.0#subdirectory=gen-python
 
