@@ -1,6 +1,5 @@
 syntax = "proto3";
 
-// sync-test: verifying pipeline
 package embedding.v1;
 
 // East-west contract for the BGE embedding + cross-encoder reranker service.

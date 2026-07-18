@@ -1,6 +1,5 @@
 syntax = "proto3";
 
-// sync-test: verifying pipeline
 package search.v1;
 
 // East-west contract for the Node/Fastify search-api (Docker service
