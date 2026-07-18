@@ -1,12 +1,9 @@
 import { documentParamsSchema, errorResponseSchema, similarRequestSchema, coauthorsParamsSchema } from '../schemas/search.js';
 import { getDocument, getDocumentsByAuthor, getSimilarDocuments, getCoAuthors } from '../controllers/documentController.js';
 
-/**
- * Document Routes
- * GET /document/:id - Get single document by ID
- * GET /documents/by-author/:authorId - Get documents by author
- */
 export default async function documentRoutes(fastify, options) {
+    const { documentService } = options;
+
     fastify.get('/document/:id', {
         schema: {
             description: 'Get a single research document by ID',
@@ -23,7 +20,7 @@ export default async function documentRoutes(fastify, options) {
                 500: errorResponseSchema
             }
         },
-        handler: getDocument
+        handler: (request, reply) => getDocument(request, reply, documentService)
     });
 
     fastify.get('/documents/by-author/:authorId', {
@@ -45,10 +42,9 @@ export default async function documentRoutes(fastify, options) {
                 }
             }
         },
-        handler: getDocumentsByAuthor
+        handler: (request, reply) => getDocumentsByAuthor(request, reply, documentService)
     });
 
-    // Find similar papers using k-NN
     fastify.get('/document/:id/similar', {
         schema: {
             description: 'Find semantically similar papers using embeddings',
@@ -67,10 +63,9 @@ export default async function documentRoutes(fastify, options) {
                 500: errorResponseSchema
             }
         },
-        handler: getSimilarDocuments
+        handler: (request, reply) => getSimilarDocuments(request, reply, documentService)
     });
 
-    // Get co-authors for an author (Phase 2 - after nested indexing)
     fastify.get('/author/:id/collaborators', {
         schema: {
             description: 'Get co-authors and collaboration network for an author',
@@ -88,6 +83,6 @@ export default async function documentRoutes(fastify, options) {
                 500: errorResponseSchema
             }
         },
-        handler: getCoAuthors
+        handler: (request, reply) => getCoAuthors(request, reply, documentService)
     });
 }

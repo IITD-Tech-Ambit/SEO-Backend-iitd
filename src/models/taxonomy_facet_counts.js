@@ -58,7 +58,6 @@ const taxonomyFacetCountsSchema = new mongoose.Schema({
     }
 });
 
-// === INDEXES ===
 // Point lookup for any exact browse configuration
 taxonomyFacetCountsSchema.index(
     { thematic_area_id: 1, domain_id: 1, subdomain_id: 1, department_id: 1 },

@@ -146,8 +146,7 @@ export default class FacultyForQueryService {
             const base = this.queryBuilder.buildBasicQuery(
                 query, queryFilters, 1, 1, 'relevance',
                 searchInNorm, refineChain,
-                facultyAuthorIds, null, authorRefineNarrow,
-                facultyKerberosIds, null
+                facultyAuthorIds, authorRefineNarrow, facultyKerberosIds
             );
             return patchFacultyAggBody(base);
         }

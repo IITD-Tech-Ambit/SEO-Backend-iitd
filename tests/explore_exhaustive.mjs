@@ -25,7 +25,7 @@
  *   node tests/explore_exhaustive.mjs
  * Env:
  *   BASE_URL          default http://127.0.0.1:3000
- *   REDIS_URL         default redis://10.17.8.24:6379
+ *   REDIS_URL         default redis://localhost:6379
  *   AUTHOR_ID         default 60800 (Prof. Suddhasatwa Basu expert_id, accepted by /author-scope)
  *   AUTHOR_SCOPUS_ID  default 56301902700 (Prof. Basu's Scopus id — matches nested authors.author_id)
  */
@@ -34,7 +34,7 @@ import assert from 'node:assert/strict';
 import Redis from 'ioredis';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
-const REDIS_URL = process.env.REDIS_URL || 'redis://10.17.8.24:6379';
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const AUTHOR_ID = process.env.AUTHOR_ID || '60800';
 const AUTHOR_SCOPUS_ID = process.env.AUTHOR_SCOPUS_ID || '56301902700';
 

@@ -1,15 +1,6 @@
-/**
- * Search Controller
- * Handles search-related HTTP requests
- */
-
-/**
- * Search documents with hybrid BM25 + semantic search
- */
-export async function search(request, reply) {
+export async function search(request, reply, searchService) {
     const startTime = Date.now();
     const { query, filters, sort, page, per_page, search_in, mode, refine_within, refine_chain, rerank } = request.body;
-    const searchService = request.server.searchService;
 
     try {
         const result = await searchService.search({
@@ -112,13 +103,9 @@ export async function searchHealth(request, reply) {
         });
 }
 
-/**
- * Author-scoped search: semantic similarity within one author's papers
- */
-export async function authorScopedSearch(request, reply) {
+export async function authorScopedSearch(request, reply, searchService) {
     const startTime = Date.now();
     const { query, author_id, page, per_page, mode, refine_within, refine_chain, search_in, filters } = request.body;
-    const searchService = request.server.searchService;
 
     try {
         const result = await searchService.authorScopedSearch({
@@ -162,13 +149,9 @@ export async function authorScopedSearch(request, reply) {
     }
 }
 
-/**
- * Get all faculty for a query (aggregation, no documents fetched)
- */
-export async function getAllFacultyForQuery(request, reply) {
+export async function getAllFacultyForQuery(request, reply, searchService) {
     const startTime = Date.now();
     const { query, mode, search_in: searchInRaw, refine_within, refine_chain: refineChainRaw, filters: filtersRaw } = request.query;
-    const searchService = request.server.searchService;
 
     const parsedSearchIn =
         typeof searchInRaw === 'string' && searchInRaw.trim()

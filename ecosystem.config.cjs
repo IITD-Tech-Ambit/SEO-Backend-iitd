@@ -2,8 +2,7 @@ module.exports = {
   apps: [{
     name: 'search-api',
     script: 'src/app.js',
-    // One worker per CPU; set INSTANCES=1 in env to force a single process.
-    instances: process.env.INSTANCES || 'max',
+    instances: process.env.INSTANCES || 2,
     exec_mode: 'cluster',
     max_memory_restart: '500M',
     env: {

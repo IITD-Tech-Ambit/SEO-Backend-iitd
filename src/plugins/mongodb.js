@@ -8,10 +8,8 @@ async function mongodbPlugin(fastify, options) {
         await mongoose.connect(uri, mongoOptions);
         fastify.log.info('MongoDB connected successfully');
 
-        // Add mongoose to fastify instance
         fastify.decorate('mongoose', mongoose);
 
-        // Graceful shutdown
         fastify.addHook('onClose', async () => {
             await mongoose.connection.close();
             fastify.log.info('MongoDB connection closed');

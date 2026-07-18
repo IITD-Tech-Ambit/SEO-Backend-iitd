@@ -20,6 +20,7 @@ RUN npm ci --only=production
 
 # Copy source code and config
 COPY src ./src
+COPY protos ./protos
 COPY ecosystem.config.cjs ./
 
 # Create non-root user
@@ -29,7 +30,7 @@ RUN addgroup -g 1001 -S nodejs && \
 
 USER nodejs
 
-EXPOSE 3001
+EXPOSE 3001 50053
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

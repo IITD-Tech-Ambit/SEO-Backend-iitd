@@ -1,19 +1,11 @@
 /**
- * Document Controller
- * Handles document-related HTTP requests
- */
-
-import { resolveFacultyByAuthorId } from '../utils/facultyIdentity.js';
-
-/**
  * Get a single document by ID
  */
-export async function getDocument(request, reply) {
+export async function getDocument(request, reply, documentService) {
     const { id } = request.params;
-    const searchService = request.server.searchService;
 
     try {
-        const document = await searchService.getDocument(id);
+        const document = await documentService.getDocument(id);
 
         if (!document) {
             return reply.status(404).send({
@@ -41,65 +33,12 @@ export async function getDocument(request, reply) {
  * Uses BOTH kerberos (from Faculty.email prefix) and scopus_id to find all papers
  * for the given faculty, matching the dual-mapping strategy used everywhere else.
  */
-export async function getDocumentsByAuthor(request, reply) {
+export async function getDocumentsByAuthor(request, reply, documentService) {
     const { authorId } = request.params;
     const { page = 1, per_page = 20 } = request.query;
-    const mongoose = request.server.mongoose;
-    const redis = request.server.redis;
-    const cacheKey = `author-docs:${authorId}:${page}:${per_page}`;
 
     try {
-        try {
-            const cached = await redis.get(cacheKey);
-            if (cached) return JSON.parse(cached);
-        } catch (err) {
-            request.log.warn({ err }, 'Redis cache read failed (getDocumentsByAuthor)');
-        }
-
-        const ResearchDocument = mongoose.model('ResearchMetaDataScopus');
-        const Faculty = mongoose.model('Faculty');
-        const skip = (page - 1) * per_page;
-
-        // authorId may be a scopus_id or an expert_id — resolveFacultyByAuthorId tries both
-        const { kerberos, scopusIds } = await resolveFacultyByAuthorId(Faculty, authorId);
-
-        const orClauses = [];
-        if (kerberos) orClauses.push({ kerberos });
-        if (scopusIds.length > 0) {
-            orClauses.push({ 'authors.author_id': { $in: scopusIds } });
-        } else {
-            orClauses.push({ 'authors.author_id': authorId });
-        }
-
-        const filter = orClauses.length > 1 ? { $or: orClauses } : orClauses[0];
-
-        const [documents, total] = await Promise.all([
-            ResearchDocument.find(filter)
-                .select('-__v')
-                .sort({ publication_year: -1 })
-                .skip(skip)
-                .limit(per_page)
-                .lean(),
-            ResearchDocument.countDocuments(filter)
-        ]);
-
-        const response = {
-            documents,
-            pagination: {
-                page,
-                per_page,
-                total,
-                total_pages: Math.ceil(total / per_page)
-            }
-        };
-
-        try {
-            await redis.setex(cacheKey, request.server.redisTTL.authorDocuments, JSON.stringify(response));
-        } catch (err) {
-            request.log.warn({ err }, 'Redis cache write failed (getDocumentsByAuthor)');
-        }
-
-        return response;
+        return await documentService.getDocumentsByAuthor(authorId, { page, per_page });
 
     } catch (error) {
         request.log.error({ error, authorId }, 'Author documents fetch failed');
@@ -115,13 +54,12 @@ export async function getDocumentsByAuthor(request, reply) {
 /**
  * Get similar documents using k-NN embeddings
  */
-export async function getSimilarDocuments(request, reply) {
+export async function getSimilarDocuments(request, reply, documentService) {
     const { id } = request.params;
     const { limit = 10 } = request.query;
-    const searchService = request.server.searchService;
 
     try {
-        const result = await searchService.findSimilar(id, limit);
+        const result = await documentService.findSimilar(id, limit);
         return result;
 
     } catch (error) {
@@ -146,12 +84,11 @@ export async function getSimilarDocuments(request, reply) {
 /**
  * Get co-authors for a specific author
  */
-export async function getCoAuthors(request, reply) {
+export async function getCoAuthors(request, reply, documentService) {
     const { id } = request.params;
-    const searchService = request.server.searchService;
 
     try {
-        const result = await searchService.getCoAuthors(id);
+        const result = await documentService.getCoAuthors(id);
         return result;
 
     } catch (error) {

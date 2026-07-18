@@ -35,7 +35,7 @@ const ROOT = path.resolve(__dirname, '../..');
 
 // Load project env (search API + indexer)
 dotenv.config({ path: path.join(ROOT, '.env') });
-dotenv.config({ path: path.join(ROOT, 'indexer_go/.env') });
+dotenv.config({ path: path.join(ROOT, '../indexing_pipeline/.env') });
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/research_db';
 const MONGODB_COLLECTION = process.env.MONGODB_COLLECTION || 'researchmetadatascopus';

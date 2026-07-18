@@ -5,7 +5,7 @@ import mongoose from "mongoose";
  *
  * Independent of the Domain/Subdomain axis: a paper carries one thematic area
  * AND one domain/subdomain, but themes are not parents of domains.
- * `stats` is written only by the offline rollup job (scripts/rollup-taxonomy-stats.js);
+ * `stats` is written only by the offline rollup job (scripts/taxonomy/rollup.js);
  * read paths never compute it.
  */
 const thematicAreaSchema = new mongoose.Schema({
@@ -32,7 +32,6 @@ const thematicAreaSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// === INDEXES ===
 thematicAreaSchema.index({ display_order: 1 });
 
 export default mongoose.model("ThematicArea", thematicAreaSchema);

@@ -9,15 +9,12 @@ async function opensearchPlugin(fastify, options) {
     });
 
     try {
-        // Verify connection
         const health = await client.cluster.health();
         fastify.log.info(`OpenSearch connected. Cluster: ${health.body.cluster_name}, Status: ${health.body.status}`);
 
-        // Decorate fastify with client and index name
         fastify.decorate('opensearch', client);
         fastify.decorate('opensearchIndex', options.indexName);
 
-        // Graceful shutdown
         fastify.addHook('onClose', async () => {
             await client.close();
             fastify.log.info('OpenSearch connection closed');

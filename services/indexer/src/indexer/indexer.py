@@ -1,6 +1,6 @@
 """
 Batch Indexer for Research Documents
-Indexes MongoDB documents into OpenSearch with SPECTER2 embeddings
+Indexes MongoDB documents into OpenSearch with BGE-M3 embeddings
 """
 
 import asyncio
@@ -157,10 +157,8 @@ class BatchIndexer:
         success_count = 0
         error_count = 0
         
-        # Step 1: Build embedding texts
         texts = [self.build_embedding_text(d) for d in docs]
         
-        # Step 2: Get embeddings in sub-batches
         all_embeddings = []
         for i in range(0, len(texts), config.EMBED_BATCH_SIZE):
             batch_texts = texts[i:i + config.EMBED_BATCH_SIZE]
@@ -172,12 +170,10 @@ class BatchIndexer:
                 
             all_embeddings.extend(batch_embeddings)
         
-        # Step 3: Build OpenSearch actions
         actions = []
         for doc, embedding in zip(docs, all_embeddings):
             actions.append(self.build_opensearch_document(doc, embedding))
         
-        # Step 4: Bulk index
         try:
             success, errors = helpers.bulk(
                 self.os_client, 
@@ -197,7 +193,6 @@ class BatchIndexer:
             logger.error(f"Bulk indexing failed: {e}")
             return 0, len(docs)
         
-        # Step 5: Get OpenSearch IDs and update MongoDB
         for doc in docs:
             try:
                 # Search for the document we just indexed

@@ -3,7 +3,7 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from . import config, metrics
-from .inference import run_embed, run_rerank, track_inflight
+from .inference import InferenceQueueTimeout, run_embed, run_rerank, track_inflight
 from .models import (
     EmbedRequest,
     EmbedResponse,
@@ -51,6 +51,9 @@ async def embed(request: EmbedRequest):
         metrics.EMBEDDING_INFERENCE_SECONDS.observe(elapsed)
         metrics.EMBEDDING_BATCH_SIZE.observe(n)
         metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="standalone", outcome="success").inc()
+    except InferenceQueueTimeout as e:
+        metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="standalone", outcome="error").inc()
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception:
         metrics.EMBEDDING_REQUESTS_TOTAL.labels(mode="standalone", outcome="error").inc()
         raise
@@ -74,6 +77,9 @@ async def rerank(request: RerankRequest):
     try:
         scores = await run_rerank(request.query, request.documents, reranker_state)
         metrics.RERANKER_REQUESTS_TOTAL.labels(outcome="success").inc()
+    except InferenceQueueTimeout as e:
+        metrics.RERANKER_REQUESTS_TOTAL.labels(outcome="error").inc()
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception:
         metrics.RERANKER_REQUESTS_TOTAL.labels(outcome="error").inc()
         raise

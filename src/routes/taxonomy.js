@@ -14,26 +14,19 @@ import {
 } from '../controllers/taxonomyController.js';
 
 /**
- * Taxonomy Browse Routes (Explore section)
- *
  * Browse state = optional, freely combinable query params:
  *   ?theme=<slug> & domain=<slug> & subdomain=<slug> & department=<code>
- *
- * GET /taxonomy/themes                         - Thematic area list (+counts)
- * GET /taxonomy/domains                        - Domain list (+counts)
- * GET /taxonomy/domains/:domainSlug/subdomains - Subdomains of one domain (+counts)
- * GET /taxonomy/counts                         - Counts for one exact configuration
- * GET /taxonomy/faculty                        - Kerberos list for a configuration
- * GET /taxonomy/faculty/:kerberos/papers       - One faculty's papers in a configuration
  */
 export default async function taxonomyRoutes(fastify, options) {
+    const { taxonomyService } = options;
+
     fastify.get('/taxonomy/departments', {
         schema: {
             description: 'Departments that have classified papers (for the department filter)',
             tags: ['taxonomy'],
             response: { 200: departmentsResponseSchema, 500: errorResponseSchema }
         },
-        handler: listDepartments
+        handler: (request, reply) => listDepartments(request, reply, taxonomyService)
     });
 
     fastify.get('/taxonomy/themes', {
@@ -43,7 +36,7 @@ export default async function taxonomyRoutes(fastify, options) {
             querystring: themesRequestSchema,
             response: { 200: themesResponseSchema, 404: errorResponseSchema, 500: errorResponseSchema }
         },
-        handler: listThemes
+        handler: (request, reply) => listThemes(request, reply, taxonomyService)
     });
 
     fastify.get('/taxonomy/domains', {
@@ -53,7 +46,7 @@ export default async function taxonomyRoutes(fastify, options) {
             querystring: domainsRequestSchema,
             response: { 200: domainsResponseSchema, 404: errorResponseSchema, 500: errorResponseSchema }
         },
-        handler: listDomains
+        handler: (request, reply) => listDomains(request, reply, taxonomyService)
     });
 
     fastify.get('/taxonomy/domains/:domainSlug/subdomains', {
@@ -64,7 +57,7 @@ export default async function taxonomyRoutes(fastify, options) {
             querystring: subdomainsRequestSchema,
             response: { 200: subdomainsResponseSchema, 404: errorResponseSchema, 500: errorResponseSchema }
         },
-        handler: listSubdomains
+        handler: (request, reply) => listSubdomains(request, reply, taxonomyService)
     });
 
     fastify.get('/taxonomy/counts', {
@@ -74,7 +67,7 @@ export default async function taxonomyRoutes(fastify, options) {
             querystring: countsRequestSchema,
             response: { 200: countsResponseSchema, 400: errorResponseSchema, 404: errorResponseSchema, 500: errorResponseSchema }
         },
-        handler: getCounts
+        handler: (request, reply) => getCounts(request, reply, taxonomyService)
     });
 
     fastify.get('/taxonomy/faculty', {
@@ -84,7 +77,7 @@ export default async function taxonomyRoutes(fastify, options) {
             querystring: facultyRequestSchema,
             response: { 200: facultyResponseSchema, 400: errorResponseSchema, 404: errorResponseSchema, 500: errorResponseSchema }
         },
-        handler: getFaculty
+        handler: (request, reply) => getFaculty(request, reply, taxonomyService)
     });
 
     fastify.get('/taxonomy/faculty/:kerberos/papers', {
@@ -95,6 +88,6 @@ export default async function taxonomyRoutes(fastify, options) {
             querystring: facultyPapersRequestSchema,
             response: { 200: facultyPapersResponseSchema, 400: errorResponseSchema, 404: errorResponseSchema, 500: errorResponseSchema }
         },
-        handler: getFacultyPapers
+        handler: (request, reply) => getFacultyPapers(request, reply, taxonomyService)
     });
 }

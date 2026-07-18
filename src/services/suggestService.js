@@ -1,15 +1,9 @@
 /**
  * Suggest Service — blended, intent-aware typeahead.
  *
- * One mode-agnostic engine shared by basic and advanced search. On each keystroke it
- * runs two OpenSearch queries IN PARALLEL:
- *   - authors  -> authors_suggest      (edge_ngram prefix + exact + fuzzy, popularity boost)
- *   - papers   -> research_documents   (title.autocomplete/shingles + abstract, recency boost)
- * then computes a hybrid, no-ML intent score and returns BOTH groups (blended). Intent only
- * controls group ordering + the header hint on the client; we never hide a group.
- *
- * Performance: two-layer cache (in-process LRU + Redis) and a per-source timeout so a slow
- * source still yields partial groups.
+ * Runs authors + papers OpenSearch queries in parallel, scores hybrid intent
+ * (no ML), and returns both groups ordered by intent. Two-layer cache
+ * (in-process LRU + Redis) with a per-source timeout for partial results.
  */
 
 const STOPWORDS = new Set([
@@ -50,13 +44,13 @@ class TTLLRU {
 }
 
 export default class SuggestService {
-    constructor(fastify, config) {
-        this.opensearch = fastify.opensearch;
-        this.mongoose = fastify.mongoose;
+    constructor({ opensearch, opensearchIndex, mongoose, redis, logger, config }) {
+        this.opensearch = opensearch;
+        this.mongoose = mongoose;
         this.authorsIndex = config.opensearch.authorsSuggestIndex;
-        this.papersIndex = fastify.opensearchIndex;
-        this.redis = fastify.redis;
-        this.logger = fastify.log;
+        this.papersIndex = opensearchIndex;
+        this.redis = redis;
+        this.logger = logger;
         this.cfg = config.suggest;
 
         this.lru = new TTLLRU(this.cfg.lruMax, this.cfg.lruTtlMs);
@@ -78,7 +72,6 @@ export default class SuggestService {
         return (q || '').toString().trim().replace(/\s+/g, ' ').toLowerCase();
     }
 
-    // ── Faculty token set (intent signal only) ───────────────────────────────
     async _refreshTokenSet() {
         if (this._tokensInflight) return this._tokensInflight;
         this._tokensInflight = (async () => {
@@ -109,7 +102,6 @@ export default class SuggestService {
         }
     }
 
-    // ── Per-source query builders ────────────────────────────────────────────
     _authorsQueryBody(q, qNorm) {
         return {
             size: this.cfg.authorsSize,
@@ -219,7 +211,6 @@ export default class SuggestService {
         }));
     }
 
-    // ── Intent engine (hybrid, no ML) ─────────────────────────────────────────
     _computeIntent(qNorm, topAuthorScore, topPaperScore, hasAuthors, hasPapers) {
         const w = this.cfg.intentWeights;
         const tokens = qNorm.split(' ').filter(Boolean);
@@ -293,7 +284,6 @@ export default class SuggestService {
         return { intent, confidence };
     }
 
-    // ── Public API ─────────────────────────────────────────────────────────────
     async suggest(rawQuery, rawLimit) {
         const startTime = Date.now();
         const qNorm = this.normalizePrefix(rawQuery);

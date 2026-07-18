@@ -31,7 +31,6 @@ const domainSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// === INDEXES ===
 domainSchema.index({ display_order: 1 });
 
 export default mongoose.model("Domain", domainSchema);

@@ -34,9 +34,9 @@
  * Env
  * ---
  *   BASE_URL          default http://127.0.0.1:3000
- *   OS_URL            default http://10.17.8.24:9200          (OpenSearch direct)
+ *   OS_URL            default http://localhost:9200          (OpenSearch direct)
  *   OS_INDEX          default research_documents              (the alias or index)
- *   REDIS_URL         default redis://10.17.8.24:6379         (cache flush; optional)
+ *   REDIS_URL         default redis://localhost:6379         (cache flush; optional)
  *   AUTHOR_ID         default 60800                           (Prof. Basu expert_id)
  *   AUTHOR_SCOPUS_ID  default 56301902700                     (Prof. Basu Scopus id)
  *   SKIP_CACHE_FLUSH  set to 1 to skip redis flush at startup
@@ -50,9 +50,9 @@
 import assert from 'node:assert/strict';
 
 const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
-const OS_URL   = process.env.OS_URL   || 'http://10.17.8.24:9200';
+const OS_URL   = process.env.OS_URL   || 'http://localhost:9200';
 const OS_INDEX = process.env.OS_INDEX || 'research_documents';
-const REDIS_URL = process.env.REDIS_URL || 'redis://10.17.8.24:6379';
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const AUTHOR_ID = process.env.AUTHOR_ID || '60800';
 const AUTHOR_SCOPUS_ID = process.env.AUTHOR_SCOPUS_ID || '56301902700';
 

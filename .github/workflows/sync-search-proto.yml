@@ -1,0 +1,39 @@
+name: Sync search.v1 proto to registry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'protos/search/v1/search.proto'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: search-api
+
+      - uses: actions/checkout@v4
+        with:
+          repository: IITD-Tech-Ambit/proto-registry
+          token: ${{ secrets.PROTO_REGISTRY_TOKEN }}
+          path: proto-registry
+
+      - name: Copy proto into registry
+        run: |
+          mkdir -p proto-registry/proto/search/v1
+          cp search-api/protos/search/v1/search.proto proto-registry/proto/search/v1/search.proto
+
+      - name: Commit and push if changed
+        working-directory: proto-registry
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No changes to sync."
+            exit 0
+          fi
+          git add proto/search/v1/search.proto
+          git commit -m "Sync search.v1 from SEO-Backend-iitd@${{ github.sha }}"
+          git push

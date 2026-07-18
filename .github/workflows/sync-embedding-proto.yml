@@ -1,0 +1,39 @@
+name: Sync embedding.v1 proto to registry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/embedding/proto/embedding/v1/embedding.proto'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: embedding-service
+
+      - uses: actions/checkout@v4
+        with:
+          repository: IITD-Tech-Ambit/proto-registry
+          token: ${{ secrets.PROTO_REGISTRY_TOKEN }}
+          path: proto-registry
+
+      - name: Copy proto into registry
+        run: |
+          mkdir -p proto-registry/proto/embedding/v1
+          cp embedding-service/services/embedding/proto/embedding/v1/embedding.proto proto-registry/proto/embedding/v1/embedding.proto
+
+      - name: Commit and push if changed
+        working-directory: proto-registry
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No changes to sync."
+            exit 0
+          fi
+          git add proto/embedding/v1/embedding.proto
+          git commit -m "Sync embedding.v1 from SEO-Backend-iitd@${{ github.sha }}"
+          git push

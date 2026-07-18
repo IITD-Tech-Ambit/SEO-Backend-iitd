@@ -34,7 +34,6 @@ const subdomainSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// === INDEXES ===
 subdomainSchema.index({ domain_id: 1, name: 1 }, { unique: true });
 subdomainSchema.index({ domain_id: 1, display_order: 1 });
 

@@ -52,6 +52,5 @@ tests/
 
 # Other services (not needed for search-api)
 services/
-indexer_go/
 test-fnd/
 docs/

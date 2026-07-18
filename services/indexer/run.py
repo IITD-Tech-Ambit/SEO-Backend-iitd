@@ -23,7 +23,6 @@ if __name__ == "__main__":
         from indexer.indexer import create_index_if_not_exists, config
         from opensearchpy import OpenSearch
         
-        # Create temporary client for index creation
         os_client = OpenSearch(
             hosts=config.OPENSEARCH_HOSTS,
             http_auth=(config.OPENSEARCH_USER, config.OPENSEARCH_PASSWORD),

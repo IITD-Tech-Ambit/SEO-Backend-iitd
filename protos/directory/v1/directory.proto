@@ -1,0 +1,596 @@
+syntax = "proto3";
+
+package directory.v1;
+
+// East-west contract for the research-ambit-main backend (Docker service
+// "backend", gRPC listener on :50055, routed by Envoy on the /directory.v1.
+// prefix). It freezes the entire current /api/* REST surface EXCEPT
+// /api/auth/* (owned by auth-service) and /health.
+//
+// The package is split into five cohesive services that all live on the same
+// backend gRPC listener (one Envoy cluster, one prefix route):
+//   DirectoryService     -> /api/directory/*   (faculty directory, read)
+//   KnowledgeGraphService -> /api/kg/*         (KG + atlas, read)
+//   ContentService       -> /api/content/*     (CMS magazines, read + write)
+//   UserService          -> /api/user/*        (CMS accounts, read + write)
+//   SuggestionService    -> /api/suggestions/* (feedback intake, write)
+//
+// Response-shape philosophy (the gateway must reproduce IDENTICAL JSON to what
+// tech-ambit-explorer sees today):
+//   * REQUESTS are strongly typed everywhere — the gateway maps HTTP
+//     query/body/params onto these messages.
+//   * RESPONSES are strongly typed where the backend already returns a shaped
+//     DTO (directory cards, KG paper meta, atlas lookups). Where the payload is
+//     a raw Mongoose document, a file-driven blob, or carries polymorphic /
+//     nullable-vs-absent fields that proto3 cannot round-trip faithfully, the
+//     response carries a documented `*_json` field: a UTF-8 JSON string that the
+//     gateway parses and splices verbatim into the REST body. Each such field is
+//     annotated below with WHY it is opaque.
+//
+// Envelope: every /api endpoint (except GET /api/kg/atlas, which is raw) is
+// wrapped by the backend as { success, message, data, timestamp }. gRPC carries
+// only the `data` payload (typed or `*_json`); the gateway rebuilds the
+// envelope, using the per-RPC message constant from the inventory (or the
+// explicit `message` field where the backend varies it).
+//
+// Auth: directory/kg/content-reads/suggestions are public. Content writes and
+// user edit/delete require the existing CMS JWT — the gateway forwards the
+// incoming `Authorization: Bearer <jwt>` as gRPC metadata key `authorization`,
+// and the backend handler re-runs the same JWT/role check it does today.
+
+// ---------------------------------------------------------------------------
+// Shared messages
+// ---------------------------------------------------------------------------
+
+// Department reference as embedded in directory payloads. Fields are `optional`
+// because cards project only {_id,name,code} while the detail view adds
+// category; unset fields must be OMITTED from the JSON (not emitted as "").
+message Department {
+  optional string id = 1;       // _id (24-hex ObjectId string)
+  optional string name = 2;
+  optional string code = 3;
+  optional string category = 4;
+}
+
+// Directory list-card DTO (formatDirectoryFacultyCards). No orcid/scopus/
+// scholar/tags/workingFromYear — those exist only on the detail view.
+message FacultyCard {
+  string id = 1;                        // _id
+  string name = 2;
+  string email = 3;
+  int32 citation_count = 4;             // JSON: citationCount
+  int32 h_index = 5;                    // JSON: hIndex
+  repeated string research_areas = 6;
+  optional Department department = 7;   // JSON null when unset
+  optional string profile_image_url = 8; // JSON: profileImageUrl, null when unset
+  optional string designation = 9;      // JSON null when unset
+}
+
+// Full directory faculty DTO (formatDirectoryFaculty). orc/scopus/scholar are
+// omitted (not null) when the source id is absent — hence `optional`.
+message Faculty {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  int32 citation_count = 4;
+  int32 h_index = 5;
+  repeated string research_areas = 6;
+  optional string orc_id = 7;            // JSON: orcId (omit when unset)
+  optional string scopus_id = 8;         // JSON: scopusId (omit when unset)
+  optional string google_scholar_id = 9; // JSON: googleScholarId (omit when unset)
+  optional Department department = 10;   // JSON null when unset
+  repeated string tags = 11;
+  optional string profile_image_url = 12; // JSON: profileImageUrl, null when unset
+  optional string designation = 13;      // JSON null when unset
+  optional int32 working_from_year = 14; // JSON: workingFromYear, null when unset
+}
+
+message Pagination {
+  int32 page = 1;
+  int32 limit = 2;
+  int32 total = 3;
+  int32 total_pages = 4;   // JSON: totalPages
+  bool has_next = 5;       // JSON: hasNext
+  bool has_prev = 6;       // JSON: hasPrev
+}
+
+// ---------------------------------------------------------------------------
+// DirectoryService  (/api/directory/*)
+// ---------------------------------------------------------------------------
+service DirectoryService {
+  // GET /api/directory/
+  rpc ListFaculty(ListFacultyRequest) returns (ListFacultyResponse);
+  // GET /api/directory/search
+  rpc SearchDirectory(SearchDirectoryRequest) returns (SearchDirectoryResponse);
+  // GET /api/directory/grouped
+  rpc GetGrouped(GetGroupedRequest) returns (GetGroupedResponse);
+  // GET /api/directory/grouped/:departmentId/faculties
+  rpc GetDepartmentFaculties(GetDepartmentFacultiesRequest) returns (GetDepartmentFacultiesResponse);
+  // GET /api/directory/by-scopus/:scopusId
+  rpc GetFacultyByScopus(GetFacultyByScopusRequest) returns (FacultyResponse);
+  // POST /api/directory/by-scopus/batch
+  rpc BatchFacultyByScopus(BatchByScopusRequest) returns (FacultyMatchesResponse);
+  // POST /api/directory/by-kerberos/batch
+  rpc BatchFacultyByKerberos(BatchByKerberosRequest) returns (FacultyMatchesResponse);
+  // GET /api/directory/faculty/:kerberos/profile
+  rpc GetFacultyProfile(GetFacultyProfileRequest) returns (FacultyResponse);
+  // GET /api/directory/faculty/:kerberos/research-summary
+  rpc GetFacultyResearchSummary(ResearchSummaryRequest) returns (JsonDataResponse);
+  // GET /api/directory/faculty/:kerberos/publications
+  rpc GetFacultyPublications(PublicationsRequest) returns (JsonDataResponse);
+  // GET /api/directory/:id
+  rpc GetFacultyById(GetFacultyByIdRequest) returns (FacultyResponse);
+}
+
+message ListFacultyRequest {
+  int32 page = 1;         // default 1, min 1
+  int32 limit = 2;        // default 9, clamp 1..100
+  string sort_by = 3;     // default "h_index"
+  string order = 4;       // "asc" | "desc" (default desc)
+}
+message ListFacultyResponse {
+  repeated FacultyCard data = 1;
+  Pagination pagination = 2;
+}
+
+message SearchDirectoryRequest {
+  string q = 1;           // <2 chars => empty result + "Search query too short"
+  int32 limit = 2;        // default 10, clamp 1..20
+}
+message SearchDirectoryResponse {
+  repeated Faculty faculties = 1;
+  repeated Department departments = 2;
+  int32 total = 3;
+  // Varies: "Search completed" vs "Search query too short"; gateway uses this
+  // for the envelope message.
+  string message = 4;
+}
+
+message GetGroupedRequest {
+  string category = 1;     // departments|schools|centres|researchlabs|all (default all)
+  bool summary_only = 2;   // JSON query summaryOnly=true
+}
+message GroupedStats {
+  int32 total_faculty = 1;          // JSON: totalFaculty
+  optional double avg_h_index = 2;  // JSON: avgHIndex (absent in summaryOnly mode)
+}
+message GroupedDepartment {
+  string id = 1;                        // _id
+  Department department = 2;
+  GroupedStats stats = 3;
+  // Empty in summaryOnly mode (key omitted by gateway when summary_only).
+  repeated FacultyCard faculties = 4;
+}
+message GetGroupedResponse {
+  repeated GroupedDepartment departments = 1;
+  int32 total_departments = 2;   // JSON: totalDepartments
+  int32 total_faculty = 3;       // JSON: totalFaculty
+}
+
+message GetDepartmentFacultiesRequest {
+  string department_id = 1;   // path :departmentId
+  string category = 2;        // default all
+}
+message GetDepartmentFacultiesResponse {
+  repeated FacultyCard faculties = 1;
+}
+
+message GetFacultyByScopusRequest { string scopus_id = 1; }
+message GetFacultyByIdRequest { string id = 1; }
+message GetFacultyProfileRequest { string kerberos = 1; }
+message FacultyResponse { Faculty faculty = 1; }
+
+message BatchByScopusRequest { repeated string scopus_ids = 1; }
+message BatchByKerberosRequest { repeated string kerberos_ids = 1; } // lower-cased, first 100
+// matches map is keyed by the requested id; missing ids are absent from the map
+// (mirrors REST { matches: { [id]: Faculty } }).
+message FacultyMatchesResponse { map<string, Faculty> matches = 1; }
+
+message ResearchSummaryRequest {
+  string kerberos = 1;
+  int32 year_limit = 2;   // JSON: yearLimit, default 5, clamp 1..20
+  int32 year_offset = 3;  // JSON: yearOffset, default 0
+}
+message PublicationsRequest {
+  string kerberos = 1;
+  int32 year = 2;         // required
+  int32 skip = 3;         // default 0
+  int32 limit = 4;        // default 20, clamp 1..50
+}
+
+// Opaque `data` payload. PublicationSummary carries authors[].matched_profile
+// whose type is data-dependent, and the scopus-vs-scholar variants differ in
+// which keys are present/omitted; a JSON string preserves this exactly.
+message JsonDataResponse { string data_json = 1; }
+
+// ---------------------------------------------------------------------------
+// KnowledgeGraphService  (/api/kg/*)
+// ---------------------------------------------------------------------------
+service KnowledgeGraphService {
+  // GET /api/kg/health
+  rpc GetHealth(EmptyRequest) returns (KgHealthResponse);
+  // GET /api/kg/faculty
+  rpc GetFacultyIndex(EmptyRequest) returns (JsonDataResponse);
+  // GET /api/kg/faculty/:id/knowledge-graph
+  rpc GetFacultyKnowledgeGraph(KgFacultyGraphRequest) returns (JsonDataResponse);
+  // GET /api/kg/explore/terms
+  rpc ExploreTerms(ExploreTermsRequest) returns (JsonDataResponse);
+  // GET /api/kg/explore/detail
+  rpc ExploreDetail(ExploreDetailRequest) returns (ExploreDetailResponse);
+  // GET /api/kg/paper/:id/meta
+  rpc GetPaperMeta(PaperMetaRequest) returns (PaperMetaResponse);
+  // GET /api/kg/atlas  (RAW body, not the standard envelope; supports ETag/304)
+  rpc GetAtlas(GetAtlasRequest) returns (GetAtlasResponse);
+  // GET /api/kg/atlas/search
+  rpc SearchAtlas(AtlasSearchRequest) returns (AtlasIndicesResponse);
+  // GET /api/kg/atlas/refine — nested search: refine `q` within primary `base_q`
+  rpc SearchAtlasRefine(AtlasRefineRequest) returns (AtlasRefineResponse);
+  // GET /api/kg/atlas/suggest — blended themes/topics/faculty/department typeahead
+  rpc SearchAtlasSuggest(AtlasSuggestRequest) returns (AtlasSuggestResponse);
+  // GET /api/kg/atlas/faculty-indices
+  rpc GetAtlasFacultyIndices(AtlasFacultyIndicesRequest) returns (AtlasFacultyIndicesResponse);
+  // GET /api/kg/atlas/faculty-search
+  rpc SearchAtlasFaculty(AtlasFacultySearchRequest) returns (AtlasFacultySearchResponse);
+  // GET /api/kg/atlas/department-indices
+  rpc GetAtlasDepartmentIndices(AtlasDepartmentIndicesRequest) returns (AtlasDepartmentIndicesResponse);
+  // GET /api/kg/atlas/department-search
+  rpc SearchAtlasDepartment(AtlasDepartmentSearchRequest) returns (AtlasDepartmentSearchResponse);
+  // GET /api/kg/atlas/cluster-breakdown
+  rpc GetAtlasClusterBreakdown(AtlasClusterBreakdownRequest) returns (AtlasClusterBreakdownResponse);
+  // GET /api/kg/atlas/tree — headers-only octree hierarchy (JSON)
+  rpc GetAtlasTree(EmptyRequest) returns (JsonDataResponse);
+  // GET /api/kg/atlas/dict — taxonomy id maps + label anchors (JSON)
+  rpc GetAtlasDict(EmptyRequest) returns (JsonDataResponse);
+  // GET /api/kg/atlas/tile/:nodeKey — one octree node as quantized bytes
+  rpc GetAtlasTile(AtlasTileRequest) returns (AtlasTileResponse);
+  // GET /api/kg/atlas/points — exact coords for a set of indices (overlay)
+  rpc GetAtlasPoints(AtlasPointsRequest) returns (AtlasPointsResponse);
+}
+
+message EmptyRequest {}
+
+message KgHealthResponse {
+  bool graphs_ready = 1;      // JSON: graphsReady
+  bool explore_ready = 2;     // JSON: exploreReady
+  bool atlas_ready = 3;       // JSON: atlasReady
+  int32 atlas_count = 4;      // JSON: atlasCount
+  string data_dir = 5;        // JSON: dataDir
+  bool redis_connected = 6;   // JSON: redisConnected
+  int32 cache_ttl_seconds = 7; // JSON: cacheTtlSeconds
+}
+
+message KgFacultyGraphRequest { string id = 1; } // sanitized [a-zA-Z0-9_-]
+message ExploreTermsRequest {
+  string q = 1;              // default ""
+  optional string type = 2;
+  int32 limit = 3;           // default 40, max 200
+}
+message ExploreDetailRequest { string key = 1; }
+message ExploreDetailResponse {
+  bool found = 1;            // false => gateway returns 404
+  // exploreIndex.detail[key] — arbitrary file-driven object.
+  string detail_json = 2;
+}
+
+message PaperMetaRequest { string id = 1; } // hex, sanitized
+message PaperAuthor {
+  string name = 1;
+  string author_id = 2;
+  int32 position = 3;
+}
+message PaperIitdFaculty {
+  string faculty_id = 1;   // JSON: facultyId
+  string name = 2;
+  string department = 3;
+  string kerberos = 4;
+}
+message PaperMetaResponse {
+  bool found = 1;          // false => gateway returns 404
+  string link = 2;
+  string document_scopus_id = 3;
+  string document_eid = 4;
+  string title = 5;
+  string abstract = 6;
+  int32 publication_year = 7;
+  int32 citation_count = 8;
+  int32 reference_count = 9;
+  string document_type = 10;
+  string field_associated = 11;
+  repeated string subject_area = 12;
+  repeated PaperAuthor authors = 13;
+  repeated PaperIitdFaculty iitd_faculty = 14; // JSON: iitd_faculty
+}
+
+message GetAtlasRequest {
+  // Client's If-None-Match; when it matches, respond not_modified=true (304).
+  optional string if_none_match = 1;
+}
+message GetAtlasResponse {
+  bool not_modified = 1;   // gateway emits 304 with no body
+  string etag = 2;         // gateway sets ETag / X-Cache headers
+  // Full atlas_papers.json file text, returned verbatim (NOT enveloped).
+  string body_json = 3;
+}
+
+message AtlasSearchRequest {
+  string q = 1;
+  int32 limit = 2;   // default 5000, max 70000
+}
+message AtlasIndicesResponse {
+  string query = 1;
+  int32 match_count = 2;      // JSON: matchCount
+  repeated int32 indices = 3;
+}
+
+message AtlasRefineRequest {
+  string base_q = 1;          // JSON: baseQ — primary search query
+  string q = 2;               // refine / nested query
+  int32 limit = 3;            // default 8000, max 70000
+}
+message AtlasRefineResponse {
+  string base_query = 1;      // JSON: baseQuery
+  string query = 2;
+  int32 base_count = 3;       // JSON: baseCount
+  int32 match_count = 4;      // JSON: matchCount
+  repeated int32 indices = 5;
+  repeated AtlasPointCoord points = 6;
+}
+
+message AtlasSuggestRequest {
+  string q = 1;
+  int32 limit = 2;   // per-group default 8, max 20
+}
+message AtlasSuggestTerm {
+  string kind = 1;          // theme | topic
+  string key = 2;
+  string label = 3;
+  int32 paper_count = 4;    // JSON: paperCount
+  int32 faculty_count = 5;  // JSON: facultyCount
+  int32 dept_count = 6;     // JSON: deptCount
+}
+message AtlasSuggestFaculty {
+  string faculty_id = 1;    // JSON: facultyId
+  string name = 2;
+  string department = 3;
+  int32 paper_count = 4;    // JSON: paperCount
+  int32 atlas_count = 5;    // JSON: atlasCount
+}
+message AtlasSuggestDepartment {
+  string department = 1;
+  int32 faculty_count = 2;  // JSON: facultyCount
+  int32 paper_count = 3;    // JSON: paperCount
+}
+message AtlasSuggestResponse {
+  string query = 1;
+  repeated AtlasSuggestTerm themes = 2;
+  repeated AtlasSuggestTerm topics = 3;
+  repeated AtlasSuggestFaculty faculty = 4;
+  repeated AtlasSuggestDepartment departments = 5;
+}
+
+message AtlasFacultyIndicesRequest { repeated string ids = 1; } // REST: comma-separated
+message AtlasFacultyIndicesResponse {
+  repeated string faculty_ids = 1;  // JSON: facultyIds
+  int32 match_count = 2;
+  repeated int32 indices = 3;
+}
+
+message AtlasFacultySearchRequest {
+  string q = 1;
+  int32 limit = 2;   // default 12, max 50
+}
+message AtlasFacultyMatch {
+  string faculty_id = 1;   // JSON: facultyId
+  string name = 2;
+  string department = 3;
+  int32 paper_count = 4;   // JSON: paperCount
+  int32 atlas_count = 5;   // JSON: atlasCount
+}
+message AtlasFacultySearchResponse {
+  string query = 1;
+  repeated AtlasFacultyMatch matches = 2;
+  int32 match_count = 3;
+  repeated int32 indices = 4;
+}
+
+message AtlasDepartmentIndicesRequest { repeated string departments = 1; } // REST: "|"-separated
+message AtlasDepartmentIndicesResponse {
+  repeated string departments = 1;
+  int32 match_count = 2;
+  repeated int32 indices = 3;
+}
+
+message AtlasDepartmentSearchRequest {
+  string q = 1;
+  int32 limit = 2;   // default 12, max 50
+}
+message AtlasDepartmentMatch {
+  string department = 1;
+  int32 faculty_count = 2;  // JSON: facultyCount
+  int32 atlas_count = 3;    // JSON: atlasCount
+}
+message AtlasDepartmentSearchResponse {
+  string query = 1;
+  repeated AtlasDepartmentMatch matches = 2;
+  int32 match_count = 3;
+  repeated int32 indices = 4;
+}
+
+message AtlasClusterBreakdownRequest {
+  string theme = 1;
+  string q = 2;
+  int32 paper_limit = 3;   // JSON query: paperLimit, default 200, max 500
+}
+message ClusterPaper {
+  string id = 1;
+  int32 i = 2;
+  string title = 3;
+  string domain = 4;
+  string topic = 5;
+  int32 citations = 6;
+}
+message ClusterDepartment {
+  string department = 1;
+  int32 paper_count = 2;   // JSON: paperCount
+  repeated ClusterPaper papers = 3;
+}
+message AtlasClusterBreakdownResponse {
+  string theme = 1;
+  string query = 2;
+  int32 total_papers = 3;  // JSON: totalPapers
+  repeated ClusterDepartment departments = 4;
+}
+
+// Octree LOD tile streaming (replaces the monolithic /atlas payload).
+message AtlasTileRequest { string node_key = 1; } // "r" = root; sanitized [a-zA-Z0-9-]
+message AtlasTileResponse {
+  string version = 1;
+  string node_key = 2;
+  string etag = 3;          // gateway sets ETag; immutable per version
+  int32 point_count = 4;    // JSON: pointCount
+  bytes payload = 5;        // quantized binary tile (application/octet-stream)
+}
+message AtlasPointsRequest { repeated int32 indices = 1; }
+message AtlasPointCoord {
+  int32 i = 1;
+  float x = 2;
+  float y = 3;
+  float z = 4;
+  string id = 5;          // paper ObjectId hex
+  string theme = 6;       // broad theme label for colored overlay
+  string title = 7;       // paper title (sidebar)
+  string department = 8;  // IITD department (theme cluster sidebar)
+}
+message AtlasPointsResponse { repeated AtlasPointCoord points = 1; }
+
+// ---------------------------------------------------------------------------
+// ContentService  (/api/content/*)
+// ---------------------------------------------------------------------------
+// All read/write responses echo raw Mongoose documents (with _id, __v,
+// timestamps, populated refs, nested comment subdocs). They are returned as
+// documented JSON strings so the gateway reproduces them byte-for-byte.
+// Writes marked (auth) require the CMS JWT via `authorization` metadata.
+service ContentService {
+  // GET /api/content/
+  rpc ListContent(EmptyRequest) returns (JsonDataResponse);
+  // GET /api/content/paginated  (mine=true uses forwarded identity/JWT)
+  rpc ListContentPaginated(ListContentPaginatedRequest) returns (JsonDataResponse);
+  // GET /api/content/:id
+  rpc GetContent(GetContentRequest) returns (JsonDataResponse);
+  // POST /api/content/            (auth; multipart hero_img) -> 201
+  rpc CreateContent(CreateContentRequest) returns (JsonDataResponse);
+  // PUT /api/content/             (auth; multipart hero_img)
+  rpc UpdateContent(UpdateContentRequest) returns (JsonDataResponse);
+  // DELETE /api/content/          (auth)
+  rpc DeleteContent(DeleteContentRequest) returns (MessageOnlyResponse);
+  // POST /api/content/like        (optional auth)
+  rpc LikeContent(ContentIdRequest) returns (JsonDataResponse);
+  // POST /api/content/dislike     (optional auth)
+  rpc DislikeContent(ContentIdRequest) returns (JsonDataResponse);
+  // POST /api/content/comment     (optional auth) -> 201
+  rpc CommentContent(CommentRequest) returns (JsonDataResponse);
+  // POST /api/content/uncomment   (auth: admin or author)
+  rpc UncommentContent(UncommentRequest) returns (MessageOnlyResponse);
+  // POST /api/content/status      (auth; publish=online requires admin)
+  rpc SetContentStatus(SetContentStatusRequest) returns (JsonDataResponse);
+}
+
+// Multipart file part forwarded from the gateway (hero_img/profile_img/etc.).
+message FileUpload {
+  string filename = 1;
+  string content_type = 2;
+  bytes data = 3;
+}
+
+// data == null in the REST body; only `message` differs (envelope only).
+message MessageOnlyResponse { string message = 1; }
+
+message ListContentPaginatedRequest {
+  int32 page = 1;             // default 1
+  int32 limit = 2;            // default 9
+  optional string status = 3; // pending|archived|online
+  bool mine = 4;              // when true, backend scopes to identity/JWT user
+}
+message GetContentRequest { string id = 1; }
+message ContentIdRequest { string content_id = 1; } // JSON body: contentId
+
+message CreateContentRequest {
+  string title = 1;
+  string subtitle = 2;
+  string body = 3;
+  string est_read_time = 4;   // form field, kept as-is
+  FileUpload hero_img = 5;
+}
+message UpdateContentRequest {
+  string id = 1;
+  optional string title = 2;
+  optional string subtitle = 3;
+  optional string body = 4;
+  optional string est_read_time = 5;
+  optional FileUpload hero_img = 6;
+}
+message DeleteContentRequest { string id = 1; }
+message CommentRequest {
+  string content_id = 1;
+  string body = 2;
+}
+message UncommentRequest {
+  string content_id = 1;
+  string comment_id = 2;   // JSON body: commentId
+}
+message SetContentStatusRequest {
+  string content_id = 1;
+  string status = 2;       // pending|archived|online
+}
+
+// ---------------------------------------------------------------------------
+// UserService  (/api/user/*)  — CMS accounts (NOT IITD OAuth)
+// ---------------------------------------------------------------------------
+service UserService {
+  // POST /api/user/register  (multipart profile_img optional) -> 201
+  rpc Register(RegisterRequest) returns (JsonDataResponse);
+  // POST /api/user/login
+  rpc Login(LoginRequest) returns (LoginResponse);
+  // PUT /api/user/edit       (auth; multipart profile_img optional)
+  rpc EditUser(EditUserRequest) returns (JsonDataResponse);
+  // DELETE /api/user/delete  (auth: admin)
+  rpc DeleteUser(DeleteUserRequest) returns (JsonDataResponse);
+}
+
+message RegisterRequest {
+  string name = 1;
+  string email = 2;
+  string password = 3;
+  optional string role = 4;              // user|admin
+  optional FileUpload profile_img = 5;
+  optional string profile_img_url = 6;   // fallback when no file part
+}
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+message LoginResponse { string token = 1; } // JSON data: { token }
+message EditUserRequest {
+  optional string name = 1;
+  optional string password = 2;
+  optional FileUpload profile_img = 3;
+  optional string profile_img_url = 4;
+}
+message DeleteUserRequest { string email = 1; } // target user
+
+// ---------------------------------------------------------------------------
+// SuggestionService  (/api/suggestions/*)
+// ---------------------------------------------------------------------------
+service SuggestionService {
+  // POST /api/suggestions/  (multipart screenshot optional) -> 201
+  rpc CreateSuggestion(CreateSuggestionRequest) returns (CreateSuggestionResponse);
+}
+
+message CreateSuggestionRequest {
+  string category = 1;   // enum: Website Feedback|Feature Request|Missing Research Information|Bug Report|Other
+  string message = 2;    // 10..2000 chars
+  optional string email = 3;
+  optional string name = 4;
+  optional FileUpload screenshot = 5; // jpeg|png|gif|webp, <=5MB
+}
+message CreateSuggestionResponse { string id = 1; } // JSON data: { id }
