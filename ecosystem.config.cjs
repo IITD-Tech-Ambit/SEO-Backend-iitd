@@ -1,3 +1,4 @@
+// webhook-verify: temporary comment to confirm Coolify auto-deploy fires for both search-api and embedding on push to prod
 module.exports = {
   apps: [{
     name: 'search-api',
