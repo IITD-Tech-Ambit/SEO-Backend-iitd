@@ -11,9 +11,9 @@ ENV https_proxy=$HTTPS_PROXY
 
 WORKDIR /app
 
-# Install system dependencies (git needed for the pip git+https proto-registry dep)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl git \
+    build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for caching
@@ -23,8 +23,7 @@ COPY requirements.txt .
 # CPU wheel is much smaller and matches typical USE_GPU=false deployments).
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-# Remaining deps, including iitd-tech-ambit-proto-stubs (git+https from the
-# public proto-registry repo — no auth needed).
+# Remaining deps (transformers will not pull a second torch if already satisfied)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code

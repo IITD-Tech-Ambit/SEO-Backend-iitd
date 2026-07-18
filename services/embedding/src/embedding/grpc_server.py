@@ -23,7 +23,7 @@ import grpc
 
 from . import config, metrics, routes
 from .inference import InferenceQueueTimeout, run_embed, run_rerank, track_inflight
-from iitd_ambit_protos.embedding.v1 import embedding_pb2, embedding_pb2_grpc
+from embedding.v1 import embedding_pb2, embedding_pb2_grpc
 
 logger = logging.getLogger(__name__)
 
