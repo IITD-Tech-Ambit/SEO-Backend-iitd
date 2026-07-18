@@ -46,6 +46,7 @@ def _hf_attempts() -> list:
 
 
 def load_onnx(model_cls, model_name: str, label: str) -> Tuple[_Tokenizer, _Model]:
+    from filelock import FileLock
     from transformers import AutoTokenizer
 
     session_opts = ort_session_options()
@@ -57,27 +58,46 @@ def load_onnx(model_cls, model_name: str, label: str) -> Tuple[_Tokenizer, _Mode
         model = model_cls.from_pretrained(local_dir, export=False, session_options=session_opts)
         return tokenizer, model
 
-    last_err = None
-    for local_only in _hf_attempts():
-        try:
-            logger.info("Exporting ONNX (one-time): %s", label)
-            tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=local_only)
-            model = model_cls.from_pretrained(
-                model_name, export=True, local_files_only=local_only,
-                session_options=session_opts,
-            )
-            os.makedirs(local_dir, exist_ok=True)
-            model.save_pretrained(local_dir)
-            tokenizer.save_pretrained(local_dir)
-            logger.info("ONNX cache saved: %s", label)
+    # Multiple gunicorn workers boot concurrently and each call this on a
+    # cold cache (e.g. a fresh persistent volume). Without a lock, one
+    # worker's in-progress save_pretrained() (tokenizer files written before
+    # the model, or vice versa) can look like a "hit" to onnx_artifacts_exist()
+    # in another worker, which then tries to load a half-written directory
+    # and crashes. Serialize export across workers; the ones that lose the
+    # race just re-check the now-populated cache instead of exporting again.
+    os.makedirs(os.path.dirname(local_dir), exist_ok=True)
+    lock_path = local_dir.rstrip("/") + ".lock"
+    with FileLock(lock_path):
+        if onnx_artifacts_exist(local_dir):
+            logger.info("ONNX cache hit after waiting for lock: %s", label)
+            tokenizer = AutoTokenizer.from_pretrained(local_dir)
+            model = model_cls.from_pretrained(local_dir, export=False, session_options=session_opts)
             return tokenizer, model
-        except OSError as e:
-            last_err = e
-            if local_only and len(_hf_attempts()) > 1:
-                logger.info("HF local cache miss for %s — downloading", label)
-                continue
-            raise
-    raise last_err
+
+        last_err = None
+        for local_only in _hf_attempts():
+            try:
+                logger.info("Exporting ONNX (one-time): %s", label)
+                tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=local_only)
+                model = model_cls.from_pretrained(
+                    model_name, export=True, local_files_only=local_only,
+                    session_options=session_opts,
+                )
+                tmp_dir = local_dir + ".tmp"
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                os.makedirs(tmp_dir, exist_ok=True)
+                model.save_pretrained(tmp_dir)
+                tokenizer.save_pretrained(tmp_dir)
+                os.replace(tmp_dir, local_dir)
+                logger.info("ONNX cache saved: %s", label)
+                return tokenizer, model
+            except OSError as e:
+                last_err = e
+                if local_only and len(_hf_attempts()) > 1:
+                    logger.info("HF local cache miss for %s — downloading", label)
+                    continue
+                raise
+        raise last_err
 
 
 def load_embedding_model() -> Tuple[_Tokenizer, _Model]:
@@ -116,7 +136,15 @@ def load_reranker() -> Tuple[_Tokenizer, _Model]:
             load_onnx(ORTModelForSequenceClassification, config.RERANK_MODEL_NAME, "reranker-fp32")
 
         if not onnx_artifacts_exist(int8_dir):
-            _quantize_to_int8(fp32_dir, int8_dir)
+            # Same cross-worker race as load_onnx: serialize quantization on
+            # a cold cache so concurrent workers don't read a half-written
+            # int8_dir.
+            from filelock import FileLock
+
+            os.makedirs(os.path.dirname(int8_dir), exist_ok=True)
+            with FileLock(int8_dir.rstrip("/") + ".lock"):
+                if not onnx_artifacts_exist(int8_dir):
+                    _quantize_to_int8(fp32_dir, int8_dir)
 
         logger.info("Loading INT8 reranker from %s", int8_dir)
         tokenizer = AutoTokenizer.from_pretrained(int8_dir)
