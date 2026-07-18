@@ -36,4 +36,13 @@ jobs:
           fi
           git add proto/embedding/v1/embedding.proto
           git commit -m "Sync embedding.v1 from SEO-Backend-iitd@${{ github.sha }}"
-          git push
+
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (attempt $i/5) — another sync likely raced us. Rebasing and retrying..."
+            sleep $((RANDOM % 5 + 1))
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "Failed to push after 5 attempts."
+          exit 1
