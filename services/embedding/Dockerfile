@@ -1,13 +1,29 @@
 # Embedding Service - Python FastAPI
 FROM python:3.11-slim
 
-# Proxy for IITD network
+# Proxy for IITD network — needed for outbound HuggingFace Hub downloads
+# (loader.py falls back to a live download on ONNX-cache miss, e.g. first
+# boot before /app/.cache is populated). transformers/huggingface_hub only
+# auto-detect the standard HTTP_PROXY/HTTPS_PROXY names (unlike our own
+# outbound clients, this is third-party code, so it can't be pointed at an
+# app-specific var the way auth-service's OAuth client was).
+#
+# NO_PROXY/no_proxy is set unconditionally (not from a build ARG) so the
+# container's own HEALTHCHECK below (curl to localhost) always bypasses the
+# proxy, regardless of whatever HTTP_PROXY/HTTPS_PROXY end up set at runtime
+# (Coolify env vars, or Docker client-side config.json auto-injection). Real
+# curl (unlike the BusyBox wget hit in auth-service) does honor NO_PROXY
+# correctly — confirmed by direct testing — but only if it's actually set;
+# nothing here set it before, so a proxy var landing on this container with
+# no NO_PROXY would 503 the healthcheck against a perfectly healthy app.
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ENV HTTP_PROXY=$HTTP_PROXY
 ENV HTTPS_PROXY=$HTTPS_PROXY
 ENV http_proxy=$HTTP_PROXY
 ENV https_proxy=$HTTPS_PROXY
+ENV NO_PROXY=localhost,127.0.0.1,0.0.0.0
+ENV no_proxy=localhost,127.0.0.1,0.0.0.0
 
 WORKDIR /app
 
