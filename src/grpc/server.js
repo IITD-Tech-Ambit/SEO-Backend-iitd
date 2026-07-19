@@ -17,13 +17,29 @@ import { createTaxonomyServiceHandlers } from './handlers/taxonomyServiceHandler
  * the bind race logs a warning and skips gRPC (REST keeps serving) rather than
  * crashing — preserving the original single-RPC server's behaviour.
  */
-export function startGrpcServer({ searchService, documentService, suggestService, taxonomyService, logger, bindAddress }) {
+export function startGrpcServer({
+    searchService,
+    documentService,
+    suggestService,
+    ipSearchService,
+    ipSuggestService,
+    taxonomyService,
+    logger,
+    bindAddress
+}) {
     const searchPackage = loadPackage('search/v1/search.proto').search.v1;
 
     const server = new grpc.Server();
     server.addService(
         searchPackage.SearchService.service,
-        createSearchServiceHandlers({ searchService, documentService, suggestService, logger })
+        createSearchServiceHandlers({
+            searchService,
+            documentService,
+            suggestService,
+            ipSearchService,
+            ipSuggestService,
+            logger
+        })
     );
     server.addService(
         searchPackage.TaxonomyService.service,

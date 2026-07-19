@@ -56,6 +56,6 @@ export default async function ipSearchRoutes(fastify, options) {
                 500: errorResponseSchema
             }
         },
-        handler: getIpDocument
+        handler: (request, reply) => getIpDocument(request, reply, ipSearchService)
     });
 }
