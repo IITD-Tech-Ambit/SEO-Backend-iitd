@@ -21,7 +21,8 @@ export default {
             rejectUnauthorized: false
         },
         indexName: process.env.OPENSEARCH_INDEX || 'research_documents',
-        authorsSuggestIndex: process.env.OPENSEARCH_AUTHORS_INDEX || 'authors_suggest'
+        authorsSuggestIndex: process.env.OPENSEARCH_AUTHORS_INDEX || 'authors_suggest',
+        ipIndexName: process.env.OPENSEARCH_IP_INDEX || 'ip_documents'
     },
 
     redis: {
@@ -79,6 +80,27 @@ export default {
             nameShape: 0.12,        // 1-3 tokens / initials pattern => author-ish
             retrievalConfidence: 0.60, // normalized top-author vs top-paper score
             topicSignal: 0.35,      // stopwords / length / trailing connectors => paper
+        }
+    },
+
+    // IP typeahead against `ip_documents` (inventors are nested; no separate roster index).
+    ipSuggest: {
+        minPrefix: 2,
+        defaultLimit: 8,
+        maxLimit: 15,
+        inventorsSize: 6,
+        documentsSize: 6,
+        inventorCandidateDocs: 20, // docs scanned via inner_hits for distinct inventors
+        perSourceTimeoutMs: parseInt(process.env.IP_SUGGEST_SOURCE_TIMEOUT_MS || '1200'),
+        lruMax: 2000,
+        lruTtlMs: 60000,
+        redisTtl: 60,
+        tokenRefreshMs: 600000,
+        intentWeights: {
+            nameTokenMatch: 0.30,
+            nameShape: 0.12,
+            retrievalConfidence: 0.60,
+            topicSignal: 0.35,
         }
     },
 

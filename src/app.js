@@ -13,10 +13,13 @@ import HttpEmbeddingTransport from './services/embedding/HttpEmbeddingTransport.
 import GrpcEmbeddingTransport from './services/embedding/GrpcEmbeddingTransport.js';
 import { startGrpcServer } from './grpc/server.js';
 import SearchService from './services/searchService.js';
+import IpSearchService from './services/ipSearchService.js';
 import DocumentService from './services/documentService.js';
 import SuggestService from './services/suggestService.js';
+import IpSuggestService from './services/ipSuggestService.js';
 import TaxonomyService from './services/taxonomy/TaxonomyService.js';
 import searchRoutes from './routes/search.js';
+import ipSearchRoutes from './routes/ipSearch.js';
 import documentRoutes from './routes/documents.js';
 import taxonomyRoutes from './routes/taxonomy.js';
 
@@ -110,12 +113,27 @@ async function initializeServices() {
     const searchService = new SearchService({ ...deps, embeddingService });
     fastify.decorate('searchService', searchService);
 
+    const ipSearchService = new IpSearchService({
+        ...deps,
+        opensearchIndex: config.opensearch.ipIndexName,
+        embeddingService
+    });
+    fastify.decorate('ipSearchService', ipSearchService);
+
     const documentService = new DocumentService(deps);
     fastify.decorate('documentService', documentService);
 
     const suggestService = new SuggestService(deps);
     suggestService.init();
     fastify.decorate('suggestService', suggestService);
+
+    // IP typeahead uses nested inventors on `ip_documents` (no separate suggest index).
+    const ipSuggestService = new IpSuggestService({
+        ...deps,
+        opensearchIndex: config.opensearch.ipIndexName
+    });
+    ipSuggestService.init();
+    fastify.decorate('ipSuggestService', ipSuggestService);
 
     const taxonomyService = new TaxonomyService(deps);
     await taxonomyService.init();
@@ -128,6 +146,11 @@ async function registerRoutes() {
         await instance.register(searchRoutes, {
             searchService: fastify.searchService,
             suggestService: fastify.suggestService,
+            config
+        });
+        await instance.register(ipSearchRoutes, {
+            ipSearchService: fastify.ipSearchService,
+            ipSuggestService: fastify.ipSuggestService,
             config
         });
         await instance.register(documentRoutes, {
