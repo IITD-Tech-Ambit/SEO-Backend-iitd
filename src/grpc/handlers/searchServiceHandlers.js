@@ -1,18 +1,20 @@
 import grpc from '@grpc/grpc-js';
 import fastJson from 'fast-json-stringify';
 import { searchResponseSchema, authorScopedSearchResponseSchema } from '../../schemas/search.js';
+import { ipSearchResponseSchema } from '../../schemas/ipSearch.js';
 
 /**
  * search.v1.SearchService handlers — thin adapters over SearchService /
- * DocumentService / SuggestService. No search/OpenSearch logic lives here;
- * each handler maps proto <-> the existing service call and shapes the response so
- * the gateway can reproduce the byte-identical REST body.
+ * DocumentService / SuggestService / IpSearchService / IpSuggestService.
+ * No search/OpenSearch logic lives here; each handler maps proto <-> the
+ * existing service call and shapes the response so the gateway can reproduce
+ * the byte-identical REST body.
  *
  * Fidelity rules (see search.proto): document-bearing / polymorphic payloads travel
  * as `*_json` strings holding exactly the REST JSON fragment named by the field
  * (e.g. `document_json` = the document object, `body_json` = the whole REST body),
  * so the gateway splices them verbatim. Deterministic payloads (suggest,
- * faculty-for-query, collaborators) are mapped to typed fields.
+ * faculty-for-query, collaborators, ip suggest) are mapped to typed fields.
  *
  * `body_json` is produced with the SAME fast-json-stringify response schemas the
  * REST routes use, so the string is byte-identical to the live HTTP body: the
@@ -21,6 +23,7 @@ import { searchResponseSchema, authorScopedSearchResponseSchema } from '../../sc
  */
 const serializeSearchBody = fastJson(searchResponseSchema);
 const serializeAuthorScopeBody = fastJson(authorScopedSearchResponseSchema);
+const serializeIpSearchBody = fastJson(ipSearchResponseSchema);
 
 // proto3 defaults hand us 0 / '' for unset scalars; the REST layer relies on
 // Fastify schema defaults, so normalize the same way before calling services.
@@ -40,7 +43,30 @@ function mapSearchFilters(f) {
     return Object.keys(out).length ? out : undefined;
 }
 
-export function createSearchServiceHandlers({ searchService, documentService, suggestService, logger }) {
+function mapIpSearchFilters(f) {
+    if (!f) return undefined;
+    const out = {};
+    if (f.year_from) out.year_from = f.year_from;
+    if (f.year_to) out.year_to = f.year_to;
+    if (f.type_of_ip) out.type_of_ip = f.type_of_ip;
+    if (f.type_of_ip_list && f.type_of_ip_list.length) out.type_of_ip_list = f.type_of_ip_list;
+    if (f.field_of_invention) out.field_of_invention = f.field_of_invention;
+    if (f.classification && f.classification.length) out.classification = f.classification;
+    if (f.department) out.department = f.department;
+    if (f.country) out.country = f.country;
+    if (f.kerberos) out.kerberos = f.kerberos;
+    if (f.primary_inventor_only) out.primary_inventor_only = true;
+    return Object.keys(out).length ? out : undefined;
+}
+
+export function createSearchServiceHandlers({
+    searchService,
+    documentService,
+    suggestService,
+    ipSearchService,
+    ipSuggestService,
+    logger
+}) {
     return {
         // POST /api/v1/search — full REST body returned opaque (results are raw
         // hydrated Mongo docs; facet values polymorphic; status keys conditional).
@@ -269,6 +295,87 @@ export function createSearchServiceHandlers({ searchService, documentService, su
             } catch (error) {
                 logger.error({ err: error, author_id: authorId }, 'gRPC GetAuthorCollaborators failed');
                 callback({ code: grpc.status.INTERNAL, message: 'co-authors fetch failed' });
+            }
+        },
+
+        async IpSuggest(call, callback) {
+            const req = call.request;
+            try {
+                const result = await ipSuggestService.suggest(req.q, req.limit);
+                callback(null, {
+                    intent: result.intent,
+                    confidence: result.confidence,
+                    groups: {
+                        inventors: (result.groups?.inventors || []).map((inv) => ({
+                            id: inv.id || '',
+                            name: inv.name || '',
+                            is_faculty: Boolean(inv.is_faculty),
+                            kerberos: inv.kerberos || '',
+                            score: inv.score || 0
+                        })),
+                        documents: (result.groups?.documents || []).map((doc) => ({
+                            id: doc.id || '',
+                            title: doc.title || '',
+                            year: doc.year || 0,
+                            type_of_ip: doc.type_of_ip || '',
+                            lead_inventor: doc.lead_inventor || '',
+                            score: doc.score || 0
+                        }))
+                    },
+                    meta: { took_ms: result.tookMs || 0, cache_hit: Boolean(result.cacheHit) }
+                });
+            } catch (error) {
+                logger.error({ err: error, q: req.q }, 'gRPC IpSuggest failed');
+                callback(null, {
+                    intent: 'mixed',
+                    confidence: 0,
+                    groups: { inventors: [], documents: [] },
+                    meta: { took_ms: 0, cache_hit: false }
+                });
+            }
+        },
+
+        async IpSearch(call, callback) {
+            const startTime = Date.now();
+            const req = call.request;
+            if (!req.query) {
+                return callback({ code: grpc.status.INVALID_ARGUMENT, message: 'query is required' });
+            }
+            try {
+                const result = await ipSearchService.search({
+                    query: req.query,
+                    filters: mapIpSearchFilters(req.filters),
+                    sort: req.sort || 'relevance',
+                    page: req.page || 1,
+                    per_page: req.per_page || 20,
+                    search_in: req.search_in && req.search_in.length ? req.search_in : null,
+                    mode: req.mode || 'advanced',
+                    refine_within: req.refine_within || null,
+                    refine_chain: req.refine_chain && req.refine_chain.length ? req.refine_chain : null,
+                    rerank: req._rerank !== undefined ? req.rerank : null
+                });
+                const body = { ...result, meta: { took_ms: Date.now() - startTime, cache_hit: result.cacheHit } };
+                callback(null, { body_json: serializeIpSearchBody(body) });
+            } catch (error) {
+                logger.error({ err: error, query: req.query }, 'gRPC IpSearch failed');
+                callback({ code: grpc.status.INTERNAL, message: 'ip search failed' });
+            }
+        },
+
+        async GetIpDocument(call, callback) {
+            const { id } = call.request;
+            if (!id) {
+                return callback({ code: grpc.status.INVALID_ARGUMENT, message: 'id is required' });
+            }
+            try {
+                const document = await ipSearchService.getDocument(id);
+                if (!document) {
+                    return callback(null, { found: false, document_json: '' });
+                }
+                callback(null, { found: true, document_json: JSON.stringify(document) });
+            } catch (error) {
+                logger.error({ err: error, id }, 'gRPC GetIpDocument failed');
+                callback({ code: grpc.status.INTERNAL, message: 'ip document fetch failed' });
             }
         }
     };

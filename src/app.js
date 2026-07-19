@@ -182,6 +182,8 @@ async function start() {
                 searchService: fastify.searchService,
                 documentService: fastify.documentService,
                 suggestService: fastify.suggestService,
+                ipSearchService: fastify.ipSearchService,
+                ipSuggestService: fastify.ipSuggestService,
                 taxonomyService: fastify.taxonomyService,
                 logger: fastify.log,
                 bindAddress: config.grpc.bindAddress

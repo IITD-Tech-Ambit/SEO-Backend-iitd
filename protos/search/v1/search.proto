@@ -10,7 +10,7 @@ package search.v1;
 // Two services share the one search-api gRPC listener (same package, same
 // Envoy cluster + prefix):
 //   SearchService   -> search / author-scope / suggest / faculty-for-query /
-//                      documents / author collaborators
+//                      documents / author collaborators / ip/*
 //   TaxonomyService -> /api/v1/taxonomy/*
 //
 // Response-shape philosophy matches directory.v1: requests fully typed;
@@ -39,6 +39,13 @@ service SearchService {
   rpc GetSimilarDocuments(SimilarDocumentsRequest) returns (SimilarDocumentsResponse);
   // GET /api/v1/author/:id/collaborators
   rpc GetAuthorCollaborators(CollaboratorsRequest) returns (CollaboratorsResponse);
+
+  // GET /api/v1/ip/suggest
+  rpc IpSuggest(SuggestRequest) returns (IpSuggestResponse);
+  // POST /api/v1/ip/search
+  rpc IpSearch(IpSearchRequest) returns (SearchBodyResponse);
+  // GET /api/v1/ip/document/:id
+  rpc GetIpDocument(GetDocumentRequest) returns (DocumentResponse);
 }
 
 // Search filter block, shared by Search / AuthorScope. Every field is optional
@@ -118,6 +125,58 @@ message SuggestResponse {
   double confidence = 2;
   SuggestGroups groups = 3;
   Meta meta = 4;
+}
+
+message IpSuggestInventor {
+  string id = 1;
+  string name = 2;
+  bool is_faculty = 3;
+  string kerberos = 4;
+  double score = 5;
+}
+message IpSuggestDocument {
+  string id = 1;
+  string title = 2;
+  int32 year = 3;
+  string type_of_ip = 4;
+  string lead_inventor = 5;
+  double score = 6;
+}
+message IpSuggestGroups {
+  repeated IpSuggestInventor inventors = 1;
+  repeated IpSuggestDocument documents = 2;
+}
+message IpSuggestResponse {
+  string intent = 1;        // inventor|document|mixed
+  double confidence = 2;
+  IpSuggestGroups groups = 3;
+  Meta meta = 4;
+}
+
+message IpSearchFilters {
+  optional int32 year_from = 1;
+  optional int32 year_to = 2;
+  optional string type_of_ip = 3;
+  repeated string type_of_ip_list = 4;
+  optional string field_of_invention = 5;
+  repeated string classification = 6;
+  optional string department = 7;
+  optional string country = 8;
+  optional string kerberos = 9;
+  optional bool primary_inventor_only = 10;
+}
+
+message IpSearchRequest {
+  string query = 1;                 // required, 1..500
+  IpSearchFilters filters = 2;
+  string sort = 3;                  // relevance|date|normalized (default relevance)
+  int32 page = 4;                   // default 1, 1..10000
+  int32 per_page = 5;               // default 20, 1..100
+  repeated string search_in = 6;    // title|abstract|inventor|field_of_invention|classification
+  string mode = 7;                  // basic|advanced (default advanced)
+  optional string refine_within = 8; // <=500
+  repeated string refine_chain = 9;  // <=8 entries, each <=500
+  optional bool rerank = 10;
 }
 
 // --- FacultyForQuery (unchanged wire contract; field numbers preserved) -----

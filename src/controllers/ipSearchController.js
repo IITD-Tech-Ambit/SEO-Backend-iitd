@@ -60,11 +60,10 @@ export async function search(request, reply, ipSearchService) {
     }
 }
 
-export async function getIpDocument(request, reply) {
+export async function getIpDocument(request, reply, ipSearchService) {
     const { id } = request.params;
     try {
-        const IPMetaData = request.server.mongoose.model('IPMetaData');
-        const document = await IPMetaData.findById(id).lean();
+        const document = await ipSearchService.getDocument(id);
         if (!document) {
             return reply.status(404).send({
                 error: 'Not Found',

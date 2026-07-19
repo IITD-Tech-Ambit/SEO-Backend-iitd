@@ -47,6 +47,11 @@ export default class IpSearchService {
         });
     }
 
+    async getDocument(id) {
+        const IPMetaData = this.mongoose.model('IPMetaData');
+        return IPMetaData.findById(id).lean();
+    }
+
     async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null, refine_chain = null, rerank = null }) {
         const searchInNorm = this.filters.normalizeSearchIn(search_in);
         const refineChain = this._normalizeRefineChain(refine_chain, refine_within);
