@@ -10,3 +10,4 @@ import './domain.js';
 import './subdomain.js';
 import './taxonomy_facet_counts.js';
 import './taxonomy_facet_members.js';
+import './ip_metadata.js';
