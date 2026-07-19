@@ -97,13 +97,35 @@ export function membersPipeline(mask, withDepartment) {
     const authorMatch = { 'iitd_authors.faculty_ref': { $ne: null } };
     if (withDepartment) authorMatch['iitd_authors.department_ref'] = { $ne: null };
 
-    const groupKey = maskKey(mask);
-    if (withDepartment) groupKey.department_id = '$iitd_authors.department_ref';
+    const perAuthorKey = { ...maskKey(mask), kerberos: '$iitd_authors.kerberos' };
+    if (withDepartment) perAuthorKey.department_id = '$iitd_authors.department_ref';
+
+    const comboId = liftMaskFromId(mask);
+    if (withDepartment) comboId.department_id = '$_id.department_id';
 
     return [
         { $match: maskMatch(mask) },
         { $unwind: '$iitd_authors' },
         { $match: authorMatch },
-        { $group: { _id: groupKey, kerberos_set: { $addToSet: '$iitd_authors.kerberos' } } }
+        // One row per (browse config, author, paper) — co-authored papers credit each author once.
+        { $group: { _id: { ...perAuthorKey, paper: '$_id' } } },
+        {
+            $group: {
+                _id: {
+                    ...Object.fromEntries(mask.map((field) => [field, `$_id.${field}`])),
+                    kerberos: '$_id.kerberos',
+                    ...(withDepartment ? { department_id: '$_id.department_id' } : {})
+                },
+                paper_count: { $sum: 1 }
+            }
+        },
+        {
+            $group: {
+                _id: comboId,
+                member_paper_counts: {
+                    $push: { kerberos: '$_id.kerberos', paper_count: '$paper_count' }
+                }
+            }
+        }
     ];
 }

@@ -3,7 +3,7 @@
  *   1. ThematicArea/Domain/Subdomain.stats (paper/faculty counts per node)
  *   2. taxonomyfacetcounts — the sparse configuration cube: one row per
  *      (theme?, domain?, subdomain?, department?) combination with papers
- *   3. taxonomyfacetmembers — h-index-ordered kerberos list per combination
+ *   3. taxonomyfacetmembers — area-paper-count-ordered kerberos list per combination
  *
  * Run manually, once, after scripts/taxonomy/ingest.js has been verified.
  * Rebuilds the two rollup collections from scratch (delete + insert), so it
@@ -38,7 +38,6 @@ const ThematicArea = mongoose.model('ThematicArea');
 const Domain = mongoose.model('Domain');
 const Subdomain = mongoose.model('Subdomain');
 const Department = mongoose.model('Department');
-const Faculty = mongoose.model('Faculty');
 const TaxonomyFacetCounts = mongoose.model('TaxonomyFacetCounts');
 const TaxonomyFacetMembers = mongoose.model('TaxonomyFacetMembers');
 const ResearchDocument = mongoose.model('ResearchMetaDataScopus');
@@ -47,12 +46,6 @@ const ResearchDocument = mongoose.model('ResearchMetaDataScopus');
 const deptById = new Map(
     (await Department.find({}).lean()).map(d => [String(d._id), d])
 );
-const hIndexByKerberos = new Map();
-for (const f of await Faculty.find({}, { email: 1, h_index: 1 }).lean()) {
-    const kerberos = String(f.email || '').split('@')[0].toLowerCase().trim();
-    if (kerberos) hIndexByKerberos.set(kerberos, f.h_index ?? 0);
-}
-
 const comboKey = (id) => [
     id.thematic_area_id ?? '', id.domain_id ?? '', id.subdomain_id ?? '', id.department_id ?? ''
 ].join('|');
@@ -74,7 +67,7 @@ function comboRow(id) {
             department_code: dept?.code ?? null,
             paper_count: 0,
             faculty_count: 0,
-            kerberos_set: []
+            member_paper_counts: []
         });
     }
     return rowsByCombo.get(key);
@@ -89,7 +82,7 @@ for (const mask of MASKS) {
         ]);
         for (const r of papers) comboRow(r._id).paper_count = r.paper_count;
         for (const r of faculty) comboRow(r._id).faculty_count = r.faculty_count;
-        for (const r of members) comboRow(r._id).kerberos_set = r.kerberos_set;
+        for (const r of members) comboRow(r._id).member_paper_counts = r.member_paper_counts;
     }
     console.log(`Aggregated mask [${mask.join(', ')}]`);
 }
@@ -152,19 +145,19 @@ if (!DRY_RUN) {
 
 // --- 2 & 3. Facet cube + member lists (rebuild from scratch) -------------------
 
-const countDocs = allRows.map(({ kerberos_set, ...row }) => ({ ...row, updated_at: now }));
+const countDocs = allRows.map(({ member_paper_counts, ...row }) => ({ ...row, updated_at: now }));
 const memberDocs = allRows
-    .filter(r => r.kerberos_set.length > 0)
+    .filter(r => r.member_paper_counts.length > 0)
     .map(r => {
-        const sorted = [...r.kerberos_set].sort(
-            (a, b) => (hIndexByKerberos.get(b) ?? 0) - (hIndexByKerberos.get(a) ?? 0)
+        const sorted = [...r.member_paper_counts].sort(
+            (a, b) => b.paper_count - a.paper_count || String(a.kerberos).localeCompare(String(b.kerberos))
         );
         return {
             thematic_area_id: r.thematic_area_id,
             domain_id: r.domain_id,
             subdomain_id: r.subdomain_id,
             department_id: r.department_id,
-            kerberos_list: sorted.slice(0, MEMBERS_CAP),
+            kerberos_list: sorted.map((m) => m.kerberos).slice(0, MEMBERS_CAP),
             faculty_total: sorted.length,
             updated_at: now
         };
