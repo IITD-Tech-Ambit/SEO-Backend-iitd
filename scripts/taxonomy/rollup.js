@@ -17,6 +17,7 @@ import dotenv from 'dotenv';
 
 import '../../src/models/index.js';
 import { MASKS, paperCountPipeline, facultyCountPipeline, membersPipeline } from './lib/rollupAggregations.js';
+import { computeRecommendedCount } from './lib/recommendedCount.js';
 import { invalidateTaxonomyCache } from './lib/cacheInvalidator.js';
 import TaxonomyCache from '../../src/services/taxonomy/TaxonomyCache.js';
 
@@ -25,6 +26,10 @@ dotenv.config();
 const MONGODB_URI = process.env.MONGODB_URI;
 const DRY_RUN = process.argv.includes('--dry-run');
 const MEMBERS_CAP = 500;
+// Default-visible-count ceiling: domain is the leaf level where faculty
+// actually get browsed (tighter), theme-only is the broad pre-drill-down
+// view (looser). See scripts/taxonomy/lib/recommendedCount.js.
+const recommendedCeilingFor = (row) => (row.domain_id ? 12 : 48);
 
 if (!MONGODB_URI) {
     console.error('ERROR: MONGODB_URI is not set');
@@ -152,6 +157,7 @@ const memberDocs = allRows
         const sorted = [...r.member_paper_counts].sort(
             (a, b) => b.paper_count - a.paper_count || String(a.kerberos).localeCompare(String(b.kerberos))
         );
+        const recommendedCount = computeRecommendedCount(sorted, { max: recommendedCeilingFor(r) });
         return {
             thematic_area_id: r.thematic_area_id,
             domain_id: r.domain_id,
@@ -159,6 +165,7 @@ const memberDocs = allRows
             department_id: r.department_id,
             kerberos_list: sorted.map((m) => m.kerberos).slice(0, MEMBERS_CAP),
             faculty_total: sorted.length,
+            recommended_count: recommendedCount,
             updated_at: now
         };
     });

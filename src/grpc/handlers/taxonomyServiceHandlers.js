@@ -168,6 +168,7 @@ export function createTaxonomyServiceHandlers({ taxonomyService, logger }) {
                     kerberos_list: value.kerberos_list || [],
                     faculty_total: value.faculty_total || 0,
                     pagination: value.pagination,
+                    recommended_count: value.recommended_count || 0,
                     meta: metaFor(startTime, cacheHit)
                 });
             } catch (error) {
