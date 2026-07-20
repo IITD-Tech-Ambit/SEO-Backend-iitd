@@ -326,6 +326,9 @@ message AtlasRefineRequest {
   string base_q = 1;          // JSON: baseQ — primary search query
   string q = 2;               // refine / nested query
   int32 limit = 3;            // default 8000, max 70000
+  // When "department" or "faculty", skip token text search so dept/faculty
+  // picks do not leak papers that merely mention those words in the title.
+  string entity = 4;          // JSON: entity — "" | "department" | "faculty"
 }
 message AtlasRefineResponse {
   string base_query = 1;      // JSON: baseQuery
@@ -360,12 +363,27 @@ message AtlasSuggestDepartment {
   int32 faculty_count = 2;  // JSON: facultyCount
   int32 paper_count = 3;    // JSON: paperCount
 }
+message AtlasSuggestPaper {
+  string id = 1;
+  int32 i = 2;
+  string title = 3;
+  string theme = 4;
+  string department = 5;
+}
+message AtlasSuggestKeyword {
+  string term = 1;
+  int32 paper_count = 2;   // JSON: paperCount
+}
 message AtlasSuggestResponse {
   string query = 1;
   repeated AtlasSuggestTerm themes = 2;
   repeated AtlasSuggestTerm topics = 3;
   repeated AtlasSuggestFaculty faculty = 4;
   repeated AtlasSuggestDepartment departments = 5;
+  // Papers matched directly by title/abstract text.
+  repeated AtlasSuggestPaper papers = 6;
+  // Short keyword/phrase completions mined from matching paper titles.
+  repeated AtlasSuggestKeyword keywords = 7;
 }
 
 message AtlasFacultyIndicesRequest { repeated string ids = 1; } // REST: comma-separated
@@ -429,10 +447,18 @@ message ClusterPaper {
   string topic = 5;
   int32 citations = 6;
 }
+message ClusterFaculty {
+  string faculty_id = 1;   // JSON: facultyId
+  string name = 2;
+  int32 paper_count = 3;   // JSON: paperCount
+  repeated ClusterPaper papers = 4;
+}
 message ClusterDepartment {
   string department = 1;
   int32 paper_count = 2;   // JSON: paperCount
   repeated ClusterPaper papers = 3;
+  // Professors in this department with papers in the theme/query set.
+  repeated ClusterFaculty faculty = 4;
 }
 message AtlasClusterBreakdownResponse {
   string theme = 1;
