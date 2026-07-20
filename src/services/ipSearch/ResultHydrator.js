@@ -27,7 +27,10 @@ export default class ResultHydrator {
         const mongoIds = osHits.map((hit) => hit._source.mongo_id);
         const scoreById = new Map(osHits.map((hit) => [hit._source.mongo_id, hit._score]));
         const IPMetaData = this.mongoose.model('IPMetaData');
-        const docs = await IPMetaData.find({ _id: { $in: mongoIds } }).select('-__v').lean();
+        const docs = await IPMetaData.find({ _id: { $in: mongoIds } })
+            .select('-__v')
+            .populate('department', 'name code')
+            .lean();
         const docMap = new Map(docs.map((d) => [d._id.toString(), d]));
         const ordered = mongoIds.map((id) => docMap.get(id)).filter(Boolean);
         // Preserve first-stage score for reranker fusion with the cross-encoder score.

@@ -124,6 +124,15 @@ export const ipSearchResponseSchema = {
                     abstract: { type: 'string' },
                     type_of_ip: { type: 'string' },
                     field_of_invention: { type: 'string' },
+                    department: {
+                        type: 'object',
+                        properties: {
+                            _id: { type: 'string' },
+                            name: { type: 'string' },
+                            code: { type: 'string' }
+                        },
+                        nullable: true
+                    },
                     classification: { type: 'array' },
                     inventors: { type: 'array' },
                     applicants: { type: 'array' },
