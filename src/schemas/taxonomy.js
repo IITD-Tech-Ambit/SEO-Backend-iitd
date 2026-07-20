@@ -145,6 +145,7 @@ export const facultyResponseSchema = {
     properties: {
         kerberos_list: { type: 'array', items: { type: 'string' } },
         faculty_total: { type: 'integer' },
+        recommended_count: { type: 'integer' },
         pagination: paginationSchema,
         meta: metaSchema
     }
