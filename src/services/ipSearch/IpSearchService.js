@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import '../../models/ip_metadata.js';
 import '../../models/faculty.js';
+import '../../models/departments.js';
 
 import { buildSearchConfig } from './constants.js';
 import FilterBuilder from './FilterBuilder.js';
@@ -49,7 +50,7 @@ export default class IpSearchService {
 
     async getDocument(id) {
         const IPMetaData = this.mongoose.model('IPMetaData');
-        return IPMetaData.findById(id).lean();
+        return IPMetaData.findById(id).populate('department', 'name code').lean();
     }
 
     async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null, refine_chain = null, rerank = null }) {
