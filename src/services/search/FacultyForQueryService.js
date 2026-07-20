@@ -120,6 +120,48 @@ export default class FacultyForQueryService {
         return { facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineAnchor };
     }
 
+    /**
+     * BM25 pre-check: does at least one query token appear in at least one document?
+     * Mirrors SearchService._bm25PreCheck so the People sidebar and POST /search agree on
+     * whether the query has ANY lexical footprint. Without this gate, the advanced hybrid
+     * aggregation's kNN arm surfaces nearest-neighbor faculty even for gibberish queries that
+     * the papers list (correctly) returns nothing for.
+     */
+    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null) {
+        const chain = normalizeChain(refineChain);
+        const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
+        const useAuthorRefine = authorRefineNarrow && authorOnly && chain.length >= 1;
+
+        let preCheckClause;
+        if (useAuthorRefine) {
+            preCheckClause = this.queryBuilder.buildAuthorRefineNarrowMust(query, chain[0], facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds, chain.slice(1));
+        } else if (search_in && search_in.length > 0) {
+            preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
+        } else {
+            const tokens = (query || '').trim().split(/\s+/).filter(Boolean);
+            const minMatch = tokens.length <= 2 ? 1 : Math.ceil(tokens.length * 0.5);
+            const textMatch = {
+                multi_match: {
+                    query,
+                    fields: ['title', 'abstract', 'subject_area', 'field_associated'],
+                    type: 'cross_fields',
+                    minimum_should_match: String(minMatch)
+                }
+            };
+            const iitdAuthor = this.queryBuilder.buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
+            preCheckClause = iitdAuthor
+                ? { bool: { should: [textMatch, iitdAuthor], minimum_should_match: 1 } }
+                : textMatch;
+        }
+
+        const body = (!useAuthorRefine && chain.length > 0)
+            ? { size: 0, query: { bool: { must: [preCheckClause], filter: this.queryBuilder.buildRefineFilterClauses(chain, search_in, {}) } } }
+            : { size: 0, query: preCheckClause };
+
+        const response = await this.opensearch.search({ index: this.indexName, body });
+        return response.body.hits.total.value;
+    }
+
     /** Build the size:0 OpenSearch aggregation query (basic BM25 or hybrid) for the People sidebar. */
     async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing) {
         const { facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineAnchor } = narrowing;
@@ -417,6 +459,28 @@ export default class FacultyForQueryService {
         if (cached) return cached;
 
         const narrowing = await this._resolveAuthorNarrowing(searchInNorm, refineChain, query);
+
+        // Advanced mode uses a hybrid (kNN) aggregation, whose vector arm always returns
+        // nearest neighbors — even for gibberish. Gate it behind the SAME BM25 pre-check as
+        // POST /search so the People sidebar stays empty whenever the papers list is empty.
+        if (mode === 'advanced') {
+            const bm25HitCount = await this._bm25PreCheck(
+                query, searchInNorm,
+                narrowing.facultyAuthorIds, narrowing.authorRefineNarrow,
+                refineChain, narrowing.facultyKerberosIds
+            );
+            if (bm25HitCount === 0) {
+                this.logger.info({ query, mode }, 'Faculty-for-query: BM25 pre-check returned 0 hits — no faculty');
+                const emptyResponse = { departments: [], total_faculty: 0, total_matching_papers: 0 };
+                try {
+                    await this.redis.setex(cacheKey, 600, JSON.stringify(emptyResponse));
+                } catch (err) {
+                    this.logger.warn({ err }, 'Redis cache write failed for faculty-for-query (empty)');
+                }
+                return { ...emptyResponse, cacheHit: false };
+            }
+        }
+
         const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing);
 
         this.logger.info({ query, mode, search_in: searchInNorm }, 'Faculty-for-query: querying OpenSearch aggregation');

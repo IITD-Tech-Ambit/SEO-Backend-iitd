@@ -76,11 +76,18 @@ export default class IpSearchService {
             this.logger.warn({ err }, 'Redis cache read failed');
         }
 
+        const cacheTtl = this._resolveCacheTtl(filters);
+
         if (mode === 'basic') {
-            return this._runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain, cacheKey });
+            return this._runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain, cacheKey, cacheTtl });
         }
 
-        return this._runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain, cacheKey, rerank });
+        return this._runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain, cacheKey, cacheTtl, rerank });
+    }
+
+    /** Author-scoped (kerberos-filtered) results change far less often than open-ended topic searches. */
+    _resolveCacheTtl(filters) {
+        return filters?.kerberos ? this.redisTTL.authorScopedSearchResults : this.redisTTL.searchResults;
     }
 
     _normalizeRefineChain(refine_chain, refine_within) {
@@ -88,7 +95,7 @@ export default class IpSearchService {
         return normalizeChain(source);
     }
 
-    async _runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], cacheKey }) {
+    async _runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], cacheKey, cacheTtl }) {
         this.logger.info({ query, mode: 'basic' }, 'Running BASIC (BM25-only) IP search');
 
         // Phrase-first recall, then strict per-term AND if the phrase tier recalls nothing.
@@ -134,11 +141,11 @@ export default class IpSearchService {
             match_tier: matchTier
         };
 
-        await this._cacheResponse(cacheKey, response);
+        await this._cacheResponse(cacheKey, response, cacheTtl);
         return { ...response, cacheHit: false };
     }
 
-    async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], cacheKey, rerank = null }) {
+    async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], cacheKey, cacheTtl, rerank = null }) {
         this.logger.info({ query, mode: 'advanced' }, 'Running ADVANCED (hybrid) IP search');
 
         const embedding = await this.embeddingService.embedQuery(query);
@@ -251,13 +258,13 @@ export default class IpSearchService {
             mode: 'advanced'
         };
 
-        await this._cacheResponse(cacheKey, response);
+        await this._cacheResponse(cacheKey, response, cacheTtl);
         return { ...response, cacheHit: false };
     }
 
-    async _cacheResponse(cacheKey, response) {
+    async _cacheResponse(cacheKey, response, ttl) {
         try {
-            await this.redis.setex(cacheKey, this.redisTTL.searchResults, JSON.stringify(response));
+            await this.redis.setex(cacheKey, ttl ?? this.redisTTL.searchResults, JSON.stringify(response));
         } catch (err) {
             this.logger.warn({ err }, 'Redis cache write failed');
         }
