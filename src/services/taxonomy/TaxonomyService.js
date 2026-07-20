@@ -170,7 +170,8 @@ export default class TaxonomyService {
             const row = await this.repository.getConfigMembers({ themeId, domainId, subdomainId, departmentId });
             return {
                 kerberos_list: row?.kerberos_list ?? [],
-                faculty_total: row?.faculty_total ?? 0
+                faculty_total: row?.faculty_total ?? 0,
+                recommended_count: row?.recommended_count ?? 0
             };
         });
 
@@ -181,6 +182,7 @@ export default class TaxonomyService {
             value: {
                 kerberos_list: value.kerberos_list.slice(start, start + perPage),
                 faculty_total: value.faculty_total,
+                recommended_count: value.recommended_count,
                 pagination: {
                     page: currentPage,
                     per_page: perPage,

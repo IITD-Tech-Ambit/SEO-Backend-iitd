@@ -375,6 +375,9 @@ message TaxonomyFacultyResponse {
   int32 faculty_total = 2;
   TaxonomyPagination pagination = 3;
   Meta meta = 4;
+  // How many of kerberos_list to show by default before a "Show all" action
+  // is needed — a per-combination statistical cutoff, not a fixed page size.
+  int32 recommended_count = 5;
 }
 
 message TaxonomyFacultyPapersRequest {

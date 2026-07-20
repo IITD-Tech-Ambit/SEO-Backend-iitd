@@ -4,9 +4,10 @@ import mongoose from "mongoose";
  * Taxonomy facet-members — precomputed "Browse Faculty" list per browse
  * configuration, keyed by the same nullable 4-tuple as the facet-counts cube.
  *
- * Stores ONLY kerberos IDs (ordered by h-index at rollup time). The frontend
- * resolves cards/profiles through the existing directory API by kerberos —
- * no faculty display data is duplicated here.
+ * Stores ONLY kerberos IDs (ordered by paper_count within this combination,
+ * desc, at rollup time). The frontend resolves cards/profiles through the
+ * existing directory API by kerberos — no faculty display data is
+ * duplicated here.
  */
 const taxonomyFacetMembersSchema = new mongoose.Schema({
     thematic_area_id: {
@@ -36,6 +37,13 @@ const taxonomyFacetMembersSchema = new mongoose.Schema({
     }],
     // True count before capping, so the UI can paginate / show "+N more"
     faculty_total: {
+        type: Number,
+        default: 0,
+    },
+    // How many of kerberos_list to show by default before a "Show all"
+    // action is needed — a per-combination statistical cutoff, not a fixed
+    // page size (see scripts/taxonomy/lib/recommendedCount.js)
+    recommended_count: {
         type: Number,
         default: 0,
     },

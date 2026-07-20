@@ -31,7 +31,11 @@ export default {
             searchResults: 300,
             queryEmbedding: 86400,
             authorDocuments: 300,
-            coAuthors: 600
+            coAuthors: 600,
+            // Kerberos-filtered IP search (faculty profile "Patents" section): filings for a
+            // given inventor barely ever change between crawls, so these cache far longer than
+            // generic topic searches.
+            authorScopedSearchResults: parseInt(process.env.IP_AUTHOR_SEARCH_CACHE_TTL || '900')
         }
     },
 
