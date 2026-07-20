@@ -111,7 +111,10 @@ export default class IpSuggestService {
                     path: 'inventors',
                     score_mode: 'max',
                     query: {
-                        match_phrase_prefix: { 'inventors.name': { query: q } }
+                        bool: {
+                            must: { match_phrase_prefix: { 'inventors.name': { query: q } } },
+                            filter: { term: { 'inventors.is_faculty': true } }
+                        }
                     },
                     inner_hits: {
                         size: 5,
