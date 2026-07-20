@@ -460,6 +460,7 @@ message AtlasPointCoord {
   string theme = 6;       // broad theme label for colored overlay
   string title = 7;       // paper title (sidebar)
   string department = 8;  // IITD department (theme cluster sidebar)
+  string domain = 9;      // domain label (per-domain drill clusters)
 }
 message AtlasPointsResponse { repeated AtlasPointCoord points = 1; }
 
