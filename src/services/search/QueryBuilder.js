@@ -776,6 +776,10 @@ export default class QueryBuilder {
             size: perPage,
             from,
             track_total_hits: true,
+            // Only set when there's no anchor boost to nest around: min_score already lives on
+            // the inner function_score in that case (see baseFunctionScore above), and a
+            // top-level min_score here would wrongly gate the boosted (outer) score instead.
+            ...(anchorScoreFunctions.length === 0 ? { min_score: this.searchConfig.minScore.relevant } : {}),
             _source: ['mongo_id'],
             query: finalQuery,
             aggs: this.filters.getAggregations()
