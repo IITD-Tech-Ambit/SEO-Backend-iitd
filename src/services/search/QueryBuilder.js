@@ -649,7 +649,31 @@ export default class QueryBuilder {
         return base;
     }
 
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, bm25HitCount = null, candidateK = null, refineChain = [] } = {}) {
+    /**
+     * One summed script_score function per refine-chain anchor, carrying forward that anchor's
+     * own per-doc relevance score (captured by SearchService._buildRefineAnchorIdFilter) instead
+     * of discarding it once a doc clears the membership filter. Without this, ranking after a
+     * narrow-down reflects only the newest term — a doc that was the #1 match for every prior
+     * query gets buried behind docs that are merely mediocre-but-decent on all terms. Weighted
+     * below the current term's own contribution since the newest query is still the primary intent.
+     */
+    _buildRefineAnchorScoreFunctions(refineScoreMaps = []) {
+        const weight = this.searchConfig.refineAnchorWeight ?? 0.5;
+        return refineScoreMaps
+            .filter((scoreMap) => scoreMap && Object.keys(scoreMap).length > 0)
+            .map((scoreMap) => ({
+                script_score: {
+                    script: {
+                        source: "params.scores.getOrDefault(doc['mongo_id'].value, 0.0)",
+                        lang: 'painless',
+                        params: { scores: scoreMap }
+                    }
+                },
+                weight
+            }));
+    }
+
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, bm25HitCount = null, candidateK = null, refineChain = [], refineScoreMaps = [] } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -703,39 +727,61 @@ export default class QueryBuilder {
             if (coverageClause) boostClauses.push(coverageClause);
         }
 
+        // min_score is applied on the INNER function_score (base bm25/knn/lexical-floor relevance
+        // only) so it decides recall exactly as it did before refine-chain boosting existed. The
+        // anchor-chain boost is then summed on top by the OUTER function_score with no min_score
+        // of its own — it re-ranks the already-qualifying set, it never pulls in a document that
+        // failed the relevance bar on its own merits (that would silently inflate recall: a doc
+        // could "qualify" purely because it matched an earlier query, not the current one).
+        const anchorScoreFunctions = this._buildRefineAnchorScoreFunctions(refineScoreMaps);
+        const baseFunctionScore = {
+            query: {
+                bool: { must: [recallGate], should: boostClauses, filter: filterClauses }
+            },
+            functions: [
+                {
+                    script_score: {
+                        script: { source: `${weights.bm25} * (_score / (1.0 + _score))`, lang: 'painless' }
+                    }
+                },
+                {
+                    script_score: {
+                        script: {
+                            source: 'knn_score',
+                            lang: 'knn',
+                            params: { field: 'embedding', query_value: embedding, space_type: 'cosinesimil' }
+                        }
+                    },
+                    weight: weights.vector
+                },
+                { filter: lexicalFloorClause, weight: this.searchConfig.minScore.relevant }
+            ],
+            score_mode: 'sum',
+            boost_mode: 'replace',
+            min_score: this.searchConfig.minScore.relevant
+        };
+
+        const finalQuery = anchorScoreFunctions.length > 0
+            ? {
+                function_score: {
+                    query: { function_score: baseFunctionScore },
+                    functions: anchorScoreFunctions,
+                    score_mode: 'sum',
+                    boost_mode: 'sum'
+                }
+            }
+            : { function_score: baseFunctionScore };
+
         return {
             size: perPage,
             from,
             track_total_hits: true,
-            min_score: this.searchConfig.minScore.relevant,
+            // Only set when there's no anchor boost to nest around: min_score already lives on
+            // the inner function_score in that case (see baseFunctionScore above), and a
+            // top-level min_score here would wrongly gate the boosted (outer) score instead.
+            ...(anchorScoreFunctions.length === 0 ? { min_score: this.searchConfig.minScore.relevant } : {}),
             _source: ['mongo_id'],
-            query: {
-                function_score: {
-                    query: {
-                        bool: { must: [recallGate], should: boostClauses, filter: filterClauses }
-                    },
-                    functions: [
-                        {
-                            script_score: {
-                                script: { source: `${weights.bm25} * (_score / (1.0 + _score))`, lang: 'painless' }
-                            }
-                        },
-                        {
-                            script_score: {
-                                script: {
-                                    source: 'knn_score',
-                                    lang: 'knn',
-                                    params: { field: 'embedding', query_value: embedding, space_type: 'cosinesimil' }
-                                }
-                            },
-                            weight: weights.vector
-                        },
-                        { filter: lexicalFloorClause, weight: this.searchConfig.minScore.relevant }
-                    ],
-                    score_mode: 'sum',
-                    boost_mode: 'replace'
-                }
-            },
+            query: finalQuery,
             aggs: this.filters.getAggregations()
         };
     }

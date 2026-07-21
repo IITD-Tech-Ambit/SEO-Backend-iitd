@@ -214,15 +214,76 @@ export default class SearchService {
         return { ...response, cacheHit: false };
     }
 
+    /**
+     * True "search within previous results" narrowing: each refine-chain term is re-resolved to
+     * its own actual min-score-gated advanced-search result ids (capped generously), and the
+     * filter restricts subsequent narrowing to that real membership set. Each doc's own anchor
+     * score is also captured (see _buildRefineAnchorIdFilter) so ranking can compound relevance
+     * across the chain instead of discarding it once a doc passes the membership gate.
+     * Author-narrow refinement (anchoring on a person, not free text) uses its own mechanism and
+     * is untouched.
+     *
+     * A looser re-derived match clause (e.g. fuzzy-BM25 OR raw kNN) is the wrong tool for the
+     * filter itself: a kNN clause in filter context ignores min_score and always contributes up to
+     * k neighbors regardless of true relevance, so it can make the "narrowed" count larger than the
+     * anchor's own result count — the opposite of narrowing. Filtering on the anchor's real ids is
+     * the only way to guarantee the pool never grows while still keeping every doc the anchor step
+     * actually surfaced (including ones that only matched it semantically).
+     */
+    async _buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow) {
+        if (authorRefineNarrow || !refineChain.length) return null;
+        return Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm)));
+    }
+
+    /** Re-runs `term` as its own advanced search (no filters, no further refinement, no author
+     *  scoping) to capture the real doc ids AND per-doc scores it matched, capped at
+     *  `maxResultWindow` or 2000. */
+    async _buildRefineAnchorIdFilter(term, searchInNorm) {
+        const cap = Math.min(this.maxResultWindow, 2000);
+        try {
+            const embedding = await this.embeddingService.embedQuery(term);
+            // Must resolve the same bm25HitCount-driven min_score/weights regime the anchor's own
+            // original search used — passing bm25HitCount: null falls back to the loosest bar,
+            // capturing far more "members" than the anchor actually returned as results.
+            const bm25HitCount = await this._bm25PreCheck(term, searchInNorm, null, false, [], null);
+            const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
+                term, embedding, {}, 1, cap, searchInNorm, null, false, null, null,
+                { bm25HitCount, candidateK: this.candidateK, refineChain: [] }
+            );
+            osQuery.size = cap;
+            osQuery.from = 0;
+            osQuery._source = ['mongo_id'];
+            delete osQuery.aggs;
+
+            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery });
+            const ids = [];
+            const scoreById = {};
+            for (const hit of resp.body.hits.hits) {
+                const id = hit._source.mongo_id;
+                if (!id) continue;
+                ids.push(id);
+                scoreById[id] = hit._score;
+            }
+            const filter = ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} };
+            return { filter, scoreById };
+        } catch (err) {
+            this.logger.warn({ err: err?.message, term }, 'Refine anchor id-membership lookup failed; falling back to literal narrowing');
+            return { filter: this.queryBuilder.buildLiteralPrimaryClause(term, searchInNorm), scoreById: {} };
+        }
+    }
+
     async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], facultyAuthorIds, authorRefineNarrow, facultyKerberosIds, cacheKey, rerank = null }) {
         this.logger.info({ query, mode: 'advanced' }, 'Running ADVANCED (hybrid) search');
 
         const embedding = await this.embeddingService.embedQuery(query);
         const refineAnchor = authorRefineNarrow ? refineChain[0] : null;
+        const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow);
+        const refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
+        const refineScoreMaps = refineAnchors ? refineAnchors.map((a) => a.scoreById) : [];
 
         // BM25 pre-check: if nothing matches lexically (even fuzzy), skip hybrid kNN entirely,
         // otherwise the kNN arm always returns nearest neighbors — even for gibberish.
-        const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds);
+        const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds, refineFilterClauses);
         if (bm25HitCount === 0) {
             this.logger.info({ query }, 'BM25 pre-check returned 0 hits — skipping hybrid search');
             const suggestions = await this.suggestions.getSuggestions(query);
@@ -244,7 +305,7 @@ export default class SearchService {
         // 'impact' -> citation/recency weighting. Anything else ('date'/'citations'/unknown)
         // -> field-ordered hybrid, keyed off `sort` itself rather than an explicit branch, so
         // adding a new field-ordered sort mode needs no change here.
-        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain };
+        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineScoreMaps };
         const hybridQueryBuildersBySort = {
             impact: () => this.queryBuilder.buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain }),
             relevance: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, normalizedHybridArgs),
@@ -253,16 +314,23 @@ export default class SearchService {
         const buildFieldOrderedHybridQuery = () => this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain });
         const osQuery = (hybridQueryBuildersBySort[sort] || buildFieldOrderedHybridQuery)();
 
-        // Multi-step search-on-search: every prior term becomes a strict lexical FILTER so the
-        // candidate pool can only shrink (monotonic narrowing), never re-broaden via fuzzy/kNN.
-        if (refineChain.length > 0 && !authorRefineNarrow) {
-            const refineFilters = this.queryBuilder.buildRefineFilterClauses(refineChain, searchInNorm, {});
+        // Multi-step search-on-search: every prior term becomes a FILTER so the candidate pool
+        // can only shrink (monotonic narrowing). Uses the anchor's actual result-id membership
+        // (see _buildRefineAnchorIdFilter) rather than a literal AND-of-terms match, so a doc that
+        // only matched the anchor semantically isn't wrongly evicted.
+        if (refineFilterClauses?.length > 0) {
+            // buildNormalizedHybridQuery nests an extra function_score level around the base
+            // query (query.function_score.query.function_score.query.bool.filter) whenever a
+            // refine-chain score boost is present (see _buildRefineAnchorScoreFunctions) — the
+            // anchor boost is summed on top of the already min_score-gated base query, so the
+            // base's bool.filter now lives one level deeper than the single-nesting case.
             const filterArrays = [
                 osQuery.query?.bool?.filter,
-                osQuery.query?.function_score?.query?.bool?.filter
+                osQuery.query?.function_score?.query?.bool?.filter,
+                osQuery.query?.function_score?.query?.function_score?.query?.bool?.filter
             ].filter(Boolean);
-            if (filterArrays.length) filterArrays[0].push(...refineFilters);
-            this.logger.info({ refine_chain: refineChain }, 'Added refine_chain lexical filters to advanced query');
+            if (filterArrays.length) filterArrays[0].push(...refineFilterClauses);
+            this.logger.info({ refine_chain: refineChain }, 'Added refine_chain filters to advanced query');
         }
 
         // Pagination: the top `candidateK` matches form the reranked window; pages beyond it are
@@ -384,7 +452,7 @@ export default class SearchService {
      * BM25 pre-check: does at least one query token appear in at least one document?
      * Lenient (OR across terms) so partial-vocabulary queries pass, but gibberish does not.
      */
-    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null) {
+    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null, refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
         const useAuthorRefine = authorRefineNarrow && authorOnly && chain.length >= 1;
@@ -415,10 +483,11 @@ export default class SearchService {
                 : textMatch;
         }
 
-        // Prior refinement terms (standard path) become strict lexical filters: the pre-check must
-        // reflect the narrowed pool, so a refinement that yields nothing reports 0 hits.
+        // Prior refinement terms (standard path) become filters: the pre-check must reflect the
+        // narrowed pool. In advanced mode this uses the anchor's actual result-id membership (see
+        // _buildRefineAnchorIdFilter) rather than a literal AND-of-terms match.
         const body = (!useAuthorRefine && chain.length > 0)
-            ? { size: 0, query: { bool: { must: [preCheckClause], filter: this.queryBuilder.buildRefineFilterClauses(chain, search_in, {}) } } }
+            ? { size: 0, query: { bool: { must: [preCheckClause], filter: refineFilterClauses || this.queryBuilder.buildRefineFilterClauses(chain, search_in, {}) } } }
             : { size: 0, query: preCheckClause };
 
         const response = await this.opensearch.search({ index: this.indexName, body });

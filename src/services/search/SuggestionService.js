@@ -3,10 +3,11 @@
  * Returns up to five candidate corrections; empty on any failure.
  */
 export default class SuggestionService {
-    constructor({ opensearch, indexName, logger }) {
+    constructor({ opensearch, indexName, logger, secondaryField = 'author_names' }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.logger = logger;
+        this.secondaryField = secondaryField;
     }
 
     async getSuggestions(query) {
@@ -30,7 +31,7 @@ export default class SuggestionService {
                     size: 0,
                     suggest: {
                         title_suggest: termSuggester('title'),
-                        author_suggest: termSuggester('author_names')
+                        author_suggest: termSuggester(this.secondaryField)
                     }
                 }
             });
