@@ -351,7 +351,7 @@ export default class QueryBuilder {
     }
 
     /** Advanced hybrid for field-ordered sorts (e.g. date). BM25 or kNN may recall. */
-    buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null, { refineChain = [] } = {}) {
+    buildHybridQuery(query, embedding, filters, page, perPage, sort, searchIn = null, { refineChain = [], refineFilterClauses = null } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -375,7 +375,10 @@ export default class QueryBuilder {
         const basicSupersetClause = this.buildLiteralPrimaryClause(query, searchIn);
         const recallGate = { bool: { should: [bm25Clause, knnRecall, basicSupersetClause], minimum_should_match: 1 } };
 
-        filterClauses.push(...this.buildRefineFilterClauses(chain, searchIn));
+        // Advanced mode: narrow using the anchor's actual result-id membership (computed by the
+        // service via _buildRefineAnchorIdFilter), not a literal AND-of-terms — otherwise a doc
+        // that only matched the anchor semantically gets wrongly evicted on refine.
+        filterClauses.push(...(refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn)));
 
         return {
             size: perPage,
@@ -401,6 +404,7 @@ export default class QueryBuilder {
             ? { bool: { should: [textBm25, inventorClause], minimum_should_match: 1 } }
             : textBm25;
     }
+
 
     /** BM25/vector weights from pre-check hit ratio (lexical-rich vs sparse-lexical). */
     _resolveHybridWeights(bm25HitCount, candidateK) {
@@ -438,7 +442,31 @@ export default class QueryBuilder {
      * plus a lexical floor. Sparse-lexical queries use a lower min_score via `_resolveMinScore`
      * because pure-kNN tops out near `weights.vector * knn_score` (~1.2) and would fail `relevant`.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { bm25HitCount = null, candidateK = null, refineChain = [] } = {}) {
+    /**
+     * One summed script_score function per refine-chain anchor, carrying forward that anchor's
+     * own per-doc relevance score (captured by IpSearchService._buildRefineAnchorIdFilter) instead
+     * of discarding it once a doc clears the membership filter. Without this, ranking after a
+     * narrow-down reflects only the newest term — a doc that was the #1 match for every prior
+     * query gets buried behind docs that are merely mediocre-but-decent on all terms. Weighted
+     * below the current term's own contribution since the newest query is still the primary intent.
+     */
+    _buildRefineAnchorScoreFunctions(refineScoreMaps = []) {
+        const weight = this.searchConfig.refineAnchorWeight ?? 0.5;
+        return refineScoreMaps
+            .filter((scoreMap) => scoreMap && Object.keys(scoreMap).length > 0)
+            .map((scoreMap) => ({
+                script_score: {
+                    script: {
+                        source: "params.scores.getOrDefault(doc['mongo_id'].value, 0.0)",
+                        lang: 'painless',
+                        params: { scores: scoreMap }
+                    }
+                },
+                weight
+            }));
+    }
+
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { bm25HitCount = null, candidateK = null, refineChain = [], refineFilterClauses = null, refineScoreMaps = [] } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -471,42 +499,60 @@ export default class QueryBuilder {
             boostClauses.push({ match: { field_of_invention: { query: query, boost: 1.5 } } });
         }
 
-        filterClauses.push(...this.buildRefineFilterClauses(chain, searchIn));
+        filterClauses.push(...(refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn)));
+
+        // min_score is applied on the INNER function_score (base bm25/knn/lexical-floor relevance
+        // only) so it decides recall exactly as it did before refine-chain boosting existed. The
+        // anchor-chain boost is then summed on top by the OUTER function_score with no min_score
+        // of its own — it re-ranks the already-qualifying set, it never pulls in a document that
+        // failed the relevance bar on its own merits (that would silently inflate recall: a doc
+        // could "qualify" purely because it matched an earlier query, not the current one).
+        const anchorScoreFunctions = this._buildRefineAnchorScoreFunctions(refineScoreMaps);
+        const baseFunctionScore = {
+            query: {
+                bool: { must: [recallGate], should: boostClauses, filter: filterClauses }
+            },
+            functions: [
+                {
+                    script_score: {
+                        script: { source: `${weights.bm25} * (_score / (1.0 + _score))`, lang: 'painless' }
+                    }
+                },
+                {
+                    script_score: {
+                        script: {
+                            source: 'knn_score',
+                            lang: 'knn',
+                            params: { field: 'embedding', query_value: embedding, space_type: 'cosinesimil' }
+                        }
+                    },
+                    weight: weights.vector
+                },
+                // Literal hits always clear the higher `relevant` bar, even under semantic min_score.
+                { filter: lexicalFloorClause, weight: this.searchConfig.minScore.relevant }
+            ],
+            score_mode: 'sum',
+            boost_mode: 'replace',
+            min_score: minScore
+        };
+
+        const finalQuery = anchorScoreFunctions.length > 0
+            ? {
+                function_score: {
+                    query: { function_score: baseFunctionScore },
+                    functions: anchorScoreFunctions,
+                    score_mode: 'sum',
+                    boost_mode: 'sum'
+                }
+            }
+            : { function_score: baseFunctionScore };
 
         return {
             size: perPage,
             from,
             track_total_hits: true,
-            min_score: minScore,
             _source: ['mongo_id'],
-            query: {
-                function_score: {
-                    query: {
-                        bool: { must: [recallGate], should: boostClauses, filter: filterClauses }
-                    },
-                    functions: [
-                        {
-                            script_score: {
-                                script: { source: `${weights.bm25} * (_score / (1.0 + _score))`, lang: 'painless' }
-                            }
-                        },
-                        {
-                            script_score: {
-                                script: {
-                                    source: 'knn_score',
-                                    lang: 'knn',
-                                    params: { field: 'embedding', query_value: embedding, space_type: 'cosinesimil' }
-                                }
-                            },
-                            weight: weights.vector
-                        },
-                        // Literal hits always clear the higher `relevant` bar, even under semantic min_score.
-                        { filter: lexicalFloorClause, weight: this.searchConfig.minScore.relevant }
-                    ],
-                    score_mode: 'sum',
-                    boost_mode: 'replace'
-                }
-            },
+            query: finalQuery,
             aggs: this.filters.getAggregations()
         };
     }

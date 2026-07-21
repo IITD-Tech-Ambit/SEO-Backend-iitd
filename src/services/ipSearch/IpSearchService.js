@@ -8,6 +8,7 @@ import FilterBuilder from './FilterBuilder.js';
 import QueryBuilder, { normalizeChain } from './QueryBuilder.js';
 import ResultHydrator from './ResultHydrator.js';
 import RerankService from '../search/RerankService.js';
+import SuggestionService from '../search/SuggestionService.js';
 
 /**
  * Orchestrates hybrid search across the OpenSearch `ip_documents` index and MongoDB (IPMetaData).
@@ -45,6 +46,12 @@ export default class IpSearchService {
             redis: this.redis,
             rerankConfig: { ...this.rerankConfig, modelVersion: `ip-${this.rerankConfig.modelVersion || 'bge-reranker-base-v1'}` },
             logger: this.logger
+        });
+        this.suggestions = new SuggestionService({
+            opensearch: this.opensearch,
+            indexName: this.indexName,
+            logger: this.logger,
+            secondaryField: 'inventor_names'
         });
     }
 
@@ -115,10 +122,11 @@ export default class IpSearchService {
 
         if (total === 0) {
             this.logger.info({ query, refine_chain: refineChain.length }, 'Basic IP search: no hits (strict match)');
+            const suggestions = query.trim() ? await this.suggestions.getSuggestions(query) : [];
             return {
                 results: [],
                 related_faculty: [],
-                suggestions: [],
+                suggestions,
                 facets: {},
                 pagination: { page, per_page, total: 0, total_pages: 0 },
                 mode: 'basic',
@@ -131,10 +139,12 @@ export default class IpSearchService {
         await this.hydrator.applyFacultyDisplayNames(results);
         const related_faculty = await this.hydrator.extractRelatedFaculty(results);
 
+        const suggestions = total < 3 ? await this.suggestions.getSuggestions(query) : [];
+
         const response = {
             results,
             related_faculty,
-            suggestions: [],
+            suggestions,
             facets: this.hydrator.parseFacets(osResponse.body.aggregations),
             pagination: { page, per_page, total, total_pages: Math.ceil(total / per_page) },
             mode: 'basic',
@@ -145,34 +155,95 @@ export default class IpSearchService {
         return { ...response, cacheHit: false };
     }
 
+    /**
+     * True "search within previous results" narrowing: each refine-chain term is re-resolved to
+     * its own actual min-score-gated advanced-search result ids (capped generously), and the
+     * filter restricts subsequent narrowing to that real membership set. Each doc's own anchor
+     * score is also captured (see _buildRefineAnchorIdFilter) so ranking can compound relevance
+     * across the chain instead of discarding it once a doc passes the membership gate.
+     *
+     * A looser re-derived match clause (e.g. fuzzy-BM25 OR raw kNN) is the wrong tool for the
+     * filter itself: a kNN clause in filter context ignores min_score and always contributes up to
+     * k neighbors regardless of true relevance, so it can make the "narrowed" count larger than the
+     * anchor's own result count — the opposite of narrowing. Filtering on the anchor's real ids is
+     * the only way to guarantee the pool never grows while still keeping every doc the anchor step
+     * actually surfaced (including ones that only matched it semantically).
+     */
+    async _buildAdvancedRefineAnchors(refineChain, searchInNorm) {
+        if (!refineChain.length) return null;
+        return Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm)));
+    }
+
+    /** Re-runs `term` as its own advanced search (no filters, no further refinement) to capture
+     *  the real doc ids AND per-doc scores it matched, capped at `maxResultWindow` (or 2000). */
+    async _buildRefineAnchorIdFilter(term, searchInNorm) {
+        const cap = Math.min(this.maxResultWindow, 2000);
+        try {
+            const embedding = await this.embeddingService.embedQuery(term);
+            // Must resolve the same bm25HitCount-driven min_score/weights regime the anchor's own
+            // original search used — passing bm25HitCount: null falls back to the loosest bar,
+            // capturing far more "members" than the anchor actually returned as results.
+            const bm25HitCount = await this._bm25PreCheck(term, searchInNorm, []);
+            const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
+                term, embedding, {}, 1, cap, searchInNorm,
+                { bm25HitCount, candidateK: this.candidateK, refineChain: [] }
+            );
+            osQuery.size = cap;
+            osQuery.from = 0;
+            osQuery._source = ['mongo_id'];
+            delete osQuery.aggs;
+
+            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery });
+            const ids = [];
+            const scoreById = {};
+            for (const hit of resp.body.hits.hits) {
+                const id = hit._source.mongo_id;
+                if (!id) continue;
+                ids.push(id);
+                scoreById[id] = hit._score;
+            }
+            const filter = ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} };
+            return { filter, scoreById };
+        } catch (err) {
+            this.logger.warn({ err: err?.message, term }, 'Refine anchor id-membership lookup failed; falling back to literal narrowing');
+            return { filter: this.queryBuilder.buildLiteralPrimaryClause(term, searchInNorm), scoreById: {} };
+        }
+    }
+
     async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], cacheKey, cacheTtl, rerank = null }) {
         this.logger.info({ query, mode: 'advanced' }, 'Running ADVANCED (hybrid) IP search');
 
         const embedding = await this.embeddingService.embedQuery(query);
+        const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm);
+        const refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
+        const refineScoreMaps = refineAnchors ? refineAnchors.map((a) => a.scoreById) : [];
 
         // Skip hybrid kNN when nothing matches lexically — otherwise kNN returns neighbors for gibberish.
-        const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, refineChain);
+        const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, refineChain, refineFilterClauses);
         if (bm25HitCount === 0) {
             this.logger.info({ query }, 'BM25 pre-check returned 0 hits — skipping hybrid IP search');
+            const suggestions = await this.suggestions.getSuggestions(query);
             return {
                 results: [],
                 related_faculty: [],
-                suggestions: [],
+                suggestions,
                 facets: {},
                 pagination: { page, per_page, total: 0, total_pages: 0 },
                 mode: 'advanced',
-                message: 'No results found. Try different keywords.',
+                message: suggestions.length > 0
+                    ? 'No results found. Did you mean one of the suggestions?'
+                    : 'No results found. Try different keywords.',
                 cacheHit: false
             };
         }
 
         // relevance/normalized -> score-normalized hybrid; date/other -> field-ordered hybrid.
-        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain };
+        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineFilterClauses, refineScoreMaps };
         const hybridQueryBuildersBySort = {
             relevance: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, normalizedHybridArgs),
             normalized: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, normalizedHybridArgs)
         };
-        const buildFieldOrderedHybridQuery = () => this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, { refineChain });
+        const buildFieldOrderedHybridQuery = () => this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, { refineChain, refineFilterClauses });
         const osQuery = (hybridQueryBuildersBySort[sort] || buildFieldOrderedHybridQuery)();
 
         // Top candidateK hits form the reranked window; deeper pages use raw hybrid-score order.
@@ -248,11 +319,12 @@ export default class IpSearchService {
 
         await this.hydrator.applyFacultyDisplayNames(results);
         const related_faculty = await this.hydrator.extractRelatedFaculty(results);
+        const suggestions = total < 3 ? await this.suggestions.getSuggestions(query) : [];
 
         const response = {
             results,
             related_faculty,
-            suggestions: [],
+            suggestions,
             facets: this.hydrator.parseFacets(osResponse.body.aggregations),
             pagination: this._buildPagination(page, per_page, total, rerankApplicable),
             mode: 'advanced'
@@ -281,7 +353,7 @@ export default class IpSearchService {
     /**
      * Lenient BM25 pre-check (OR across terms) so partial-vocabulary queries pass but gibberish does not.
      */
-    async _bm25PreCheck(query, search_in = null, refineChain = []) {
+    async _bm25PreCheck(query, search_in = null, refineChain = [], refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
 
         let preCheckClause;
@@ -304,9 +376,11 @@ export default class IpSearchService {
                 : textMatch;
         }
 
-        // Refinement terms are strict filters so the pre-check reflects the narrowed pool.
+        // Refinement terms are filters so the pre-check reflects the narrowed pool. In advanced
+        // mode this uses the anchor's actual result-id membership (see _buildRefineAnchorIdFilter)
+        // rather than a literal AND-of-terms match.
         const body = (chain.length > 0)
-            ? { size: 0, query: { bool: { must: [preCheckClause], filter: this.queryBuilder.buildRefineFilterClauses(chain, search_in) } } }
+            ? { size: 0, query: { bool: { must: [preCheckClause], filter: refineFilterClauses || this.queryBuilder.buildRefineFilterClauses(chain, search_in) } } }
             : { size: 0, query: preCheckClause };
 
         const response = await this.opensearch.search({ index: this.indexName, body });
@@ -321,10 +395,11 @@ export default class IpSearchService {
         const chain = normalizeChain(refineChain);
         if (chain.length > 0) {
             this.logger.info({ query, refine_chain: chain }, 'Skipping fuzzy fallback: refinement is active');
+            const suggestions = await this.suggestions.getSuggestions(query);
             return {
                 results: [],
                 related_faculty: [],
-                suggestions: [],
+                suggestions,
                 fuzzy_fallback: false,
                 facets: {},
                 pagination: { page, per_page, total: 0, total_pages: 0 },
@@ -370,11 +445,12 @@ export default class IpSearchService {
             const results = await this.hydrator.hydrateFromMongoDB(hits);
             await this.hydrator.applyFacultyDisplayNames(results);
             const related_faculty = await this.hydrator.extractRelatedFaculty(results);
+            const suggestions = await this.suggestions.getSuggestions(query);
 
             return {
                 results,
                 related_faculty,
-                suggestions: [],
+                suggestions,
                 fuzzy_fallback: true,
                 facets: this.hydrator.parseFacets(osResponse.body.aggregations),
                 pagination: { page, per_page, total, total_pages: Math.ceil(total / per_page) },

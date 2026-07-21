@@ -43,7 +43,7 @@ export default class RerankService {
             return `${title}\n${abstract}`.slice(0, 1200);
         });
 
-        const cacheKeys = results.map(r => `rerank:${modelVersion}:${queryHash}:${r.mongo_id}`);
+        const cacheKeys = results.map(r => `rerank:${modelVersion}:${queryHash}:${r._id}`);
         let cachedScores;
         try {
             cachedScores = await this.redis.mget(...cacheKeys);
