@@ -233,6 +233,8 @@ service KnowledgeGraphService {
   rpc SearchAtlasFaculty(AtlasFacultySearchRequest) returns (AtlasFacultySearchResponse);
   // GET /api/kg/atlas/department-indices
   rpc GetAtlasDepartmentIndices(AtlasDepartmentIndicesRequest) returns (AtlasDepartmentIndicesResponse);
+  // GET /api/kg/atlas/year-indices
+  rpc GetAtlasYearIndices(AtlasYearIndicesRequest) returns (AtlasYearIndicesResponse);
   // GET /api/kg/atlas/department-search
   rpc SearchAtlasDepartment(AtlasDepartmentSearchRequest) returns (AtlasDepartmentSearchResponse);
   // GET /api/kg/atlas/cluster-breakdown
@@ -414,6 +416,13 @@ message AtlasFacultySearchResponse {
 message AtlasDepartmentIndicesRequest { repeated string departments = 1; } // REST: "|"-separated
 message AtlasDepartmentIndicesResponse {
   repeated string departments = 1;
+  int32 match_count = 2;
+  repeated int32 indices = 3;
+}
+
+message AtlasYearIndicesRequest { int32 since_year = 1; }
+message AtlasYearIndicesResponse {
+  int32 since_year = 1;
   int32 match_count = 2;
   repeated int32 indices = 3;
 }
