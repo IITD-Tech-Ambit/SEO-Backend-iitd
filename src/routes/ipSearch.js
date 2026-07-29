@@ -1,6 +1,6 @@
-import { ipSearchRequestSchema, ipSearchResponseSchema, ipDocumentParamsSchema, errorResponseSchema, ipFacultyForQueryRequestSchema, ipFacultyForQueryResponseSchema } from '../schemas/ipSearch.js';
+import { ipSearchRequestSchema, ipSearchResponseSchema, ipDocumentParamsSchema, errorResponseSchema, ipFacultyForQueryRequestSchema, ipFacultyForQueryResponseSchema, inventorScopedSearchRequestSchema, inventorScopedSearchResponseSchema } from '../schemas/ipSearch.js';
 import { ipSuggestRequestSchema, ipSuggestResponseSchema } from '../schemas/ipSuggest.js';
-import { search, searchHealth, getIpDocument, getAllFacultyForQuery } from '../controllers/ipSearchController.js';
+import { search, searchHealth, getIpDocument, getAllFacultyForQuery, inventorScopedSearch } from '../controllers/ipSearchController.js';
 import { ipSuggest } from '../controllers/ipSuggestController.js';
 
 export default async function ipSearchRoutes(fastify, options) {
@@ -30,6 +30,20 @@ export default async function ipSearchRoutes(fastify, options) {
             }
         },
         handler: (request, reply) => search(request, reply, ipSearchService)
+    });
+
+    fastify.post('/ip/search/inventor-scope', {
+        schema: {
+            description: 'Rank one IITD faculty inventor\'s patents for a query (Explore sidebar drill-down)',
+            tags: ['ip-search'],
+            body: inventorScopedSearchRequestSchema,
+            response: {
+                200: inventorScopedSearchResponseSchema,
+                400: errorResponseSchema,
+                500: errorResponseSchema
+            }
+        },
+        handler: (request, reply) => inventorScopedSearch(request, reply, ipSearchService)
     });
 
     fastify.get('/ip/faculty-for-query', {

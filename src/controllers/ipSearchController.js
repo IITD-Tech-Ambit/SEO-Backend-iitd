@@ -60,6 +60,52 @@ export async function search(request, reply, ipSearchService) {
     }
 }
 
+export async function inventorScopedSearch(request, reply, ipSearchService) {
+    const startTime = Date.now();
+    const { query, inventor_id, page, per_page, mode, refine_within, refine_chain, search_in, filters } = request.body;
+
+    try {
+        const result = await ipSearchService.inventorScopedSearch({
+            query,
+            inventor_id,
+            page,
+            per_page,
+            mode,
+            refine_within,
+            refine_chain,
+            search_in,
+            filters
+        });
+
+        const tookMs = Date.now() - startTime;
+
+        return {
+            ...result,
+            meta: {
+                took_ms: tookMs,
+                cache_hit: result.cacheHit
+            }
+        };
+
+    } catch (error) {
+        request.log.error({ error, query, inventor_id }, 'Inventor-scoped search failed');
+
+        if (error.message?.includes('Embedding service')) {
+            return reply.status(503).send({
+                error: 'Service Unavailable',
+                message: 'Embedding service is not responding',
+                statusCode: 503
+            });
+        }
+
+        return reply.status(500).send({
+            error: 'Internal Server Error',
+            message: 'Inventor-scoped search failed unexpectedly',
+            statusCode: 500
+        });
+    }
+}
+
 export async function getIpDocument(request, reply, ipSearchService) {
     const { id } = request.params;
     try {
