@@ -10,7 +10,7 @@ import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
  * total_matching_papers and every per-faculty paper_count agree with the papers list.
  */
 export default class FacultyForQueryService {
-    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, rosterService, embeddingService }) {
+    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, rosterService, embeddingService, rrfPipeline }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -21,6 +21,7 @@ export default class FacultyForQueryService {
         this.filterBuilder = filterBuilder;
         this.rosterService = rosterService;
         this.embeddingService = embeddingService;
+        this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
     }
 
     /**
@@ -174,12 +175,7 @@ export default class FacultyForQueryService {
             body.track_total_hits = true;
             body._source = false;
             body.aggs = facultyAggs;
-            if (mode === 'advanced') {
-                // Same relevance bar as POST /search and the drill-down so counts agree.
-                body.min_score = this.searchConfig.minScore.relevant;
-            } else {
-                delete body.min_score;
-            }
+            delete body.min_score;
             delete body.sort;
             return body;
         };
@@ -201,15 +197,9 @@ export default class FacultyForQueryService {
             { refineChain }
         );
         // Prior refinement terms become strict lexical FILTERS so per-faculty counts reflect
-        // the same monotonically narrowed pool as the papers list.
-        if (refineChain.length > 0 && !authorRefineNarrow) {
-            const refineFilters = this.queryBuilder.buildRefineFilterClauses(refineChain, searchInNorm, {});
-            const filterArrays = [
-                base.query?.bool?.filter,
-                base.query?.function_score?.query?.bool?.filter
-            ].filter(Boolean);
-            if (filterArrays.length) filterArrays[0].push(...refineFilters);
-        }
+        // the same monotonically narrowed pool as the papers list. buildNormalizedHybridQuery
+        // already bakes refineFilterClauses into every hybrid arm when passed explicitly, so
+        // pass them at construction time instead of splicing the (now per-arm) filter arrays.
         return patchFacultyAggBody(base);
     }
 
@@ -366,7 +356,11 @@ export default class FacultyForQueryService {
         try {
             const idsQuery = { ...osQuery, size: totalDocs, _source: ['mongo_id'], aggs: undefined };
             delete idsQuery.aggs;
-            const idsResponse = await this.opensearch.search({ index: this.indexName, body: idsQuery });
+            const idsResponse = await this.opensearch.search({
+                index: this.indexName,
+                body: idsQuery,
+                ...(idsQuery.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+            });
             const mongoIds = idsResponse.body.hits.hits.map(h => h._source?.mongo_id).filter(Boolean);
 
             if (mongoIds.length === 0) return;
@@ -484,7 +478,11 @@ export default class FacultyForQueryService {
         const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing);
 
         this.logger.info({ query, mode, search_in: searchInNorm }, 'Faculty-for-query: querying OpenSearch aggregation');
-        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
+        const osResponse = await this.opensearch.search({
+            index: this.indexName,
+            body: osQuery,
+            ...(mode === 'advanced' ? { search_pipeline: this.rrfPipeline } : {})
+        });
 
         const { totalDocs, kerberosBuckets, authorInfos, isEmpty } = this._extractAuthorInfos(osResponse, query);
         if (isEmpty) {

@@ -68,7 +68,8 @@ export default class IpSearchService {
             queryBuilder: this.queryBuilder,
             filterBuilder: this.filters,
             embeddingService: this.embeddingService,
-            candidateK: this.candidateK
+            candidateK: this.candidateK,
+            rrfPipeline: this.rrfPipeline
         });
     }
 

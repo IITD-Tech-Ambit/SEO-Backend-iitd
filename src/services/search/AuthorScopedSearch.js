@@ -11,7 +11,7 @@ import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
  * MongoDB in hit order and attaches similarity scores.
  */
 export default class AuthorScopedSearch {
-    constructor({ opensearch, indexName, mongoose, redis, redisTTL, logger, queryBuilder, filterBuilder, rosterService, embeddingService, hydrator }) {
+    constructor({ opensearch, indexName, mongoose, redis, redisTTL, logger, queryBuilder, filterBuilder, rosterService, embeddingService, hydrator, rrfPipeline }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -23,6 +23,7 @@ export default class AuthorScopedSearch {
         this.rosterService = rosterService;
         this.embeddingService = embeddingService;
         this.hydrator = hydrator;
+        this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
     }
 
     async search({ query, author_id, page = 1, per_page = 20, mode = 'advanced', refine_within = null, refine_chain = null, search_in = null, filters = null }) {
@@ -162,25 +163,23 @@ export default class AuthorScopedSearch {
                     { authorScoped: true, refineChain }
                 );
 
+                // Every hybrid arm carries its own filter array (see QueryBuilder.buildNormalizedHybridQuery) —
+                // in practice they share the same array reference, but push into each distinct
+                // array once (by identity) rather than assume that internal detail.
+                const uniqueFilterArrays = [...new Set(
+                    (base.query?.hybrid?.queries || [])
+                        .map((arm) => arm.bool?.filter)
+                        .filter(Array.isArray)
+                )];
+
                 // Prior refinement terms become strict lexical FILTERS so the result set narrows
                 // monotonically within this author's papers.
                 if (refineChain.length > 0 && !authorRefineNarrow) {
                     const refineFilters = this.queryBuilder.buildRefineFilterClauses(refineChain, searchInNorm, { authorScoped: true });
-                    const filterArrays = [
-                        base.query?.bool?.filter,
-                        base.query?.function_score?.query?.bool?.filter
-                    ].filter(Boolean);
-                    if (filterArrays.length) filterArrays[0].push(...refineFilters);
+                    for (const filterArr of uniqueFilterArrays) filterArr.push(...refineFilters);
                 }
 
-                const filterTargets = [
-                    base.query?.bool?.filter,
-                    base.query?.script_score?.query?.bool?.filter,
-                    base.query?.function_score?.query?.bool?.filter
-                ].filter(Boolean);
-                for (const filterArr of filterTargets) {
-                    if (Array.isArray(filterArr)) filterArr.push(authorFilter);
-                }
+                for (const filterArr of uniqueFilterArrays) filterArr.push(authorFilter);
 
                 delete base.aggs;
                 osQuery = base;
@@ -195,7 +194,11 @@ export default class AuthorScopedSearch {
                 search_in: searchInNorm
             }, 'Author-scoped search: querying OpenSearch');
 
-            const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
+            const osResponse = await this.opensearch.search({
+                index: this.indexName,
+                body: osQuery,
+                ...(osQuery.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+            });
             hits = osResponse.body.hits.hits;
             total = osResponse.body.hits.total.value;
 
