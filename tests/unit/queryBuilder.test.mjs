@@ -45,25 +45,19 @@ test('buildBasicQuery (multi-word) adds phrase tiers as SHOULD boosts', () => {
     assert.ok(body.query.bool.must.length >= 1);
 });
 
-test('buildNormalizedHybridQuery includes the lexical-floor function', () => {
+test('buildNormalizedHybridQuery uses a native hybrid query with BM25 and kNN arms', () => {
     const qb = makeQB();
     const body = qb.buildNormalizedHybridQuery('machine learning', EMBED, {}, 1, 20);
-    const fns = body.query.function_score.functions;
-    assert.equal(fns.length, 3, 'expected bm25 + knn + lexical floor');
-    const floor = fns.find(f => f.filter && f.weight === searchConfig.minScore.relevant);
-    assert.ok(floor, 'lexical-floor function missing');
-    assert.equal(body.query.function_score.score_mode, 'sum');
-    assert.equal(body.query.function_score.boost_mode, 'replace');
-    assert.equal(body.min_score, searchConfig.minScore.relevant);
+    const arms = body.query.hybrid.queries;
+    assert.equal(arms.length, 2, 'expected bm25 + knn arms');
+    assert.ok(arms[0].bool.must[0], 'bm25 arm present');
+    assert.ok(arms[1].bool.must[0].knn, 'knn arm present');
 });
 
-test('_resolveHybridWeights: lexical-rich leans BM25, sparse leans vector', () => {
+test('buildNormalizedHybridQuery drops the kNN arm when author-scoped', () => {
     const qb = makeQB();
-    const { adaptiveHybridWeights: a, hybridWeights: base } = searchConfig;
-    assert.deepEqual(qb._resolveHybridWeights(60, 50), a.lexicalRich, 'ratio >= 1 -> lexical-rich');
-    assert.deepEqual(qb._resolveHybridWeights(5, 50), a.semantic, 'ratio < 0.2 -> semantic');
-    assert.deepEqual(qb._resolveHybridWeights(20, 50), base, 'mid ratio -> base');
-    assert.deepEqual(qb._resolveHybridWeights(null, 50), base, 'no hint -> base');
+    const body = qb.buildNormalizedHybridQuery('machine learning', EMBED, {}, 1, 20, null, null, false, null, null, { authorScoped: true });
+    assert.equal(body.query.hybrid.queries.length, 1, 'only the bm25 arm should remain');
 });
 
 test('_buildTitleCoverageClause: requires all terms, multi-word only', () => {
@@ -72,13 +66,6 @@ test('_buildTitleCoverageClause: requires all terms, multi-word only', () => {
     const clause = qb._buildTitleCoverageClause('machine learning');
     assert.equal(clause.match['title.standard'].operator, 'and');
     assert.equal(clause.match['title.standard'].boost, 5);
-});
-
-test('buildNormalizedHybridQuery: lexical-rich hint shifts BM25 weight into the script', () => {
-    const qb = makeQB();
-    const body = qb.buildNormalizedHybridQuery('machine learning', EMBED, {}, 1, 20, null, null, false, null, null, { bm25HitCount: 100, candidateK: 50 });
-    const bm25Fn = body.query.function_score.functions.find(f => f.script_score?.script?.lang === 'painless');
-    assert.ok(bm25Fn.script_score.script.source.startsWith(String(searchConfig.adaptiveHybridWeights.lexicalRich.bm25)));
 });
 
 test('buildStrictBm25Must: <=3 terms require all terms (must)', () => {
@@ -154,7 +141,7 @@ test('buildAuthorRefineNarrowMust: empty/whitespace narrow terms are dropped', (
 // In the advanced author-narrow path, the BM25 recall arm must carry anchor + every prior
 // topic term + the newest query as separate MUSTs so each step strictly narrows.
 const advancedAuthorNarrowBm25 = (body) =>
-    body.query.function_score.query.bool.must[0].bool.should[0];
+    body.query.hybrid.queries[0].bool.must[0];
 
 test('buildNormalizedHybridQuery (author-narrow + chain): BM25 arm ANDs anchor + all narrow terms', () => {
     const qb = makeQB(['111']);
