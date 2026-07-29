@@ -36,7 +36,7 @@ export default class AuthorScopedSearch {
      * newest query has plenty of real matches on its own. Mirrors SearchService's
      * _buildRefineAnchorIdFilter so both search paths narrow the same way.
      */
-    async _buildRefineAnchorIdFilter(term, searchInNorm) {
+    async _buildRefineAnchorIdFilter(term, searchInNorm, authorFilter) {
         const cap = Math.min(this.maxResultWindow, 2000);
         try {
             const embedding = await this.embeddingService.embedQuery(term);
@@ -47,6 +47,16 @@ export default class AuthorScopedSearch {
             osQuery.from = 0;
             osQuery._source = ['mongo_id'];
             delete osQuery.aggs;
+
+            // Scope the anchor's own recall to this author too — otherwise a broad/common anchor
+            // phrase competes against the ENTIRE corpus for a spot in the top `cap` results, and
+            // this author's real (but comparatively niche) matches can rank outside that cutoff
+            // even though they'd be the obvious top matches within just their own papers.
+            if (authorFilter) {
+                for (const arm of osQuery.query?.hybrid?.queries || []) {
+                    if (Array.isArray(arm.bool?.filter)) arm.bool.filter.push(authorFilter);
+                }
+            }
 
             const resp = await this.opensearch.search({ index: this.indexName, body: osQuery, search_pipeline: this.rrfPipeline });
             const ids = resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
@@ -188,11 +198,21 @@ export default class AuthorScopedSearch {
             } else {
                 const embedding = await this.embeddingService.embedQuery(query);
 
+                // Prior refinement terms narrow the result set to what each anchor step actually
+                // matched (id-membership, not literal-AND — see _buildRefineAnchorIdFilter),
+                // scoped to this author so a broad anchor phrase doesn't have to compete against
+                // the whole corpus for a spot in the anchor's own candidate cap.
+                const refineFilters = (refineChain.length > 0 && !authorRefineNarrow)
+                    ? await Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, authorFilter)))
+                    : [];
+                const scopeFilters = [authorFilter, ...refineFilters];
+
                 // BM25 is the only recall arm within an author's own scope by default (kNN
                 // excluded — see buildNormalizedHybridQuery). Its N-of-M admission bar can be
                 // mathematically unreachable for a paraphrased query with several stopwords, so
-                // probe it first: only let kNN back in as a last resort when BM25 alone finds
-                // nothing, rather than as a standing co-equal arm.
+                // probe it first against the SAME constrained pool (author + any refine-chain
+                // narrowing) the real query will run against — only let kNN back in as a last
+                // resort when BM25 alone finds nothing there, not as a standing co-equal arm.
                 const bm25OnlyClause = authorRefineNarrow
                     ? this.queryBuilder.buildAuthorRefineNarrowMust(query, refineAnchor, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds, normalizeChain(refineChain).slice(1))
                     : (searchInNorm?.length > 0
@@ -200,15 +220,21 @@ export default class AuthorScopedSearch {
                         : this.queryBuilder._buildDefaultBm25Clause(query, this.filterBuilder.getHybridSearchFields(searchInNorm), { fuzziness: 'AUTO' }, true));
                 const bm25PrecheckResp = await this.opensearch.search({
                     index: this.indexName,
-                    body: { size: 0, track_total_hits: true, query: { bool: { must: [bm25OnlyClause], filter: [authorFilter] } } }
+                    body: { size: 0, track_total_hits: true, query: { bool: { must: [bm25OnlyClause], filter: scopeFilters } } }
                 });
                 const bm25AdmitsNothing = bm25PrecheckResp.body.hits.total.value === 0;
 
+                // Pass our own already-computed (id-membership) refine filters through so
+                // buildNormalizedHybridQuery doesn't fall back to its internal literal-AND
+                // computation — that fallback would get pushed into the SAME filter array
+                // alongside ours, and since every entry in a filter array is required, its
+                // near-impossible-to-satisfy literal-AND would silently veto everything even
+                // when our id-membership filter alone correctly matches.
                 const base = this.queryBuilder.buildNormalizedHybridQuery(
                     query, embedding, effFilters, page, per_page,
                     searchInNorm, facultyAuthorIds, authorRefineNarrow,
                     refineAnchor, facultyKerberosIds,
-                    { authorScoped: true, refineChain, bm25AdmitsNothing }
+                    { authorScoped: true, refineChain, refineFilterClauses: refineFilters, bm25AdmitsNothing }
                 );
 
                 // Every hybrid arm carries its own filter array (see QueryBuilder.buildNormalizedHybridQuery) —
@@ -219,16 +245,6 @@ export default class AuthorScopedSearch {
                         .map((arm) => arm.bool?.filter)
                         .filter(Array.isArray)
                 )];
-
-                // Prior refinement terms narrow the result set to what each anchor step actually
-                // matched (id-membership, not literal-AND — see _buildRefineAnchorIdFilter).
-                if (refineChain.length > 0 && !authorRefineNarrow) {
-                    const refineFilters = await Promise.all(
-                        refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm))
-                    );
-                    for (const filterArr of uniqueFilterArrays) filterArr.push(...refineFilters);
-                }
-
                 for (const filterArr of uniqueFilterArrays) filterArr.push(authorFilter);
 
                 delete base.aggs;
