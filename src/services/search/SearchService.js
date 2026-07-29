@@ -76,7 +76,8 @@ export default class SearchService {
             queryBuilder: this.queryBuilder,
             filterBuilder: this.filters,
             rosterService: this.roster,
-            hydrator: this.hydrator
+            hydrator: this.hydrator,
+            candidateK: this.candidateK
         });
     }
 
