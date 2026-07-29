@@ -1,6 +1,6 @@
-import { ipSearchRequestSchema, ipSearchResponseSchema, ipDocumentParamsSchema, errorResponseSchema } from '../schemas/ipSearch.js';
+import { ipSearchRequestSchema, ipSearchResponseSchema, ipDocumentParamsSchema, errorResponseSchema, ipFacultyForQueryRequestSchema, ipFacultyForQueryResponseSchema } from '../schemas/ipSearch.js';
 import { ipSuggestRequestSchema, ipSuggestResponseSchema } from '../schemas/ipSuggest.js';
-import { search, searchHealth, getIpDocument } from '../controllers/ipSearchController.js';
+import { search, searchHealth, getIpDocument, getAllFacultyForQuery } from '../controllers/ipSearchController.js';
 import { ipSuggest } from '../controllers/ipSuggestController.js';
 
 export default async function ipSearchRoutes(fastify, options) {
@@ -30,6 +30,20 @@ export default async function ipSearchRoutes(fastify, options) {
             }
         },
         handler: (request, reply) => search(request, reply, ipSearchService)
+    });
+
+    fastify.get('/ip/faculty-for-query', {
+        schema: {
+            description: 'Get all IITD faculty inventors matching a query across the full IP result set (people sidebar)',
+            tags: ['ip-search'],
+            querystring: ipFacultyForQueryRequestSchema,
+            response: {
+                200: ipFacultyForQueryResponseSchema,
+                400: errorResponseSchema,
+                500: errorResponseSchema
+            }
+        },
+        handler: (request, reply) => getAllFacultyForQuery(request, reply, ipSearchService)
     });
 
     fastify.get('/ip/search/health', {

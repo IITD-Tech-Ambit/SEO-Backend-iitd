@@ -1,3 +1,5 @@
+import { extractHighlight } from '../../utils/highlight.js';
+
 /**
  * Turns OpenSearch hits into API-ready documents: hydrates from MongoDB in hit order,
  * strips non-IITD co-authors, overlays Faculty display names, derives the related-faculty
@@ -28,6 +30,7 @@ export default class ResultHydrator {
 
         const mongoIds = osHits.map(hit => hit._source.mongo_id);
         const scoreById = new Map(osHits.map(hit => [hit._source.mongo_id, hit._score]));
+        const highlightById = new Map(osHits.map(hit => [hit._source.mongo_id, extractHighlight(hit)]));
         const ResearchDocument = this.mongoose.model('ResearchMetaDataScopus');
         const docs = await ResearchDocument.find({ _id: { $in: mongoIds } }).select('-__v').lean();
         const docMap = new Map(docs.map(d => [d._id.toString(), d]));
@@ -35,8 +38,11 @@ export default class ResultHydrator {
         // Carry the first-stage OpenSearch score so the reranker can fuse it with the
         // cross-encoder score instead of discarding the lexical/hybrid signal entirely.
         for (const doc of ordered) {
-            const score = scoreById.get(doc._id.toString());
+            const id = doc._id.toString();
+            const score = scoreById.get(id);
             if (typeof score === 'number') doc._firstStageScore = score;
+            const highlight = highlightById.get(id);
+            if (highlight) doc.highlight = highlight;
         }
         await this.filterAuthorsToFacultyRoster(ordered);
         return ordered;

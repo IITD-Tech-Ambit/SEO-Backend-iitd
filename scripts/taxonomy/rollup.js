@@ -29,7 +29,7 @@ const MEMBERS_CAP = 500;
 // Default-visible-count ceiling: domain is the leaf level where faculty
 // actually get browsed (tighter), theme-only is the broad pre-drill-down
 // view (looser). See scripts/taxonomy/lib/recommendedCount.js.
-const recommendedCeilingFor = (row) => (row.domain_id ? 12 : 48);
+const recommendedCeilingFor = (row) => (row.domain_id ? 12 : 65);
 
 if (!MONGODB_URI) {
     console.error('ERROR: MONGODB_URI is not set');

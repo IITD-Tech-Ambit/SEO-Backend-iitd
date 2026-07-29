@@ -1,3 +1,5 @@
+import { extractHighlight } from '../../utils/highlight.js';
+
 /**
  * Turns OpenSearch hits into API-ready IP documents: Mongo hydration (hit order preserved),
  * Faculty display-name overlay, related-faculty sidebar, and facet parsing.
@@ -17,7 +19,8 @@ export default class ResultHydrator {
             type_of_ip: buckets(aggregations?.type_of_ip),
             field_of_invention: buckets(aggregations?.field_of_invention),
             country: buckets(aggregations?.country),
-            classification: buckets(aggregations?.classification)
+            classification: buckets(aggregations?.classification),
+            department: buckets(aggregations?.department)
         };
     }
 
@@ -26,6 +29,7 @@ export default class ResultHydrator {
 
         const mongoIds = osHits.map((hit) => hit._source.mongo_id);
         const scoreById = new Map(osHits.map((hit) => [hit._source.mongo_id, hit._score]));
+        const highlightById = new Map(osHits.map((hit) => [hit._source.mongo_id, extractHighlight(hit)]));
         const IPMetaData = this.mongoose.model('IPMetaData');
         const docs = await IPMetaData.find({ _id: { $in: mongoIds } })
             .select('-__v')
@@ -35,8 +39,11 @@ export default class ResultHydrator {
         const ordered = mongoIds.map((id) => docMap.get(id)).filter(Boolean);
         // Preserve first-stage score for reranker fusion with the cross-encoder score.
         for (const doc of ordered) {
-            const score = scoreById.get(doc._id.toString());
+            const id = doc._id.toString();
+            const score = scoreById.get(id);
             if (typeof score === 'number') doc._firstStageScore = score;
+            const highlight = highlightById.get(id);
+            if (highlight) doc.highlight = highlight;
         }
         return ordered;
     }
@@ -62,7 +69,7 @@ export default class ResultHydrator {
             email: { $in: kerberosArr.map((k) => new RegExp(`^${k}@`, 'i')) }
         })
             .populate('department', 'name')
-            .select('firstName lastName title email expert_id department')
+            .select('firstName lastName title email expert_id department profile_image_url')
             .lean();
         const map = new Map();
         for (const f of docs) {
@@ -139,6 +146,7 @@ export default class ResultHydrator {
                 expert_id: f.expert_id,
                 kerberos: k,
                 department: f.department,
+                profile_image_url: f.profile_image_url || null,
                 ipCount: docSet.size
             });
         }
