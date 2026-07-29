@@ -73,6 +73,21 @@ export default class IpSearchService {
         });
     }
 
+    /**
+     * OpenSearch's native `hybrid` query rejects any request whose from+size exceeds a default
+     * internal depth ("pagination_depth param is missing" / "Reached end of search result,
+     * increase pagination_depth") — it needs an explicit hint for how deep to rank each arm's
+     * candidates to support the requested page. Only meaningful on hybrid-shaped query bodies.
+     * Returns a new body (with a fresh `query.hybrid`) rather than mutating in place — callers
+     * elsewhere build sibling request bodies via `{...osQuery, ...}`, a shallow spread that
+     * would otherwise share (and cross-contaminate) the same nested hybrid object.
+     */
+    _withPaginationDepth(body) {
+        if (!body?.query?.hybrid) return body;
+        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), this.candidateK), this.maxResultWindow);
+        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
+    }
+
     /** Full-corpus People sidebar for patent search (mirrors search's getAllFacultyForQuery). */
     getAllFacultyForQuery(query, mode = 'advanced', search_in = null, filters = null, refine_chain = null) {
         return this.facultyForQuery.getAllFacultyForQuery(query, mode, search_in, filters, refine_chain);
@@ -315,7 +330,7 @@ export default class IpSearchService {
             normalized: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, normalizedHybridArgs)
         };
         const buildFieldOrderedHybridQuery = () => this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, { refineChain, refineFilterClauses });
-        const osQuery = (hybridQueryBuildersBySort[sort] || buildFieldOrderedHybridQuery)();
+        let osQuery = (hybridQueryBuildersBySort[sort] || buildFieldOrderedHybridQuery)();
 
         // Top candidateK hits form the reranked window; deeper pages use raw hybrid-score order.
         const rerankRequested = rerank !== false;
@@ -335,11 +350,12 @@ export default class IpSearchService {
             osQuery.size = per_page;
             osQuery.from = pageStart;
         }
+        osQuery = this._withPaginationDepth(osQuery);
 
         if (!rerankEligible && rawExceedsWindow) {
             let trueTotal = 0;
             try {
-                const countBody = { ...osQuery, size: 0, from: 0, _source: false };
+                const countBody = this._withPaginationDepth({ ...osQuery, size: 0, from: 0, _source: false });
                 delete countBody.aggs;
                 const countResp = await this.opensearch.search({ index: this.indexName, body: countBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
                 trueTotal = countResp.body.hits.total.value;
@@ -377,7 +393,7 @@ export default class IpSearchService {
 
             if (pageEnd > K && !rawExceedsWindow) {
                 try {
-                    const rawBody = { ...osQuery, from: K, size: pageEnd - K };
+                    const rawBody = this._withPaginationDepth({ ...osQuery, from: K, size: pageEnd - K });
                     delete rawBody.aggs;
                     const rawResp = await this.opensearch.search({ index: this.indexName, body: rawBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
                     const rawResults = await this.hydrator.hydrateFromMongoDB(rawResp.body.hits.hits);
