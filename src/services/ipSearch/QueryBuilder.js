@@ -492,41 +492,22 @@ export default class QueryBuilder {
     }
 
     /**
-     * Refine-chain anchor preference as its own ranked arm (RRF fuses arms by rank, not by
-     * summing raw scores). See search/QueryBuilder.js's twin for the full rationale.
-     */
-    _buildRefineAnchorRrfArm(refineScoreMaps = [], filterClauses = []) {
-        const maps = refineScoreMaps.filter((m) => m && Object.keys(m).length > 0);
-        if (!maps.length) return null;
-        return {
-            bool: {
-                must: [{
-                    function_score: {
-                        query: { match_all: {} },
-                        script_score: {
-                            script: {
-                                source: 'double s = 0; for (m in params.maps) { s += m.getOrDefault(doc["mongo_id"].value, 0.0); } return s;',
-                                lang: 'painless',
-                                params: { maps }
-                            }
-                        }
-                    }
-                }],
-                filter: filterClauses
-            }
-        };
-    }
-
-    /**
      * Normalized hybrid (relevance/normalized): OpenSearch-native `hybrid` query, one arm per
-     * recall signal (BM25, kNN, optionally refine-chain anchor preference), combined by
-     * Reciprocal Rank Fusion (`search_pipeline` query param — see IpSearchService). RRF fuses
-     * by RANK, not raw score, so there's no BM25-vs-cosine scale mismatch to hand-tune and no
-     * min_score cliff: a real but weak match ranks low instead of vanishing outright. Each arm
-     * carries its own filter so filtering happens pre-fusion (OpenSearch 2.19's `hybrid` query
-     * has no top-level `filter` field yet).
+     * recall signal (BM25, kNN), combined by Reciprocal Rank Fusion (`search_pipeline` query
+     * param — see IpSearchService). RRF fuses by RANK, not raw score, so there's no BM25-vs-
+     * cosine scale mismatch to hand-tune and no min_score cliff: a real but weak match ranks
+     * low instead of vanishing outright. Each arm carries its own filter so filtering happens
+     * pre-fusion (OpenSearch 2.19's `hybrid` query has no top-level `filter` field yet).
+     *
+     * No separate "refine-chain anchor preference" arm: RRF fuses by UNION, so an arm whose
+     * query is unconditionally true within the anchor filter (as a pure re-rank booster would
+     * need to be) becomes an unconditional ADMISSION arm instead — it would re-admit the
+     * anchor's entire filtered candidate set regardless of the current query term, silently
+     * defeating refine-chain narrowing. The id-membership filter already applied to the real
+     * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
+     * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, refineScoreMaps = [] } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -560,8 +541,6 @@ export default class QueryBuilder {
         // top-15), so its "top" neighbor can be little more than the least-bad of an unrelated
         // bunch. kNN still ranks normally once there's no hard identity filter to fall back on.
         const arms = filters?.kerberos ? [bm25Arm] : [bm25Arm, knnArm];
-        const anchorArm = this._buildRefineAnchorRrfArm(refineScoreMaps, filterClauses);
-        if (anchorArm) arms.push(anchorArm);
 
         return {
             size: perPage,
