@@ -287,7 +287,6 @@ export default class IpSearchService {
         const embedding = await this.embeddingService.embedQuery(query);
         const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm, filters);
         const refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
-        const refineScoreMaps = refineAnchors ? refineAnchors.map((a) => a.scoreById) : [];
 
         // Skip hybrid kNN when nothing matches lexically — otherwise kNN returns neighbors for gibberish.
         const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, refineChain, refineFilterClauses);
@@ -310,7 +309,7 @@ export default class IpSearchService {
 
         // relevance/normalized -> score-normalized hybrid; date/other -> field-ordered hybrid.
         const usesRrf = sort === 'relevance' || sort === 'normalized';
-        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineFilterClauses, refineScoreMaps };
+        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineFilterClauses };
         const hybridQueryBuildersBySort = {
             relevance: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, normalizedHybridArgs),
             normalized: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, normalizedHybridArgs)

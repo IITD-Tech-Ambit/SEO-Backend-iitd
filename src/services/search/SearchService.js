@@ -288,7 +288,6 @@ export default class SearchService {
         const refineAnchor = authorRefineNarrow ? refineChain[0] : null;
         const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow, filters);
         const refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
-        const refineScoreMaps = refineAnchors ? refineAnchors.map((a) => a.scoreById) : [];
 
         // BM25 pre-check: if nothing matches lexically (even fuzzy), skip hybrid kNN entirely,
         // otherwise the kNN arm always returns nearest neighbors — even for gibberish.
@@ -319,7 +318,7 @@ export default class SearchService {
         // the body afterward — the native `hybrid` query has no single shared bool.filter to
         // splice into post-hoc the way the old function_score shape did.
         const usesRrf = sort === 'relevance' || sort === 'normalized';
-        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineFilterClauses, refineScoreMaps };
+        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineFilterClauses };
         const hybridQueryBuildersBySort = {
             impact: () => this.queryBuilder.buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain }),
             relevance: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, normalizedHybridArgs),
