@@ -51,7 +51,8 @@ export default class SearchService {
             logger: this.logger,
             searchConfig: this.searchConfig,
             embeddingService: this.embeddingService,
-            rrfPipeline: this.rrfPipeline
+            rrfPipeline: this.rrfPipeline,
+            maxResultWindow: this.maxResultWindow
         };
 
         this.filters = new FilterBuilder(this.searchConfig);
