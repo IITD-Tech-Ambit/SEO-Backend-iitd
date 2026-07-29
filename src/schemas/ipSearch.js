@@ -4,9 +4,9 @@ export const ipSearchRequestSchema = {
     properties: {
         query: {
             type: 'string',
-            minLength: 1,
+            minLength: 0,
             maxLength: 500,
-            description: 'Search query string'
+            description: 'Search query string. Empty string with filters set runs a filter-only browse (e.g. "browse by department") with no text-relevance gate.'
         },
         filters: {
             type: 'object',
@@ -41,7 +41,7 @@ export const ipSearchRequestSchema = {
                 },
                 department: {
                     type: 'string',
-                    description: 'Department id (department_id keyword)'
+                    description: 'Exact department name filter (department_name.keyword)'
                 },
                 country: {
                     type: 'string',
@@ -122,6 +122,13 @@ export const ipSearchResponseSchema = {
                     application_number: { type: 'string' },
                     title: { type: 'string' },
                     abstract: { type: 'string' },
+                    highlight: {
+                        type: 'object',
+                        properties: {
+                            title: { type: 'string' },
+                            abstract: { type: 'string' }
+                        }
+                    },
                     type_of_ip: { type: 'string' },
                     field_of_invention: { type: 'string' },
                     department: {
@@ -164,6 +171,7 @@ export const ipSearchResponseSchema = {
                         },
                         nullable: true
                     },
+                    profile_image_url: { type: 'string', nullable: true },
                     ipCount: { type: 'integer' }
                 }
             }
@@ -175,7 +183,8 @@ export const ipSearchResponseSchema = {
                 type_of_ip: { type: 'array' },
                 field_of_invention: { type: 'array' },
                 country: { type: 'array' },
-                classification: { type: 'array' }
+                classification: { type: 'array' },
+                department: { type: 'array' }
             }
         },
         pagination: {
@@ -206,8 +215,8 @@ export const ipSearchResponseSchema = {
         },
         mode: {
             type: 'string',
-            enum: ['basic', 'advanced'],
-            description: 'Search mode used: basic (BM25-only) or advanced (hybrid BM25 + semantic)'
+            enum: ['basic', 'advanced', 'browse'],
+            description: 'Search mode used: basic (BM25-only), advanced (hybrid BM25 + semantic), or browse (filter-only, no query text)'
         },
         match_tier: {
             type: 'string',
@@ -238,5 +247,79 @@ export const errorResponseSchema = {
         error: { type: 'string' },
         message: { type: 'string' },
         statusCode: { type: 'integer' }
+    }
+};
+
+export const ipFacultyForQueryRequestSchema = {
+    type: 'object',
+    required: ['query'],
+    properties: {
+        query: {
+            type: 'string',
+            minLength: 0,
+            maxLength: 500,
+            description: 'Search query to find related inventors. Empty string with filters set runs a filter-only browse, matching POST /ip/search.'
+        },
+        mode: {
+            type: 'string',
+            enum: ['basic', 'advanced'],
+            default: 'advanced',
+            description: 'Search mode to apply keyword strictness'
+        },
+        search_in: {
+            type: 'string',
+            maxLength: 200,
+            description: 'Comma-separated field list matching POST /ip/search search_in'
+        },
+        refine_chain: {
+            type: 'string',
+            maxLength: 2000,
+            description: 'JSON-encoded array of ordered prior queries, matching POST /ip/search refine_chain'
+        },
+        filters: {
+            type: 'string',
+            maxLength: 2000,
+            description: 'JSON-encoded facet filters identical to POST /ip/search filters, so total_matching_ip matches POST /ip/search pagination.total'
+        }
+    },
+    additionalProperties: false
+};
+
+export const ipFacultyForQueryResponseSchema = {
+    type: 'object',
+    properties: {
+        departments: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                    faculty: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                _id: { type: 'string' },
+                                name: { type: 'string' },
+                                expert_id: { type: 'string' },
+                                kerberos: { type: 'string' },
+                                profile_image_url: { type: 'string', nullable: true },
+                                ipCount: { type: 'integer' }
+                            }
+                        }
+                    },
+                    total_ip_count: { type: 'integer' }
+                }
+            }
+        },
+        total_faculty: { type: 'integer' },
+        total_matching_ip: { type: 'integer' },
+        meta: {
+            type: 'object',
+            properties: {
+                took_ms: { type: 'number' },
+                cache_hit: { type: 'boolean' }
+            }
+        }
     }
 };

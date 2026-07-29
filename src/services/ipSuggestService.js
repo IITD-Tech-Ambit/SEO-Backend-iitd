@@ -55,12 +55,21 @@ export default class IpSuggestService {
         this._tokenSet = new Set();
         this._tokensLoadedAt = 0;
         this._tokensInflight = null;
+
+        // Small, slow-changing list ([{name, count}]) of departments that actually have IP
+        // filings — cheap to hold in memory and substring-match against, no per-keystroke
+        // OpenSearch round trip needed.
+        this._deptList = [];
+        this._deptListLoadedAt = 0;
+        this._deptListInflight = null;
     }
 
-    /** Non-blocking first token-set load (call from app bootstrap). */
+    /** Non-blocking first token-set/department-list load (call from app bootstrap). */
     init() {
         this._refreshTokenSet().catch((err) =>
             this.logger.warn({ err }, 'ip-suggest: initial inventor token-set load failed'));
+        this._refreshDeptList().catch((err) =>
+            this.logger.warn({ err }, 'ip-suggest: initial department list load failed'));
     }
 
     normalizePrefix(q) {
@@ -94,6 +103,40 @@ export default class IpSuggestService {
         if (Date.now() - this._tokensLoadedAt > this.cfg.tokenRefreshMs) {
             this._refreshTokenSet().catch(() => { /* logged elsewhere */ });
         }
+    }
+
+    async _refreshDeptList() {
+        if (this._deptListInflight) return this._deptListInflight;
+        this._deptListInflight = (async () => {
+            const body = {
+                size: 0,
+                aggs: { departments: { terms: { field: 'department_name.keyword', size: 100 } } }
+            };
+            const res = await this.opensearch.search({ index: this.documentsIndex, body });
+            const buckets = res.body.aggregations?.departments?.buckets || [];
+            const list = buckets.map((b) => ({ name: b.key, count: b.doc_count }));
+            this._deptList = list;
+            this._deptListLoadedAt = Date.now();
+            this.logger.info({ departments: list.length }, 'ip-suggest: department list loaded');
+            return list;
+        })().finally(() => { this._deptListInflight = null; });
+        return this._deptListInflight;
+    }
+
+    _ensureDeptListFresh() {
+        if (Date.now() - this._deptListLoadedAt > this.cfg.tokenRefreshMs) {
+            this._refreshDeptList().catch(() => { /* logged elsewhere */ });
+        }
+    }
+
+    /** Substring match (case-insensitive) against the cached department list, ranked by IP count. */
+    _matchDepartments(qNorm, limit) {
+        if (!qNorm) return [];
+        return this._deptList
+            .filter((d) => d.name.toLowerCase().includes(qNorm))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, limit)
+            .map((d) => ({ name: d.name, count: d.count }));
     }
 
     /**
@@ -199,6 +242,47 @@ export default class IpSuggestService {
         return Array.from(byName.values()).sort((a, b) => b.score - a.score);
     }
 
+    /**
+     * Attach each affiliated inventor's department name + profile image (matches the general
+     * /suggest author group, which shows department + avatar instead of a generic "IIT Delhi
+     * Faculty" label). All suggested inventors are affiliated faculty, so kerberos always maps
+     * to a Faculty doc.
+     */
+    async _resolveDepartments(inventors) {
+        const kerberosValues = [...new Set(
+            inventors.filter((i) => i.is_faculty && i.kerberos).map((i) => i.kerberos.toLowerCase())
+        )];
+        if (kerberosValues.length === 0) return inventors;
+
+        try {
+            const Faculty = this.mongoose.model('Faculty');
+            const docs = await Faculty.find({
+                email: { $in: kerberosValues.map((k) => new RegExp(`^${k}@`, 'i')) }
+            })
+                .populate('department', 'name')
+                .select('email department profile_image_url')
+                .lean();
+
+            const facultyByKerberos = new Map();
+            for (const f of docs) {
+                const k = (f.email || '').split('@')[0].toLowerCase();
+                if (k) facultyByKerberos.set(k, f);
+            }
+
+            return inventors.map((inv) => {
+                const f = inv.kerberos ? facultyByKerberos.get(inv.kerberos.toLowerCase()) : null;
+                return {
+                    ...inv,
+                    department: f?.department?.name || '',
+                    image_url: f?.profile_image_url || null
+                };
+            });
+        } catch (err) {
+            this.logger.warn({ err }, 'ip-suggest: department/image lookup failed');
+            return inventors;
+        }
+    }
+
     _leadInventor(inventors) {
         if (!Array.isArray(inventors) || inventors.length === 0) return '';
         // Index 0 is always the primary inventor (invariant from population).
@@ -300,7 +384,7 @@ export default class IpSuggestService {
             return {
                 intent: 'mixed',
                 confidence: 0,
-                groups: { inventors: [], documents: [] },
+                groups: { inventors: [], documents: [], departments: [] },
                 cacheHit: false,
                 tookMs: Date.now() - startTime
             };
@@ -325,6 +409,7 @@ export default class IpSuggestService {
         }
 
         this._ensureTokensFresh();
+        this._ensureDeptListFresh();
 
         // OpenSearch keeps original casing; qNorm is for the intent engine.
         const q = (rawQuery || '').toString().trim().replace(/\s+/g, ' ');
@@ -334,8 +419,9 @@ export default class IpSuggestService {
             this._searchWithTimeout('documents', this.documentsIndex, this._documentsQueryBody(q))
         ]);
 
-        const inventors = this._mapInventorHits(inventorsRes.hits).slice(0, limit);
+        const inventors = await this._resolveDepartments(this._mapInventorHits(inventorsRes.hits).slice(0, limit));
         const documents = this._mapDocumentHits(documentsRes.hits).slice(0, limit);
+        const departments = this._matchDepartments(qNorm, limit);
 
         const topInventorScore = inventors[0]?.score || 0;
         const topDocumentScore = documents[0]?.score || 0;
@@ -346,7 +432,7 @@ export default class IpSuggestService {
         const payload = {
             intent,
             confidence,
-            groups: { inventors, documents }
+            groups: { inventors, documents, departments }
         };
 
         if (!inventorsRes.timedOut && !documentsRes.timedOut) {

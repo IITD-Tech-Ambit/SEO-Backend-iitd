@@ -42,6 +42,8 @@ export const ipSuggestResponseSchema = {
                             name: { type: 'string' },
                             is_faculty: { type: 'boolean' },
                             kerberos: { type: 'string' },
+                            department: { type: 'string', description: 'Faculty department name (affiliated inventors only)' },
+                            image_url: { type: 'string', nullable: true, description: 'Faculty profile image URL (affiliated inventors only)' },
                             score: { type: 'number' }
                         }
                     }
@@ -57,6 +59,17 @@ export const ipSuggestResponseSchema = {
                             type_of_ip: { type: 'string' },
                             lead_inventor: { type: 'string' },
                             score: { type: 'number' }
+                        }
+                    }
+                },
+                departments: {
+                    type: 'array',
+                    description: 'Departments with IP filings matching the query (substring match), for "browse by department" entry points',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            name: { type: 'string' },
+                            count: { type: 'integer', description: 'Number of IP filings in this department' }
                         }
                     }
                 }

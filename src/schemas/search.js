@@ -123,6 +123,13 @@ export const searchResponseSchema = {
                     _id: { type: 'string' },
                     title: { type: 'string' },
                     abstract: { type: 'string' },
+                    highlight: {
+                        type: 'object',
+                        properties: {
+                            title: { type: 'string' },
+                            abstract: { type: 'string' }
+                        }
+                    },
                     authors: { type: 'array' },
                     publication_year: { type: 'integer' },
                     document_type: { type: 'string' },
@@ -327,6 +334,13 @@ export const authorScopedSearchResponseSchema = {
                     _id: { type: 'string' },
                     title: { type: 'string' },
                     abstract: { type: 'string' },
+                    highlight: {
+                        type: 'object',
+                        properties: {
+                            title: { type: 'string' },
+                            abstract: { type: 'string' }
+                        }
+                    },
                     authors: { type: 'array' },
                     publication_year: { type: 'integer' },
                     document_type: { type: 'string' },

@@ -82,6 +82,55 @@ export async function getIpDocument(request, reply, ipSearchService) {
     }
 }
 
+export async function getAllFacultyForQuery(request, reply, ipSearchService) {
+    const startTime = Date.now();
+    const { query, mode, search_in: searchInRaw, refine_chain: refineChainRaw, filters: filtersRaw } = request.query;
+
+    const parsedSearchIn =
+        typeof searchInRaw === 'string' && searchInRaw.trim()
+            ? searchInRaw.split(',').map((s) => s.trim()).filter(Boolean)
+            : undefined;
+
+    let parsedFilters = null;
+    if (typeof filtersRaw === 'string' && filtersRaw.trim()) {
+        try {
+            parsedFilters = JSON.parse(filtersRaw);
+        } catch (err) {
+            request.log.warn({ err: err?.message, filtersRaw }, 'IP faculty-for-query: ignoring malformed filters param');
+        }
+    }
+
+    let parsedRefineChain = null;
+    if (typeof refineChainRaw === 'string' && refineChainRaw.trim()) {
+        try {
+            parsedRefineChain = JSON.parse(refineChainRaw);
+        } catch (err) {
+            request.log.warn({ err: err?.message, refineChainRaw }, 'IP faculty-for-query: ignoring malformed refine_chain param');
+        }
+    }
+
+    try {
+        const result = await ipSearchService.getAllFacultyForQuery(query, mode, parsedSearchIn, parsedFilters, parsedRefineChain);
+
+        const tookMs = Date.now() - startTime;
+
+        return {
+            ...result,
+            meta: {
+                took_ms: tookMs,
+                cache_hit: result.cacheHit
+            }
+        };
+    } catch (error) {
+        request.log.error({ error, query }, 'IP faculty-for-query failed');
+        return reply.status(500).send({
+            error: 'Internal Server Error',
+            message: 'IP faculty-for-query failed unexpectedly',
+            statusCode: 500
+        });
+    }
+}
+
 export async function searchHealth(request, reply) {
     const fastify = request.server;
 

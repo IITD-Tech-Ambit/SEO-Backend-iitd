@@ -10,6 +10,8 @@
     "taxonomy:ingest": "node scripts/taxonomy/ingest.js",
     "taxonomy:ingest:dry": "node scripts/taxonomy/ingest.js --dry-run",
     "taxonomy:rollup": "node scripts/taxonomy/rollup.js",
+    "taxonomy:faculty-domains": "node scripts/taxonomy/populateFacultyDomains.js",
+    "taxonomy:faculty-domains:dry": "node scripts/taxonomy/populateFacultyDomains.js --dry-run",
     "test": "node --test tests/regression_search.test.mjs tests/perf_search.test.mjs tests/author_scope_search.test.mjs tests/unit/*.test.mjs tests/integration/*.test.mjs tests/corpus_retrieval.test.mjs",
     "test:dump": "node tests/scripts/dump_test_corpus.mjs",
     "test:golden": "node tests/scripts/generate_golden_set.mjs",
