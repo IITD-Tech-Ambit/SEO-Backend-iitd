@@ -50,7 +50,9 @@ export default class SearchService {
             redisTTL: this.redisTTL,
             logger: this.logger,
             searchConfig: this.searchConfig,
-            embeddingService: this.embeddingService
+            embeddingService: this.embeddingService,
+            rrfPipeline: this.rrfPipeline,
+            maxResultWindow: this.maxResultWindow
         };
 
         this.filters = new FilterBuilder(this.searchConfig);

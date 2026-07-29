@@ -10,7 +10,7 @@ import { normalizeChain } from './QueryBuilder.js';
  * simpler: IP inventors carry kerberos directly (no scopus_id merge needed).
  */
 export default class IpFacultyForQueryService {
-    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, candidateK }) {
+    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, candidateK, rrfPipeline }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -21,6 +21,7 @@ export default class IpFacultyForQueryService {
         this.filterBuilder = filterBuilder;
         this.embeddingService = embeddingService;
         this.candidateK = candidateK;
+        this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
     }
 
     _buildCacheKey(query, mode, searchInNorm, refineChain, filters) {
@@ -216,7 +217,11 @@ export default class IpFacultyForQueryService {
         }
 
         const osQuery = await this._buildAggQuery(mode, query, effFilters, searchInNorm, refineChain, bm25HitCount);
-        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
+        const osResponse = await this.opensearch.search({
+            index: this.indexName,
+            body: osQuery,
+            ...(mode === 'advanced' ? { search_pipeline: this.rrfPipeline } : {})
+        });
 
         const totalDocs = osResponse.body.hits.total.value;
         const kerberosBuckets = osResponse.body.aggregations?.faculty_inventors?.affiliated?.by_kerberos?.buckets || [];

@@ -11,7 +11,7 @@ import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
  * MongoDB in hit order and attaches similarity scores.
  */
 export default class AuthorScopedSearch {
-    constructor({ opensearch, indexName, mongoose, redis, redisTTL, logger, queryBuilder, filterBuilder, rosterService, embeddingService, hydrator }) {
+    constructor({ opensearch, indexName, mongoose, redis, redisTTL, logger, queryBuilder, filterBuilder, rosterService, embeddingService, hydrator, rrfPipeline, maxResultWindow }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -23,6 +23,38 @@ export default class AuthorScopedSearch {
         this.rosterService = rosterService;
         this.embeddingService = embeddingService;
         this.hydrator = hydrator;
+        this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
+        this.maxResultWindow = maxResultWindow || 10000;
+    }
+
+    /**
+     * Re-runs a prior refine-chain term as its own real hybrid search (not a literal-AND
+     * filter) and narrows to the doc ids it actually matched. A literal-AND filter requires
+     * every refine term to appear verbatim in the doc — but the anchor step itself may have
+     * recalled a doc only semantically (kNN), so literal-AND can wrongly evict real matches
+     * and, for a rare/garbled phrase, can zero out the whole narrowed set even when the
+     * newest query has plenty of real matches on its own. Mirrors SearchService's
+     * _buildRefineAnchorIdFilter so both search paths narrow the same way.
+     */
+    async _buildRefineAnchorIdFilter(term, searchInNorm) {
+        const cap = Math.min(this.maxResultWindow, 2000);
+        try {
+            const embedding = await this.embeddingService.embedQuery(term);
+            const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
+                term, embedding, {}, 1, cap, searchInNorm, null, false, null, null, { refineChain: [] }
+            );
+            osQuery.size = cap;
+            osQuery.from = 0;
+            osQuery._source = ['mongo_id'];
+            delete osQuery.aggs;
+
+            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery, search_pipeline: this.rrfPipeline });
+            const ids = resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
+            return ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} };
+        } catch (err) {
+            this.logger.warn({ err: err?.message, term }, 'Author-scoped refine anchor lookup failed; falling back to literal narrowing');
+            return this.queryBuilder.buildLiteralPrimaryClause(term, searchInNorm);
+        }
     }
 
     async search({ query, author_id, page = 1, per_page = 20, mode = 'advanced', refine_within = null, refine_chain = null, search_in = null, filters = null }) {
@@ -162,25 +194,25 @@ export default class AuthorScopedSearch {
                     { authorScoped: true, refineChain }
                 );
 
-                // Prior refinement terms become strict lexical FILTERS so the result set narrows
-                // monotonically within this author's papers.
+                // Every hybrid arm carries its own filter array (see QueryBuilder.buildNormalizedHybridQuery) —
+                // in practice they share the same array reference, but push into each distinct
+                // array once (by identity) rather than assume that internal detail.
+                const uniqueFilterArrays = [...new Set(
+                    (base.query?.hybrid?.queries || [])
+                        .map((arm) => arm.bool?.filter)
+                        .filter(Array.isArray)
+                )];
+
+                // Prior refinement terms narrow the result set to what each anchor step actually
+                // matched (id-membership, not literal-AND — see _buildRefineAnchorIdFilter).
                 if (refineChain.length > 0 && !authorRefineNarrow) {
-                    const refineFilters = this.queryBuilder.buildRefineFilterClauses(refineChain, searchInNorm, { authorScoped: true });
-                    const filterArrays = [
-                        base.query?.bool?.filter,
-                        base.query?.function_score?.query?.bool?.filter
-                    ].filter(Boolean);
-                    if (filterArrays.length) filterArrays[0].push(...refineFilters);
+                    const refineFilters = await Promise.all(
+                        refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm))
+                    );
+                    for (const filterArr of uniqueFilterArrays) filterArr.push(...refineFilters);
                 }
 
-                const filterTargets = [
-                    base.query?.bool?.filter,
-                    base.query?.script_score?.query?.bool?.filter,
-                    base.query?.function_score?.query?.bool?.filter
-                ].filter(Boolean);
-                for (const filterArr of filterTargets) {
-                    if (Array.isArray(filterArr)) filterArr.push(authorFilter);
-                }
+                for (const filterArr of uniqueFilterArrays) filterArr.push(authorFilter);
 
                 delete base.aggs;
                 osQuery = base;
@@ -195,7 +227,11 @@ export default class AuthorScopedSearch {
                 search_in: searchInNorm
             }, 'Author-scoped search: querying OpenSearch');
 
-            const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
+            const osResponse = await this.opensearch.search({
+                index: this.indexName,
+                body: osQuery,
+                ...(osQuery.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+            });
             hits = osResponse.body.hits.hits;
             total = osResponse.body.hits.total.value;
 
