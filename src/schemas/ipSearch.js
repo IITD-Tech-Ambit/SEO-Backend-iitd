@@ -263,7 +263,7 @@ export const inventorScopedSearchRequestSchema = {
         inventor_id: {
             type: 'string',
             minLength: 1,
-            description: 'Faculty expert_id of the IITD inventor to scope to'
+            description: 'Faculty expert_id OR kerberos of the IITD inventor to scope to'
         },
         page: {
             type: 'integer',
