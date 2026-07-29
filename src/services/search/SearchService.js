@@ -236,15 +236,18 @@ export default class SearchService {
      * the only way to guarantee the pool never grows while still keeping every doc the anchor step
      * actually surfaced (including ones that only matched it semantically).
      */
-    async _buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow) {
+    async _buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow, filters) {
         if (authorRefineNarrow || !refineChain.length) return null;
-        return Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm)));
+        return Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, filters)));
     }
 
-    /** Re-runs `term` as its own advanced search (no filters, no further refinement, no author
-     *  scoping) to capture the real doc ids AND per-doc scores it matched, capped at
-     *  `maxResultWindow` or 2000. */
-    async _buildRefineAnchorIdFilter(term, searchInNorm) {
+    /** Re-runs `term` as its own advanced search (same filters as the real search, no further
+     *  refinement, no author scoping) to capture the real doc ids AND per-doc scores it matched,
+     *  capped at `maxResultWindow` or 2000. Anchoring without the current filters would let a
+     *  broad/common anchor phrase compete against the WHOLE corpus for a spot in that cap — a
+     *  filter-scoped candidate's real matches can rank outside the unscoped top-`cap` even
+     *  though they'd be the obvious top matches within the filtered set. */
+    async _buildRefineAnchorIdFilter(term, searchInNorm, filters = {}) {
         const cap = Math.min(this.maxResultWindow, 2000);
         try {
             const embedding = await this.embeddingService.embedQuery(term);
@@ -253,7 +256,7 @@ export default class SearchService {
             // capturing far more "members" than the anchor actually returned as results.
             const bm25HitCount = await this._bm25PreCheck(term, searchInNorm, null, false, [], null);
             const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
-                term, embedding, {}, 1, cap, searchInNorm, null, false, null, null,
+                term, embedding, filters, 1, cap, searchInNorm, null, false, null, null,
                 { bm25HitCount, candidateK: this.candidateK, refineChain: [] }
             );
             osQuery.size = cap;
@@ -283,7 +286,7 @@ export default class SearchService {
 
         const embedding = await this.embeddingService.embedQuery(query);
         const refineAnchor = authorRefineNarrow ? refineChain[0] : null;
-        const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow);
+        const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow, filters);
         const refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
         const refineScoreMaps = refineAnchors ? refineAnchors.map((a) => a.scoreById) : [];
 
