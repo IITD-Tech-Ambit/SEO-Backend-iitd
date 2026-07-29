@@ -162,7 +162,7 @@ export default class FacultyForQueryService {
     }
 
     /** Build the size:0 OpenSearch aggregation query (basic BM25 or hybrid) for the People sidebar. */
-    async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing) {
+    async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing, bm25HitCount = null) {
         const { facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineAnchor } = narrowing;
         const facultyAggs = this.filterBuilder.facultyForQueryAggregations();
 
@@ -188,11 +188,16 @@ export default class FacultyForQueryService {
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
+        // Sidebar counts must agree with AuthorScopedSearch's own BM25-preferred admission (see
+        // QueryBuilder.buildNormalizedHybridQuery): prefer BM25-only recall here too, and only
+        // fall back to including kNN if BM25 found literally nothing for this query+scope
+        // (bm25HitCount === 0 already short-circuits to an empty response before reaching here
+        // in advanced mode, so this is mostly a defensive default for future callers).
         const base = this.queryBuilder.buildNormalizedHybridQuery(
             query, embedding, queryFilters, 1, 1,
             searchInNorm, facultyAuthorIds, authorRefineNarrow,
             refineAnchor, facultyKerberosIds,
-            { refineChain }
+            { refineChain, restrictKnn: true, bm25AdmitsNothing: bm25HitCount === 0 }
         );
         // Prior refinement terms become strict lexical FILTERS so per-faculty counts reflect
         // the same monotonically narrowed pool as the papers list. buildNormalizedHybridQuery
@@ -455,8 +460,9 @@ export default class FacultyForQueryService {
         // Advanced mode uses a hybrid (kNN) aggregation, whose vector arm always returns
         // nearest neighbors — even for gibberish. Gate it behind the SAME BM25 pre-check as
         // POST /search so the People sidebar stays empty whenever the papers list is empty.
+        let bm25HitCount = null;
         if (mode === 'advanced') {
-            const bm25HitCount = await this._bm25PreCheck(
+            bm25HitCount = await this._bm25PreCheck(
                 query, searchInNorm,
                 narrowing.facultyAuthorIds, narrowing.authorRefineNarrow,
                 refineChain, narrowing.facultyKerberosIds
@@ -473,7 +479,7 @@ export default class FacultyForQueryService {
             }
         }
 
-        const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing);
+        const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing, bm25HitCount);
 
         this.logger.info({ query, mode, search_in: searchInNorm }, 'Faculty-for-query: querying OpenSearch aggregation');
         const osResponse = await this.opensearch.search({
