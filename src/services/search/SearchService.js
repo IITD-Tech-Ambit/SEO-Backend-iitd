@@ -81,6 +81,21 @@ export default class SearchService {
     }
 
     /**
+     * OpenSearch's native `hybrid` query rejects any request whose from+size exceeds a default
+     * internal depth ("pagination_depth param is missing" / "Reached end of search result,
+     * increase pagination_depth") — it needs an explicit hint for how deep to rank each arm's
+     * candidates to support the requested page. Only meaningful on hybrid-shaped query bodies.
+     * Returns a new body (with a fresh `query.hybrid`) rather than mutating in place — callers
+     * elsewhere build sibling request bodies via `{...osQuery, ...}`, a shallow spread that
+     * would otherwise share (and cross-contaminate) the same nested hybrid object.
+     */
+    _withPaginationDepth(body) {
+        if (!body?.query?.hybrid) return body;
+        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), this.candidateK), this.maxResultWindow);
+        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
+    }
+
+    /**
      * Pre-resolve kerberos for an author_id facet filter so the OpenSearch filter emits the
      * nested-author-id OR kerberos union clause (mirrors People sidebar / author drill-down).
      */
@@ -325,7 +340,7 @@ export default class SearchService {
             normalized: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, normalizedHybridArgs)
         };
         const buildFieldOrderedHybridQuery = () => this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain });
-        const osQuery = (hybridQueryBuildersBySort[sort] || buildFieldOrderedHybridQuery)();
+        let osQuery = (hybridQueryBuildersBySort[sort] || buildFieldOrderedHybridQuery)();
 
         // Multi-step search-on-search: every prior term becomes a FILTER so the candidate pool
         // can only shrink (monotonic narrowing). Uses the anchor's actual result-id membership
@@ -360,12 +375,13 @@ export default class SearchService {
             osQuery.size = per_page;
             osQuery.from = pageStart;
         }
+        osQuery = this._withPaginationDepth(osQuery);
 
         // Deep page beyond max_result_window: count only and return an honest empty page.
         if (!rerankEligible && rawExceedsWindow) {
             let trueTotal = 0;
             try {
-                const countBody = { ...osQuery, size: 0, from: 0, _source: false };
+                const countBody = this._withPaginationDepth({ ...osQuery, size: 0, from: 0, _source: false });
                 delete countBody.aggs;
                 const countResp = await this.opensearch.search({ index: this.indexName, body: countBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
                 trueTotal = countResp.body.hits.total.value;
@@ -408,7 +424,7 @@ export default class SearchService {
             // raw-ranks [0, K), so raw pagination resumes at offset K with no gap/duplicate.
             if (pageEnd > K && !rawExceedsWindow) {
                 try {
-                    const rawBody = { ...osQuery, from: K, size: pageEnd - K };
+                    const rawBody = this._withPaginationDepth({ ...osQuery, from: K, size: pageEnd - K });
                     delete rawBody.aggs;
                     const rawResp = await this.opensearch.search({ index: this.indexName, body: rawBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
                     let rawResults = await this.hydrator.hydrateFromMongoDB(rawResp.body.hits.hits);
