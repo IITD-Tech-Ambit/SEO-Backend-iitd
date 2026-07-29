@@ -84,7 +84,8 @@ export default class IpSearchService {
             embeddingService: this.embeddingService,
             hydrator: this.hydrator,
             rrfPipeline: this.rrfPipeline,
-            maxResultWindow: this.maxResultWindow
+            maxResultWindow: this.maxResultWindow,
+            candidateK: this.candidateK
         });
     }
 

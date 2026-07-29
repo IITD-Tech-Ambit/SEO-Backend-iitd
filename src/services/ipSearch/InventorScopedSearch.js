@@ -14,7 +14,7 @@ function escapeRegexForMongo(s) {
  * identity and thread `filters.kerberos` through the shared query builders.
  */
 export default class InventorScopedSearch {
-    constructor({ opensearch, indexName, mongoose, redis, redisTTL, logger, queryBuilder, filterBuilder, embeddingService, hydrator, rrfPipeline, maxResultWindow }) {
+    constructor({ opensearch, indexName, mongoose, redis, redisTTL, logger, queryBuilder, filterBuilder, embeddingService, hydrator, rrfPipeline, maxResultWindow, candidateK }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -27,6 +27,20 @@ export default class InventorScopedSearch {
         this.hydrator = hydrator;
         this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
         this.maxResultWindow = maxResultWindow || 10000;
+        this.candidateK = candidateK || 50;
+    }
+
+    /**
+     * OpenSearch's native `hybrid` query rejects any request whose from+size exceeds a default
+     * internal depth ("pagination_depth param is missing" / "Reached end of search result,
+     * increase pagination_depth"). Mirrors SearchService._withPaginationDepth / IpSearchService's
+     * copy — this class builds hybrid queries and calls OpenSearch directly, bypassing
+     * IpSearchService entirely, so it needs its own copy of the same fix. No-op on non-hybrid bodies.
+     */
+    _withPaginationDepth(body) {
+        if (!body?.query?.hybrid) return body;
+        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), this.candidateK), this.maxResultWindow);
+        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
     }
 
     /**
@@ -48,7 +62,7 @@ export default class InventorScopedSearch {
             osQuery._source = ['mongo_id'];
             delete osQuery.aggs;
 
-            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery, search_pipeline: this.rrfPipeline });
+            const resp = await this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
             const ids = resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
             return ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} };
         } catch (err) {
@@ -194,6 +208,8 @@ export default class InventorScopedSearch {
                 delete base.aggs;
                 osQuery = base;
             }
+
+            osQuery = this._withPaginationDepth(osQuery);
 
             this.logger.info({
                 inventor_id,
