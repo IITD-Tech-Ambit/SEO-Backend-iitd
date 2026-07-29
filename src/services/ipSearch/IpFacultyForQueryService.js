@@ -107,10 +107,8 @@ export default class IpFacultyForQueryService {
         if (searchInNorm && searchInNorm.length > 0) {
             preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO' });
         } else {
-            const tokens = (query || '').trim().split(/\s+/).filter(Boolean);
-            const minMatch = tokens.length <= 2 ? 1 : Math.ceil(tokens.length * 0.5);
             const textMatch = {
-                multi_match: { query, fields: ['title', 'abstract', 'field_of_invention'], type: 'cross_fields', minimum_should_match: String(minMatch) }
+                multi_match: { query, fields: ['title', 'abstract', 'field_of_invention'], type: 'cross_fields', minimum_should_match: '1' }
             };
             const inventorClause = this.queryBuilder.buildInventorMatchClause(query, { fuzziness: 'AUTO' });
             preCheckClause = inventorClause

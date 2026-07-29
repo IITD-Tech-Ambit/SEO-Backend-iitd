@@ -139,14 +139,12 @@ export default class FacultyForQueryService {
         } else if (search_in && search_in.length > 0) {
             preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
         } else {
-            const tokens = (query || '').trim().split(/\s+/).filter(Boolean);
-            const minMatch = tokens.length <= 2 ? 1 : Math.ceil(tokens.length * 0.5);
             const textMatch = {
                 multi_match: {
                     query,
                     fields: ['title', 'abstract', 'subject_area', 'field_associated'],
                     type: 'cross_fields',
-                    minimum_should_match: String(minMatch)
+                    minimum_should_match: '1'
                 }
             };
             const iitdAuthor = this.queryBuilder.buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
