@@ -744,7 +744,7 @@ export default class QueryBuilder {
      * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
      * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, bm25AdmitsNothing = false } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, bm25AdmitsNothing = false, restrictKnn = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -796,7 +796,15 @@ export default class QueryBuilder {
         // becomes permanently unfindable within that author's scope. bm25AdmitsNothing (the
         // caller's own BM25-only precheck) allows kNN back in only as a last resort, not a
         // co-equal arm, keeping the noise-reduction intent while removing the hard cliff.
-        const arms = (authorScoped && !bm25AdmitsNothing) ? [bm25Arm] : [bm25Arm, knnArm];
+        //
+        // `restrictKnn` applies this same BM25-preferred admission rule to the People sidebar's
+        // full-corpus aggregation query (FacultyForQueryService), which has no per-author filter
+        // to key off `authorScoped`. Without it, the aggregation's kNN arm can admit a paper into
+        // a faculty member's bucket purely on semantic similarity even though that faculty
+        // member's OWN scoped search (AuthorScopedSearch, BM25-only by default) would never
+        // surface it — the sidebar count then overcounts relative to the drill-down.
+        const excludeKnn = (authorScoped || restrictKnn) && !bm25AdmitsNothing;
+        const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
 
         return {
             size: perPage,

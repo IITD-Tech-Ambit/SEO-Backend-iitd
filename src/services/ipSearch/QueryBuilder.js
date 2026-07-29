@@ -507,7 +507,7 @@ export default class QueryBuilder {
      * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
      * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, bm25AdmitsNothing = false } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, bm25AdmitsNothing = false, restrictKnn = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -545,7 +545,15 @@ export default class QueryBuilder {
         // matching patent becomes permanently unfindable within that inventor's scope.
         // bm25AdmitsNothing (the caller's own BM25-only precheck against the same scoped pool)
         // allows kNN back in only as a last resort, not a co-equal arm.
-        const arms = (filters?.kerberos && !bm25AdmitsNothing) ? [bm25Arm] : [bm25Arm, knnArm];
+        //
+        // `restrictKnn` applies this exact same BM25-preferred admission rule to the People
+        // sidebar's full-corpus aggregation query (IpFacultyForQueryService), which has no
+        // per-inventor filter to key off `filters.kerberos`. Without it, the aggregation's kNN
+        // arm can admit a document into an inventor's bucket purely on semantic similarity even
+        // though that inventor's OWN scoped search (InventorScopedSearch, BM25-only by default)
+        // would never surface it — the sidebar count then overcounts relative to the drill-down.
+        const excludeKnn = (filters?.kerberos || restrictKnn) && !bm25AdmitsNothing;
+        const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
 
         return {
             size: perPage,

@@ -94,9 +94,15 @@ export default class IpFacultyForQueryService {
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
+        // Sidebar counts must agree with InventorScopedSearch's own BM25-preferred admission
+        // (see QueryBuilder.buildNormalizedHybridQuery): prefer BM25-only recall here too, and
+        // only fall back to including kNN if BM25 found literally nothing for this query+scope
+        // (bm25HitCount === 0 already short-circuits to an empty response before reaching here
+        // in advanced mode, so this is mostly a defensive default for future callers).
         return patch(this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, 1, 1, searchInNorm, {
             refineChain: chain,
-            bm25HitCount,
+            restrictKnn: true,
+            bm25AdmitsNothing: bm25HitCount === 0,
             candidateK: this.candidateK
         }));
     }
