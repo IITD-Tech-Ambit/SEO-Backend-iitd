@@ -187,11 +187,28 @@ export default class AuthorScopedSearch {
                 osQuery = base;
             } else {
                 const embedding = await this.embeddingService.embedQuery(query);
+
+                // BM25 is the only recall arm within an author's own scope by default (kNN
+                // excluded — see buildNormalizedHybridQuery). Its N-of-M admission bar can be
+                // mathematically unreachable for a paraphrased query with several stopwords, so
+                // probe it first: only let kNN back in as a last resort when BM25 alone finds
+                // nothing, rather than as a standing co-equal arm.
+                const bm25OnlyClause = authorRefineNarrow
+                    ? this.queryBuilder.buildAuthorRefineNarrowMust(query, refineAnchor, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds, normalizeChain(refineChain).slice(1))
+                    : (searchInNorm?.length > 0
+                        ? this.queryBuilder.buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO', authorScoped: true }, facultyAuthorIds, facultyKerberosIds)
+                        : this.queryBuilder._buildDefaultBm25Clause(query, this.filterBuilder.getHybridSearchFields(searchInNorm), { fuzziness: 'AUTO' }, true));
+                const bm25PrecheckResp = await this.opensearch.search({
+                    index: this.indexName,
+                    body: { size: 0, track_total_hits: true, query: { bool: { must: [bm25OnlyClause], filter: [authorFilter] } } }
+                });
+                const bm25AdmitsNothing = bm25PrecheckResp.body.hits.total.value === 0;
+
                 const base = this.queryBuilder.buildNormalizedHybridQuery(
                     query, embedding, effFilters, page, per_page,
                     searchInNorm, facultyAuthorIds, authorRefineNarrow,
                     refineAnchor, facultyKerberosIds,
-                    { authorScoped: true, refineChain }
+                    { authorScoped: true, refineChain, bm25AdmitsNothing }
                 );
 
                 // Every hybrid arm carries its own filter array (see QueryBuilder.buildNormalizedHybridQuery) —

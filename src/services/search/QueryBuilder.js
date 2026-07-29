@@ -766,7 +766,7 @@ export default class QueryBuilder {
      * can't clear an arbitrary threshold. Each arm carries its own filter so filtering happens
      * pre-fusion (OpenSearch 2.19's `hybrid` query has no top-level `filter` field yet).
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, refineScoreMaps = [] } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, refineScoreMaps = [], bm25AdmitsNothing = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -809,10 +809,16 @@ export default class QueryBuilder {
 
         const bm25Arm = { bool: { must: [bm25Clause], should: boostClauses, filter: filterClauses } };
         const knnArm = { bool: { must: [{ knn: { embedding: { vector: embedding, k: 100 } } }], filter: filterClauses } };
-        // Pure-kNN recall is excluded when scoped to one author: within a small single-person
-        // candidate pool, embedding similarity is often nearly flat, so its "top" neighbor can
-        // be little more than the least-bad of an unrelated bunch (see buildHybridQuery).
-        const arms = authorScoped ? [bm25Arm] : [bm25Arm, knnArm];
+        // Pure-kNN recall is excluded when scoped to one author by default: within a small
+        // single-person candidate pool, embedding similarity is often nearly flat, so its "top"
+        // neighbor can be little more than the least-bad of an unrelated bunch. But BM25's N-of-M
+        // admission bar can be mathematically unreachable for a paraphrased query with several
+        // stopwords (each stopword can never satisfy a term slot, yet still counts toward the
+        // required total) — with kNN excluded there's no fallback, so a genuinely matching paper
+        // becomes permanently unfindable within that author's scope. bm25AdmitsNothing (the
+        // caller's own BM25-only precheck) allows kNN back in only as a last resort, not a
+        // co-equal arm, keeping the noise-reduction intent while removing the hard cliff.
+        const arms = (authorScoped && !bm25AdmitsNothing) ? [bm25Arm] : [bm25Arm, knnArm];
         const anchorArm = this._buildRefineAnchorRrfArm(refineScoreMaps, filterClauses);
         if (anchorArm) arms.push(anchorArm);
 
