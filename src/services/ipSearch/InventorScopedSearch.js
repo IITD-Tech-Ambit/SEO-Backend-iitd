@@ -1,6 +1,10 @@
 import crypto from 'crypto';
 import { normalizeChain } from './QueryBuilder.js';
 
+function escapeRegexForMongo(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Inventor-scoped search: rank one IITD faculty inventor's patents for a query (Explore
  * sidebar drill-down). Mirrors src/services/search/AuthorScopedSearch.js, but identity is
@@ -77,16 +81,24 @@ export default class InventorScopedSearch {
             this.logger.warn({ err }, 'Redis cache read failed for inventor-scoped search');
         }
 
-        // Resolve inventor identity: Faculty expert_id -> kerberos (email prefix), same
-        // dual-identity fallback as AuthorScopedSearch (raw id when there's no Faculty match).
+        // Resolve inventor identity: `inventor_id` may be a Faculty expert_id (People sidebar
+        // click, matching the papers-side author_id convention) OR a kerberos (Explore inventor
+        // suggestions carry kerberos, not expert_id — see SuggestIPInventor). Raw id is the last
+        // resort fallback when neither resolves, same dual-identity pattern as AuthorScopedSearch.
         let inventorName, totalInventorPatents, kerberosId;
         try {
             const Faculty = this.mongoose.model('Faculty');
-            const facultyMatch = await Faculty.findOne({ expert_id: inventor_id }).lean();
+            const idStr = String(inventor_id).trim();
+            const facultyMatch = await Faculty.findOne({
+                $or: [
+                    { expert_id: idStr },
+                    { email: new RegExp(`^${escapeRegexForMongo(idStr)}@`, 'i') }
+                ]
+            }).lean();
 
             kerberosId = facultyMatch?.email
                 ? facultyMatch.email.split('@')[0].toLowerCase()
-                : String(inventor_id).trim().toLowerCase();
+                : idStr.toLowerCase();
 
             const inventorFilter = { nested: { path: 'inventors', query: { term: { 'inventors.kerberos': kerberosId } } } };
 
