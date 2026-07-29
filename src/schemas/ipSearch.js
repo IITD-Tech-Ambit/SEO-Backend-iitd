@@ -250,6 +250,139 @@ export const errorResponseSchema = {
     }
 };
 
+export const inventorScopedSearchRequestSchema = {
+    type: 'object',
+    required: ['query', 'inventor_id'],
+    properties: {
+        query: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 500,
+            description: 'Search query string'
+        },
+        inventor_id: {
+            type: 'string',
+            minLength: 1,
+            description: 'Faculty expert_id of the IITD inventor to scope to'
+        },
+        page: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 500,
+            default: 1
+        },
+        per_page: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 100,
+            default: 20
+        },
+        mode: {
+            type: 'string',
+            enum: ['basic', 'advanced'],
+            default: 'advanced'
+        },
+        refine_within: {
+            type: 'string',
+            maxLength: 500,
+            description: 'Original query to refine within. When set, results must match BOTH this AND the main query. Legacy single-step form of refine_chain.'
+        },
+        refine_chain: {
+            type: 'array',
+            items: { type: 'string', maxLength: 500 },
+            maxItems: 8,
+            description: 'Ordered prior queries (oldest first) for multi-step refinement; each entry is a strict lexical filter that narrows the result set.'
+        },
+        search_in: {
+            type: 'array',
+            items: {
+                type: 'string',
+                enum: ['title', 'abstract', 'inventor', 'field_of_invention', 'classification']
+            },
+            description: 'Same as POST /ip/search. When set, constrains BM25 to those fields.'
+        },
+        filters: {
+            // Same facet filters as POST /ip/search (minus kerberos, which this endpoint sets
+            // itself from inventor_id) so the drill-down patent count matches the People
+            // sidebar per-inventor count for the same query+filters.
+            type: 'object',
+            properties: {
+                year_from: { type: 'integer', minimum: 1900, maximum: 2100 },
+                year_to: { type: 'integer', minimum: 1900, maximum: 2100 },
+                type_of_ip: { type: 'string' },
+                type_of_ip_list: { type: 'array', items: { type: 'string' } },
+                field_of_invention: { type: 'string' },
+                classification: { type: 'array', items: { type: 'string' } },
+                department: { type: 'string' },
+                country: { type: 'string' },
+                primary_inventor_only: { type: 'boolean' }
+            },
+            additionalProperties: false
+        }
+    },
+    additionalProperties: false
+};
+
+export const inventorScopedSearchResponseSchema = {
+    type: 'object',
+    properties: {
+        results: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    _id: { type: 'string' },
+                    application_number: { type: 'string' },
+                    title: { type: 'string' },
+                    abstract: { type: 'string' },
+                    highlight: {
+                        type: 'object',
+                        properties: {
+                            title: { type: 'string' },
+                            abstract: { type: 'string' }
+                        }
+                    },
+                    type_of_ip: { type: 'string' },
+                    field_of_invention: { type: 'string' },
+                    classification: { type: 'array' },
+                    inventors: { type: 'array' },
+                    applicants: { type: 'array' },
+                    country: { type: 'string' },
+                    publication_year: { type: 'integer' },
+                    filing_date: { type: 'string' },
+                    publication_date: { type: 'string' },
+                    open_search_id: { type: 'string' },
+                    similarity_score: { type: 'number' }
+                }
+            }
+        },
+        inventor: {
+            type: 'object',
+            properties: {
+                name: { type: 'string' },
+                inventor_id: { type: 'string' },
+                total_patents: { type: 'integer' }
+            }
+        },
+        pagination: {
+            type: 'object',
+            properties: {
+                page: { type: 'integer' },
+                per_page: { type: 'integer' },
+                total: { type: 'integer' },
+                total_pages: { type: 'integer' }
+            }
+        },
+        meta: {
+            type: 'object',
+            properties: {
+                took_ms: { type: 'number' },
+                cache_hit: { type: 'boolean' }
+            }
+        }
+    }
+};
+
 export const ipFacultyForQueryRequestSchema = {
     type: 'object',
     required: ['query'],

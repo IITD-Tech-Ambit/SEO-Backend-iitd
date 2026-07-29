@@ -507,7 +507,7 @@ export default class QueryBuilder {
      * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
      * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, bm25AdmitsNothing = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -540,7 +540,12 @@ export default class QueryBuilder {
         // specific corpus is often nearly flat (observed <0.15 spread across a query's whole
         // top-15), so its "top" neighbor can be little more than the least-bad of an unrelated
         // bunch. kNN still ranks normally once there's no hard identity filter to fall back on.
-        const arms = filters?.kerberos ? [bm25Arm] : [bm25Arm, knnArm];
+        // But BM25's N-of-M admission bar can be mathematically unreachable for a paraphrased
+        // query with several stopwords — with kNN excluded there's no fallback, so a genuinely
+        // matching patent becomes permanently unfindable within that inventor's scope.
+        // bm25AdmitsNothing (the caller's own BM25-only precheck against the same scoped pool)
+        // allows kNN back in only as a last resort, not a co-equal arm.
+        const arms = (filters?.kerberos && !bm25AdmitsNothing) ? [bm25Arm] : [bm25Arm, knnArm];
 
         return {
             size: perPage,

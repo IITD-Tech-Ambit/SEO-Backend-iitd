@@ -10,6 +10,7 @@ import ResultHydrator from './ResultHydrator.js';
 import RerankService from '../search/RerankService.js';
 import SuggestionService from '../search/SuggestionService.js';
 import IpFacultyForQueryService from './IpFacultyForQueryService.js';
+import InventorScopedSearch from './InventorScopedSearch.js';
 
 /**
  * Orchestrates hybrid search across the OpenSearch `ip_documents` index and MongoDB (IPMetaData).
@@ -71,11 +72,30 @@ export default class IpSearchService {
             candidateK: this.candidateK,
             rrfPipeline: this.rrfPipeline
         });
+        this.inventorScoped = new InventorScopedSearch({
+            opensearch: this.opensearch,
+            indexName: this.indexName,
+            mongoose: this.mongoose,
+            redis: this.redis,
+            redisTTL: this.redisTTL,
+            logger: this.logger,
+            queryBuilder: this.queryBuilder,
+            filterBuilder: this.filters,
+            embeddingService: this.embeddingService,
+            hydrator: this.hydrator,
+            rrfPipeline: this.rrfPipeline,
+            maxResultWindow: this.maxResultWindow
+        });
     }
 
     /** Full-corpus People sidebar for patent search (mirrors search's getAllFacultyForQuery). */
     getAllFacultyForQuery(query, mode = 'advanced', search_in = null, filters = null, refine_chain = null) {
         return this.facultyForQuery.getAllFacultyForQuery(query, mode, search_in, filters, refine_chain);
+    }
+
+    /** Inventor-scoped drill-down (mirrors search's authorScopedSearch). */
+    inventorScopedSearch(params) {
+        return this.inventorScoped.search(params);
     }
 
     async getDocument(id) {
