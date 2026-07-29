@@ -9,6 +9,7 @@ import QueryBuilder, { normalizeChain } from './QueryBuilder.js';
 import ResultHydrator from './ResultHydrator.js';
 import RerankService from '../search/RerankService.js';
 import SuggestionService from '../search/SuggestionService.js';
+import IpFacultyForQueryService from './IpFacultyForQueryService.js';
 
 /**
  * Orchestrates hybrid search across the OpenSearch `ip_documents` index and MongoDB (IPMetaData).
@@ -34,6 +35,10 @@ export default class IpSearchService {
         this.rerankEnabled = config.search?.rerankEnabled ?? true;
         this.maxResultWindow = config.search?.maxResultWindow || 10000;
         this.rerankConfig = config.reranker || {};
+        // Reciprocal Rank Fusion pipeline (registered once at cluster provisioning time) that
+        // buildNormalizedHybridQuery's `hybrid` query relies on to combine its BM25/kNN/anchor
+        // arms — see QueryBuilder.buildNormalizedHybridQuery for why RRF replaced raw-score fusion.
+        this.rrfPipeline = config.search?.rrfPipeline || 'rrf-hybrid';
 
         this.filters = new FilterBuilder(this.searchConfig);
         this.queryBuilder = new QueryBuilder({
@@ -53,11 +58,30 @@ export default class IpSearchService {
             logger: this.logger,
             secondaryField: 'inventor_names'
         });
+        this.facultyForQuery = new IpFacultyForQueryService({
+            opensearch: this.opensearch,
+            indexName: this.indexName,
+            mongoose: this.mongoose,
+            redis: this.redis,
+            logger: this.logger,
+            searchConfig: this.searchConfig,
+            queryBuilder: this.queryBuilder,
+            filterBuilder: this.filters,
+            embeddingService: this.embeddingService,
+            candidateK: this.candidateK
+        });
+    }
+
+    /** Full-corpus People sidebar for patent search (mirrors search's getAllFacultyForQuery). */
+    getAllFacultyForQuery(query, mode = 'advanced', search_in = null, filters = null, refine_chain = null) {
+        return this.facultyForQuery.getAllFacultyForQuery(query, mode, search_in, filters, refine_chain);
     }
 
     async getDocument(id) {
         const IPMetaData = this.mongoose.model('IPMetaData');
-        return IPMetaData.findById(id).populate('department', 'name code').lean();
+        const doc = await IPMetaData.findById(id).populate('department', 'name code').lean();
+        if (doc) await this.hydrator.applyFacultyDisplayNames([doc]);
+        return doc;
     }
 
     async search({ query, filters, sort = 'relevance', page = 1, per_page = 20, search_in = null, mode = 'advanced', refine_within = null, refine_chain = null, rerank = null }) {
@@ -85,6 +109,10 @@ export default class IpSearchService {
 
         const cacheTtl = this._resolveCacheTtl(filters);
 
+        if (!query || !query.trim()) {
+            return this._runBrowseSearch({ filters, sort, page, per_page, cacheKey, cacheTtl });
+        }
+
         if (mode === 'basic') {
             return this._runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain, cacheKey, cacheTtl });
         }
@@ -100,6 +128,44 @@ export default class IpSearchService {
     _normalizeRefineChain(refine_chain, refine_within) {
         const source = (Array.isArray(refine_chain) && refine_chain.length > 0) ? refine_chain : refine_within;
         return normalizeChain(source);
+    }
+
+    /** Filter-only browse (e.g. "browse by department" chips) — no query text, no relevance gate. */
+    async _runBrowseSearch({ filters, sort, page, per_page, cacheKey, cacheTtl }) {
+        this.logger.info({ filters, mode: 'browse' }, 'Running BROWSE (filter-only) IP search');
+
+        const osQuery = this.queryBuilder.buildBrowseQuery(filters, page, per_page, sort);
+        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
+        const total = osResponse.body.hits.total.value;
+        const hits = osResponse.body.hits.hits;
+
+        if (total === 0) {
+            return {
+                results: [],
+                related_faculty: [],
+                suggestions: [],
+                facets: this.hydrator.parseFacets(osResponse.body.aggregations),
+                pagination: { page, per_page, total: 0, total_pages: 0 },
+                mode: 'browse',
+                cacheHit: false
+            };
+        }
+
+        const results = await this.hydrator.hydrateFromMongoDB(hits);
+        await this.hydrator.applyFacultyDisplayNames(results);
+        const related_faculty = await this.hydrator.extractRelatedFaculty(results);
+
+        const response = {
+            results,
+            related_faculty,
+            suggestions: [],
+            facets: this.hydrator.parseFacets(osResponse.body.aggregations),
+            pagination: { page, per_page, total, total_pages: Math.ceil(total / per_page) },
+            mode: 'browse'
+        };
+
+        await this._cacheResponse(cacheKey, response, cacheTtl);
+        return { ...response, cacheHit: false };
     }
 
     async _runBasicSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], cacheKey, cacheTtl }) {
@@ -193,7 +259,7 @@ export default class IpSearchService {
             osQuery._source = ['mongo_id'];
             delete osQuery.aggs;
 
-            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery });
+            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery, search_pipeline: this.rrfPipeline });
             const ids = [];
             const scoreById = {};
             for (const hit of resp.body.hits.hits) {
@@ -238,6 +304,7 @@ export default class IpSearchService {
         }
 
         // relevance/normalized -> score-normalized hybrid; date/other -> field-ordered hybrid.
+        const usesRrf = sort === 'relevance' || sort === 'normalized';
         const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineFilterClauses, refineScoreMaps };
         const hybridQueryBuildersBySort = {
             relevance: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, normalizedHybridArgs),
@@ -270,7 +337,7 @@ export default class IpSearchService {
             try {
                 const countBody = { ...osQuery, size: 0, from: 0, _source: false };
                 delete countBody.aggs;
-                const countResp = await this.opensearch.search({ index: this.indexName, body: countBody });
+                const countResp = await this.opensearch.search({ index: this.indexName, body: countBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
                 trueTotal = countResp.body.hits.total.value;
             } catch (err) {
                 this.logger.warn({ err }, 'Deep-page count query failed; reporting 0 total');
@@ -286,7 +353,7 @@ export default class IpSearchService {
             };
         }
 
-        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
+        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
         const hits = osResponse.body.hits.hits;
         const total = osResponse.body.hits.total.value;
 
@@ -308,7 +375,7 @@ export default class IpSearchService {
                 try {
                     const rawBody = { ...osQuery, from: K, size: pageEnd - K };
                     delete rawBody.aggs;
-                    const rawResp = await this.opensearch.search({ index: this.indexName, body: rawBody });
+                    const rawResp = await this.opensearch.search({ index: this.indexName, body: rawBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
                     const rawResults = await this.hydrator.hydrateFromMongoDB(rawResp.body.hits.hits);
                     results = results.concat(rawResults);
                 } catch (err) {
@@ -360,14 +427,12 @@ export default class IpSearchService {
         if (search_in && search_in.length > 0) {
             preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' });
         } else {
-            const tokens = (query || '').trim().split(/\s+/).filter(Boolean);
-            const minMatch = tokens.length <= 2 ? 1 : Math.ceil(tokens.length * 0.5);
             const textMatch = {
                 multi_match: {
                     query,
                     fields: ['title', 'abstract', 'field_of_invention'],
                     type: 'cross_fields',
-                    minimum_should_match: String(minMatch)
+                    minimum_should_match: '1'
                 }
             };
             const inventorClause = this.queryBuilder.buildInventorMatchClause(query, { fuzziness: 'AUTO' });
@@ -430,12 +495,13 @@ export default class IpSearchService {
             size: per_page,
             from,
             track_total_hits: true,
-            _source: ['mongo_id'],
+            _source: ['mongo_id', 'title', 'abstract'],
             query: {
                 bool: { must: [fuzzyMust], should: [knnBoost], filter: filterClauses }
             },
             sort: this.queryBuilder._sortClause(sort),
-            aggs: this.filters.getAggregations()
+            aggs: this.filters.getAggregations(),
+            highlight: this.queryBuilder._buildHighlightBlock(query, chain)
         };
 
         try {

@@ -69,6 +69,19 @@ const facultySchema = new mongoose.Schema({
     brief_expertise:[String],
     subjects:[String],
 
+    // Precomputed dominant taxonomy Domains for this faculty (Pareto/coverage
+    // cutoff over classification.domain_id paper counts), written once by
+    // scripts/taxonomy/populateFacultyDomains.js. Read directly by the
+    // directory API — no live aggregation.
+    dominant_domains: [{
+        domain_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Domain' },
+        name: String,
+        slug: String,
+        paper_count: Number,
+        _id: false
+    }],
+    dominant_domains_updated_at: { type: Date },
+
     //Research Identifiers...
     orcid_id:[String],
     researcher_id:[String],
@@ -106,5 +119,11 @@ facultySchema.index({ firstName: 1, lastName: 1 });
 // hydration — was previously unindexed, forcing a collection scan on
 // Faculty's hottest read path from here.
 facultySchema.index({ scopus_id: 1 });
+
+// IP-search hydration (ResultHydrator._facultyByKerberos, IpFacultyForQueryService,
+// IpSuggestService) resolves faculty by kerberos via anchored email regex ($in of /^k@/i)
+// on every patent search/suggest/people-sidebar request — same "hottest read path" shape
+// as scopus_id above, previously unindexed.
+facultySchema.index({ email: 1 });
 
 export default mongoose.model("Faculty", facultySchema);

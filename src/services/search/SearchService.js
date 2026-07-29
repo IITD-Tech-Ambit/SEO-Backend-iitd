@@ -37,6 +37,10 @@ export default class SearchService {
         this.rerankEnabled = config.search?.rerankEnabled ?? true;
         this.maxResultWindow = config.search?.maxResultWindow || 10000;
         this.rerankConfig = config.reranker || {};
+        // Reciprocal Rank Fusion pipeline (registered once at cluster provisioning time) that
+        // buildNormalizedHybridQuery's `hybrid` query relies on to combine its BM25/kNN/anchor
+        // arms — see QueryBuilder.buildNormalizedHybridQuery for why RRF replaced raw-score fusion.
+        this.rrfPipeline = config.search?.rrfPipeline || 'rrf-hybrid';
 
         const deps = {
             opensearch: this.opensearch,
@@ -255,7 +259,7 @@ export default class SearchService {
             osQuery._source = ['mongo_id'];
             delete osQuery.aggs;
 
-            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery });
+            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery, search_pipeline: this.rrfPipeline });
             const ids = [];
             const scoreById = {};
             for (const hit of resp.body.hits.hits) {
@@ -305,7 +309,12 @@ export default class SearchService {
         // 'impact' -> citation/recency weighting. Anything else ('date'/'citations'/unknown)
         // -> field-ordered hybrid, keyed off `sort` itself rather than an explicit branch, so
         // adding a new field-ordered sort mode needs no change here.
-        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineScoreMaps };
+        // relevance/normalized bake refineFilterClauses directly into each hybrid arm at
+        // construction time (see QueryBuilder.buildNormalizedHybridQuery) rather than mutating
+        // the body afterward — the native `hybrid` query has no single shared bool.filter to
+        // splice into post-hoc the way the old function_score shape did.
+        const usesRrf = sort === 'relevance' || sort === 'normalized';
+        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineFilterClauses, refineScoreMaps };
         const hybridQueryBuildersBySort = {
             impact: () => this.queryBuilder.buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain }),
             relevance: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, normalizedHybridArgs),
@@ -317,17 +326,12 @@ export default class SearchService {
         // Multi-step search-on-search: every prior term becomes a FILTER so the candidate pool
         // can only shrink (monotonic narrowing). Uses the anchor's actual result-id membership
         // (see _buildRefineAnchorIdFilter) rather than a literal AND-of-terms match, so a doc that
-        // only matched the anchor semantically isn't wrongly evicted.
-        if (refineFilterClauses?.length > 0) {
-            // buildNormalizedHybridQuery nests an extra function_score level around the base
-            // query (query.function_score.query.function_score.query.bool.filter) whenever a
-            // refine-chain score boost is present (see _buildRefineAnchorScoreFunctions) — the
-            // anchor boost is summed on top of the already min_score-gated base query, so the
-            // base's bool.filter now lives one level deeper than the single-nesting case.
+        // only matched the anchor semantically isn't wrongly evicted. Only the impact/field-ordered
+        // (non-RRF) shapes need this post-hoc splice; relevance/normalized already baked it in above.
+        if (!usesRrf && refineFilterClauses?.length > 0) {
             const filterArrays = [
                 osQuery.query?.bool?.filter,
-                osQuery.query?.function_score?.query?.bool?.filter,
-                osQuery.query?.function_score?.query?.function_score?.query?.bool?.filter
+                osQuery.query?.function_score?.query?.bool?.filter
             ].filter(Boolean);
             if (filterArrays.length) filterArrays[0].push(...refineFilterClauses);
             this.logger.info({ refine_chain: refineChain }, 'Added refine_chain filters to advanced query');
@@ -359,7 +363,7 @@ export default class SearchService {
             try {
                 const countBody = { ...osQuery, size: 0, from: 0, _source: false };
                 delete countBody.aggs;
-                const countResp = await this.opensearch.search({ index: this.indexName, body: countBody });
+                const countResp = await this.opensearch.search({ index: this.indexName, body: countBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
                 trueTotal = countResp.body.hits.total.value;
             } catch (err) {
                 this.logger.warn({ err }, 'Deep-page count query failed; reporting 0 total');
@@ -375,7 +379,7 @@ export default class SearchService {
             };
         }
 
-        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery });
+        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
         const hits = osResponse.body.hits.hits;
         const total = osResponse.body.hits.total.value;
 
@@ -402,7 +406,7 @@ export default class SearchService {
                 try {
                     const rawBody = { ...osQuery, from: K, size: pageEnd - K };
                     delete rawBody.aggs;
-                    const rawResp = await this.opensearch.search({ index: this.indexName, body: rawBody });
+                    const rawResp = await this.opensearch.search({ index: this.indexName, body: rawBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
                     let rawResults = await this.hydrator.hydrateFromMongoDB(rawResp.body.hits.hits);
                     await this.hydrator.applyFacultyDisplayNames(rawResults);
                     results = results.concat(rawResults);
@@ -463,18 +467,12 @@ export default class SearchService {
         } else if (search_in && search_in.length > 0) {
             preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
         } else {
-            // Require a proportional share of the query tokens to appear (no fuzziness) so a
-            // single incidental token from a multi-word gibberish query (e.g. "jjj kkk lll mmm",
-            // where only "lll" happens to exist) does not pass the gate and let the kNN tail
-            // surface unrelated nearest neighbors. Short queries stay lenient (1 token).
-            const tokens = (query || '').trim().split(/\s+/).filter(Boolean);
-            const minMatch = tokens.length <= 2 ? 1 : Math.ceil(tokens.length * 0.5);
             const textMatch = {
                 multi_match: {
                     query,
                     fields: ['title', 'abstract', 'subject_area', 'field_associated'],
                     type: 'cross_fields',
-                    minimum_should_match: String(minMatch)
+                    minimum_should_match: '1'
                 }
             };
             const iitdAuthor = this.queryBuilder.buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
@@ -529,11 +527,7 @@ export default class SearchService {
         } else if (search_in && search_in.length > 0) {
             fuzzyMust = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 2 }, facultyAuthorIds, facultyKerberosIds);
         } else {
-            const textBm25 = this.queryBuilder.buildStrictBm25Must(query, searchFields, { fuzziness: 2 });
-            const iitdAuthor = this.queryBuilder.buildIITDAuthorMatchClause(query, { fuzziness: 2 });
-            fuzzyMust = iitdAuthor
-                ? { bool: { should: [textBm25, iitdAuthor], minimum_should_match: 1 } }
-                : textBm25;
+            fuzzyMust = this.queryBuilder._buildDefaultBm25Clause(query, searchFields, { fuzziness: 2 }, false);
         }
 
         const knnBoost = { knn: { embedding: { vector: embedding, k: 50 } } };
@@ -542,11 +536,12 @@ export default class SearchService {
             size: per_page,
             from,
             track_total_hits: true,
-            _source: ['mongo_id'],
+            _source: ['mongo_id', 'title', 'abstract'],
             query: {
                 bool: { must: [fuzzyMust], should: [knnBoost], filter: filterClauses }
             },
-            aggs: this.filters.getAggregations()
+            aggs: this.filters.getAggregations(),
+            highlight: this.queryBuilder._buildHighlightBlock(query, chain)
         };
 
         try {

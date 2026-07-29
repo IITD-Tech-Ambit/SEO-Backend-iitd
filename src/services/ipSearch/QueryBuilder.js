@@ -1,3 +1,18 @@
+import { buildHighlightQuery, buildHighlightBlock, HIGHLIGHT_FIELDS } from '../../utils/highlight.js';
+
+// Bounds fuzzy per-term candidate fan-out: with several fields x several overlapping
+// recall arms x many query terms, uncapped fuzzy matching (default max_expansions: 50)
+// can exceed OpenSearch's maxClauseCount (1024) on long, common-word queries.
+const FUZZY_MAX_EXPANSIONS = 10;
+// Beyond this many terms, a query is a natural-language sentence, not "name + topic" —
+// skip the inventor-matching arm (which redoes fuzzy matching per term again) rather than
+// let it compound the clause count for no real recall benefit.
+const MAX_TERMS_FOR_IDENTITY_ARMS = 6;
+
+function withExpansionCap(fuzz) {
+    return (fuzz && fuzz.fuzziness != null) ? { ...fuzz, max_expansions: FUZZY_MAX_EXPANSIONS } : fuzz;
+}
+
 /** Coerce refine_chain / refine_within into a de-duplicated ordered list of non-empty terms. */
 export function normalizeChain(refineChain) {
     const arr = Array.isArray(refineChain)
@@ -25,12 +40,24 @@ export default class QueryBuilder {
         this.filters = filterBuilder;
     }
 
-    /** Inventor match across nested `inventors.name` and flat `inventor_names`. */
+    _buildHighlightBlock(query, refineChain = []) {
+        const terms = [query, ...normalizeChain(refineChain)];
+        const fields = [HIGHLIGHT_FIELDS.title, HIGHLIGHT_FIELDS.abstract];
+        return buildHighlightBlock(buildHighlightQuery(terms, fields));
+    }
+
+    /**
+     * Inventor match across nested `inventors.name` and flat `inventor_names`.
+     * A fixed numeric fuzziness (unlike 'AUTO', which scales edit distance to term length) lets
+     * a short term like "at" fuzzy-match almost any short fragment — e.g. an initial in a
+     * co-inventor's name — regardless of the query's actual intent. Terms of length <=2 always
+     * match exactly here, mirroring the length band 'AUTO' itself already uses.
+     */
     buildInventorMatchClause(query, { fuzziness, boost } = {}) {
         const terms = (query || '').trim().split(/\s+/).filter(Boolean);
         if (!terms.length) return null;
         const b = this.searchConfig.fieldBoosts;
-        const fuzz = fuzziness != null ? { fuzziness } : {};
+        const fuzzFor = (term) => withExpansionCap((fuzziness != null && term.length > 2) ? { fuzziness } : {});
         const nested = {
             nested: {
                 path: 'inventors',
@@ -38,14 +65,14 @@ export default class QueryBuilder {
                 query: {
                     bool: {
                         must: terms.map((term) => ({
-                            match: { 'inventors.name': { query: term, boost: b.inventorName, ...fuzz } }
+                            match: { 'inventors.name': { query: term, boost: b.inventorName, ...fuzzFor(term) } }
                         }))
                     }
                 }
             }
         };
         const flat = {
-            match: { inventor_names: { query, boost: b.inventorName, ...fuzz } }
+            match: { inventor_names: { query, boost: b.inventorName, ...withExpansionCap(fuzziness != null ? { fuzziness: 'AUTO' } : {}) } }
         };
         const clause = { bool: { should: [nested, flat], minimum_should_match: 1 } };
         if (boost != null) clause.boost = boost;
@@ -76,11 +103,14 @@ export default class QueryBuilder {
     buildConstrainedSearchInClause(query, searchIn, matchOpts = {}) {
         const terms = query.trim().split(/\s+/).filter((t) => t.length > 0);
         if (!terms.length) return { match_all: {} };
-        const fuzz = matchOpts.fuzziness != null ? { fuzziness: matchOpts.fuzziness } : {};
+        // A fixed numeric fuzziness (unlike 'AUTO') lets a short term fuzzy-match almost anything
+        // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
+        const fuzzFor = (term) => withExpansionCap((matchOpts.fuzziness != null && term.length > 2) ? { fuzziness: matchOpts.fuzziness } : {});
         const b = this.searchConfig.fieldBoosts;
         const literalMatch = !!matchOpts.literalMatch;
 
         const titleTerm = (term) => {
+            const fuzz = fuzzFor(term);
             if (literalMatch) {
                 return { match: { 'title.standard': { query: term, boost: b.title * 1.5, ...fuzz } } };
             }
@@ -96,6 +126,7 @@ export default class QueryBuilder {
         };
 
         const abstractTerm = (term) => {
+            const fuzz = fuzzFor(term);
             if (literalMatch) {
                 return { match: { 'abstract.standard': { query: term, boost: b.abstract * 1.5, ...fuzz } } };
             }
@@ -110,23 +141,27 @@ export default class QueryBuilder {
             };
         };
 
-        const inventorTerm = (term) => ({
-            bool: {
-                should: [
-                    {
-                        nested: {
-                            path: 'inventors',
-                            score_mode: 'max',
-                            query: { match: { 'inventors.name': { query: term, boost: b.inventorName * 1.5, ...fuzz } } }
-                        }
-                    },
-                    { match: { inventor_names: { query: term, boost: b.inventorName, ...fuzz } } }
-                ],
-                minimum_should_match: 1
-            }
-        });
+        const inventorTerm = (term) => {
+            const fuzz = fuzzFor(term);
+            return {
+                bool: {
+                    should: [
+                        {
+                            nested: {
+                                path: 'inventors',
+                                score_mode: 'max',
+                                query: { match: { 'inventors.name': { query: term, boost: b.inventorName * 1.5, ...fuzz } } }
+                            }
+                        },
+                        { match: { inventor_names: { query: term, boost: b.inventorName, ...fuzz } } }
+                    ],
+                    minimum_should_match: 1
+                }
+            };
+        };
 
         const fieldOfInventionTerm = (term) => {
+            const fuzz = fuzzFor(term);
             if (literalMatch) {
                 return { match: { field_of_invention: { query: term, boost: b.fieldOfInvention * 1.5, ...fuzz } } };
             }
@@ -199,8 +234,19 @@ export default class QueryBuilder {
             };
         }
 
+        // Per-term admission relies on stopword-aware analysis: `title`/`abstract` (unsuffixed)
+        // use OpenSearch's built-in `english` analyzer, which strips stopwords via its own
+        // english_stop filter. `.standard`/`.exact` are literal/un-stemmed fields for phrase-level
+        // precision elsewhere (see _buildPhraseBoostTiers) — including them here lets a single
+        // common word like "at" satisfy a whole term slot in the N-of-M admission count.
+        const perTermFields = searchFields.filter((f) => !/\.(standard|exact)(\^|$)/.test(f));
+        const matchFields = perTermFields.length ? perTermFields : searchFields;
+        // A fixed numeric fuzziness (unlike 'AUTO') lets a short term fuzzy-match almost anything
+        // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
+        const fuzzFor = (term) => withExpansionCap((fuzz?.fuzziness != null && fuzz.fuzziness !== 'AUTO' && term.length <= 2) ? {} : fuzz);
+
         const clauses = terms.map((term) => ({
-            multi_match: { query: term, fields: searchFields, type: 'best_fields', tie_breaker: 0.3, ...fuzz }
+            multi_match: { query: term, fields: matchFields, type: 'best_fields', tie_breaker: 0.3, ...fuzzFor(term) }
         }));
 
         if (terms.length <= 3 || strict) {
@@ -325,11 +371,32 @@ export default class QueryBuilder {
             size: perPage,
             from,
             track_total_hits: true,
-            _source: ['mongo_id'],
+            _source: ['mongo_id', 'title', 'abstract'],
             query: {
                 bool: { must: mustClauses, should: boostClauses, filter: filterClauses }
             },
             sort: this._sortClause(sort),
+            aggs: this.filters.getAggregations(),
+            highlight: this._buildHighlightBlock(query, chain)
+        };
+    }
+
+    /**
+     * Filter-only browse: no query text, so no relevance signal to gate on — every doc matching
+     * the filters (e.g. department) is returned, sorted by recency by default. Used for facet
+     * "browse by X" entry points where forcing a text match against title/abstract would wrongly
+     * exclude documents that belong to the facet but don't happen to repeat the facet's own name.
+     */
+    buildBrowseQuery(filters, page, perPage, sort) {
+        const from = (page - 1) * perPage;
+        const filterClauses = this.filters.buildFilters(filters);
+        return {
+            size: perPage,
+            from,
+            track_total_hits: true,
+            _source: ['mongo_id'],
+            query: filterClauses.length > 0 ? { bool: { filter: filterClauses } } : { match_all: {} },
+            sort: sort === 'relevance' ? this._sortClause('date') : this._sortClause(sort),
             aggs: this.filters.getAggregations()
         };
     }
@@ -373,7 +440,12 @@ export default class QueryBuilder {
         const knnRecall = { knn: { embedding: { vector: embedding, k: 100 } } };
         // Fold basic's literal term-AND into recall so date-sorted advanced is a structural basic superset.
         const basicSupersetClause = this.buildLiteralPrimaryClause(query, searchIn);
-        const recallGate = { bool: { should: [bm25Clause, knnRecall, basicSupersetClause], minimum_should_match: 1 } };
+        // See buildNormalizedHybridQuery: pure-kNN recall is unreliable within a single inventor's
+        // small candidate pool, so it's excluded from the admit gate when filters.kerberos is set.
+        const recallArms = filters?.kerberos
+            ? [bm25Clause, basicSupersetClause]
+            : [bm25Clause, knnRecall, basicSupersetClause];
+        const recallGate = { bool: { should: recallArms, minimum_should_match: 1 } };
 
         // Advanced mode: narrow using the anchor's actual result-id membership (computed by the
         // service via _buildRefineAnchorIdFilter), not a literal AND-of-terms — otherwise a doc
@@ -384,12 +456,13 @@ export default class QueryBuilder {
             size: perPage,
             from,
             track_total_hits: true,
-            _source: ['mongo_id'],
+            _source: ['mongo_id', 'title', 'abstract'],
             query: {
                 bool: { must: [recallGate], should: boostClauses, filter: filterClauses }
             },
             sort: this._sortClause(sort),
-            aggs: this.filters.getAggregations()
+            aggs: this.filters.getAggregations(),
+            highlight: this._buildHighlightBlock(query, refineChain)
         };
     }
 
@@ -399,23 +472,17 @@ export default class QueryBuilder {
             return this.buildConstrainedSearchInClause(query, searchIn, fuzz);
         }
         const textBm25 = this.buildStrictBm25Must(query, searchFields, fuzz);
+        const termCount = query.trim().split(/\s+/).filter(Boolean).length;
+        // Long queries are natural-language sentences, not "name + topic" — the inventor arm
+        // below redoes fuzzy per-term matching again, which is what pushes long/common-word
+        // queries past OpenSearch's maxClauseCount. Skip it past this length.
+        if (termCount > MAX_TERMS_FOR_IDENTITY_ARMS) return textBm25;
         const inventorClause = this.buildInventorMatchClause(query, fuzz);
         return inventorClause
             ? { bool: { should: [textBm25, inventorClause], minimum_should_match: 1 } }
             : textBm25;
     }
 
-
-    /** BM25/vector weights from pre-check hit ratio (lexical-rich vs sparse-lexical). */
-    _resolveHybridWeights(bm25HitCount, candidateK) {
-        const base = this.searchConfig.hybridWeights;
-        const adaptive = this.searchConfig.adaptiveHybridWeights;
-        if (!adaptive || bm25HitCount == null || !candidateK) return base;
-        const ratio = bm25HitCount / candidateK;
-        if (ratio >= adaptive.lexicalRichRatio) return adaptive.lexicalRich;
-        if (ratio < adaptive.semanticRatio) return adaptive.semantic;
-        return base;
-    }
 
     /** SHOULD: titles containing ALL query terms (un-stemmed) rank above partial coverage. */
     _buildTitleCoverageClause(query, boost = 5) {
@@ -425,53 +492,44 @@ export default class QueryBuilder {
     }
 
     /**
-     * Adaptive min_score from the same pre-check ratio as `_resolveHybridWeights`.
-     * Sparse-lexical queries use `semanticRelevant`; lexically-rich keep `relevant`.
+     * Refine-chain anchor preference as its own ranked arm (RRF fuses arms by rank, not by
+     * summing raw scores). See search/QueryBuilder.js's twin for the full rationale.
      */
-    _resolveMinScore(bm25HitCount, candidateK) {
-        const ms = this.searchConfig.minScore;
-        const adaptive = this.searchConfig.adaptiveHybridWeights;
-        if (!adaptive || bm25HitCount == null || !candidateK) return ms.relevant;
-        const ratio = bm25HitCount / candidateK;
-        if (ratio < adaptive.semanticRatio) return ms.semanticRelevant;
-        return ms.relevant;
-    }
-
-    /**
-     * Normalized hybrid (relevance/normalized): sigmoid BM25 + knn_score on comparable scales,
-     * plus a lexical floor. Sparse-lexical queries use a lower min_score via `_resolveMinScore`
-     * because pure-kNN tops out near `weights.vector * knn_score` (~1.2) and would fail `relevant`.
-     */
-    /**
-     * One summed script_score function per refine-chain anchor, carrying forward that anchor's
-     * own per-doc relevance score (captured by IpSearchService._buildRefineAnchorIdFilter) instead
-     * of discarding it once a doc clears the membership filter. Without this, ranking after a
-     * narrow-down reflects only the newest term — a doc that was the #1 match for every prior
-     * query gets buried behind docs that are merely mediocre-but-decent on all terms. Weighted
-     * below the current term's own contribution since the newest query is still the primary intent.
-     */
-    _buildRefineAnchorScoreFunctions(refineScoreMaps = []) {
-        const weight = this.searchConfig.refineAnchorWeight ?? 0.5;
-        return refineScoreMaps
-            .filter((scoreMap) => scoreMap && Object.keys(scoreMap).length > 0)
-            .map((scoreMap) => ({
-                script_score: {
-                    script: {
-                        source: "params.scores.getOrDefault(doc['mongo_id'].value, 0.0)",
-                        lang: 'painless',
-                        params: { scores: scoreMap }
+    _buildRefineAnchorRrfArm(refineScoreMaps = [], filterClauses = []) {
+        const maps = refineScoreMaps.filter((m) => m && Object.keys(m).length > 0);
+        if (!maps.length) return null;
+        return {
+            bool: {
+                must: [{
+                    function_score: {
+                        query: { match_all: {} },
+                        script_score: {
+                            script: {
+                                source: 'double s = 0; for (m in params.maps) { s += m.getOrDefault(doc["mongo_id"].value, 0.0); } return s;',
+                                lang: 'painless',
+                                params: { maps }
+                            }
+                        }
                     }
-                },
-                weight
-            }));
+                }],
+                filter: filterClauses
+            }
+        };
     }
 
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { bm25HitCount = null, candidateK = null, refineChain = [], refineFilterClauses = null, refineScoreMaps = [] } = {}) {
+    /**
+     * Normalized hybrid (relevance/normalized): OpenSearch-native `hybrid` query, one arm per
+     * recall signal (BM25, kNN, optionally refine-chain anchor preference), combined by
+     * Reciprocal Rank Fusion (`search_pipeline` query param — see IpSearchService). RRF fuses
+     * by RANK, not raw score, so there's no BM25-vs-cosine scale mismatch to hand-tune and no
+     * min_score cliff: a real but weak match ranks low instead of vanishing outright. Each arm
+     * carries its own filter so filtering happens pre-fusion (OpenSearch 2.19's `hybrid` query
+     * has no top-level `filter` field yet).
+     */
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, refineScoreMaps = [] } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
-        const weights = this._resolveHybridWeights(bm25HitCount, candidateK);
-        const minScore = this._resolveMinScore(bm25HitCount, candidateK);
         const chain = normalizeChain(refineChain);
         const searchAllFields = !searchIn || searchIn.length === 0;
 
@@ -479,13 +537,6 @@ export default class QueryBuilder {
         const isMultiWord = words.length >= 2;
 
         const bm25Clause = this._buildAdvancedBm25Clause(query, searchIn, searchFields, { fuzziness: 'AUTO' });
-        const knnRecall = { knn: { embedding: { vector: embedding, k: 100 } } };
-
-        // Floor only basic's strict literal matches so basic ⊂ advanced without admitting fuzzy near-misses.
-        const lexicalFloorClause = this.buildLiteralPrimaryClause(query, searchIn);
-
-        // Fold literal clause into recall (not only the floor filter) so basic hits are structurally present.
-        const recallGate = { bool: { should: [bm25Clause, knnRecall, lexicalFloorClause], minimum_should_match: 1 } };
 
         const boostClauses = [];
         if (isMultiWord && (searchAllFields || searchIn.includes('title') || searchIn.includes('abstract'))) {
@@ -501,63 +552,25 @@ export default class QueryBuilder {
 
         filterClauses.push(...(refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn)));
 
-        // min_score is applied on the INNER function_score (base bm25/knn/lexical-floor relevance
-        // only) so it decides recall exactly as it did before refine-chain boosting existed. The
-        // anchor-chain boost is then summed on top by the OUTER function_score with no min_score
-        // of its own — it re-ranks the already-qualifying set, it never pulls in a document that
-        // failed the relevance bar on its own merits (that would silently inflate recall: a doc
-        // could "qualify" purely because it matched an earlier query, not the current one).
-        const anchorScoreFunctions = this._buildRefineAnchorScoreFunctions(refineScoreMaps);
-        const baseFunctionScore = {
-            query: {
-                bool: { must: [recallGate], should: boostClauses, filter: filterClauses }
-            },
-            functions: [
-                {
-                    script_score: {
-                        script: { source: `${weights.bm25} * (_score / (1.0 + _score))`, lang: 'painless' }
-                    }
-                },
-                {
-                    script_score: {
-                        script: {
-                            source: 'knn_score',
-                            lang: 'knn',
-                            params: { field: 'embedding', query_value: embedding, space_type: 'cosinesimil' }
-                        }
-                    },
-                    weight: weights.vector
-                },
-                // Literal hits always clear the higher `relevant` bar, even under semantic min_score.
-                { filter: lexicalFloorClause, weight: this.searchConfig.minScore.relevant }
-            ],
-            score_mode: 'sum',
-            boost_mode: 'replace',
-            min_score: minScore
-        };
-
-        const finalQuery = anchorScoreFunctions.length > 0
-            ? {
-                function_score: {
-                    query: { function_score: baseFunctionScore },
-                    functions: anchorScoreFunctions,
-                    score_mode: 'sum',
-                    boost_mode: 'sum'
-                }
-            }
-            : { function_score: baseFunctionScore };
+        const bm25Arm = { bool: { must: [bm25Clause], should: boostClauses, filter: filterClauses } };
+        const knnArm = { bool: { must: [{ knn: { embedding: { vector: embedding, k: 100 } } }], filter: filterClauses } };
+        // Pure-kNN recall is excluded when scoped to one inventor (filters.kerberos): within a
+        // small single-person candidate pool, embedding similarity across an entire domain-
+        // specific corpus is often nearly flat (observed <0.15 spread across a query's whole
+        // top-15), so its "top" neighbor can be little more than the least-bad of an unrelated
+        // bunch. kNN still ranks normally once there's no hard identity filter to fall back on.
+        const arms = filters?.kerberos ? [bm25Arm] : [bm25Arm, knnArm];
+        const anchorArm = this._buildRefineAnchorRrfArm(refineScoreMaps, filterClauses);
+        if (anchorArm) arms.push(anchorArm);
 
         return {
             size: perPage,
             from,
             track_total_hits: true,
-            // Only set when there's no anchor boost to nest around: min_score already lives on
-            // the inner function_score in that case (see baseFunctionScore above), and a
-            // top-level min_score here would wrongly gate the boosted (outer) score instead.
-            ...(anchorScoreFunctions.length === 0 ? { min_score: minScore } : {}),
-            _source: ['mongo_id'],
-            query: finalQuery,
-            aggs: this.filters.getAggregations()
+            _source: ['mongo_id', 'title', 'abstract'],
+            query: { hybrid: { queries: arms } },
+            aggs: this.filters.getAggregations(),
+            highlight: this._buildHighlightBlock(query, refineChain)
         };
     }
 }

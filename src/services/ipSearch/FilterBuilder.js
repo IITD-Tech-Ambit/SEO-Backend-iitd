@@ -48,7 +48,7 @@ export default class FilterBuilder {
         }
 
         if (filters?.department) {
-            mustFilters.push({ term: { department_id: filters.department } });
+            mustFilters.push({ term: { 'department_name.keyword': filters.department } });
         }
 
         if (filters?.country) {
@@ -155,7 +155,8 @@ export default class FilterBuilder {
             type_of_ip: { terms: { field: 'type_of_ip', size: 20 } },
             field_of_invention: { terms: { field: 'field_of_invention.keyword', size: 30 } },
             country: { terms: { field: 'country', size: 30 } },
-            classification: { terms: { field: 'classification', size: 30 } }
+            classification: { terms: { field: 'classification', size: 30 } },
+            department: { terms: { field: 'department_name.keyword', size: 50 } }
         };
     }
 }

@@ -90,9 +90,21 @@ const IPMetaData = new mongoose.Schema({
         type: String,
         index: true,
     },
-    // Reserved for future legal status (e.g. published/granted); not populated yet.
+    // Legal status from FIITT granted list (e.g. "granted"); null when unknown.
     application_status: {
         type: String,
+        default: null,
+        index: true,
+    },
+    // Granted-patent number from FIITT (e.g. "592281"); null when not granted / unknown.
+    patent_number: {
+        type: String,
+        default: null,
+        index: true,
+    },
+    // Date of grant from FIITT granted list.
+    grant_date: {
+        type: Date,
         default: null,
     },
     inventors: [InventorSchema],

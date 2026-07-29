@@ -53,13 +53,35 @@ jobs:
           exit 1
 
       # Notify consumers listed for embedding.v1 in proto-registry's consumers.yml.
+      # Each consumer is retried independently and a failure on one doesn't
+      # skip the rest — a bare loop with -e would abort on the first failed
+      # curl and silently leave later consumers un-notified (see the incident
+      # that motivated this: chatbot-agent's stubs went stale for days after
+      # a dispatch failure here went unnoticed).
       - name: Notify consumers
         if: steps.commit.outputs.changed == 'true'
         run: |
+          FAILED=""
           for repo in chatbot-agent; do
-            curl -sf -X POST \
-              -H "Authorization: Bearer ${{ secrets.PROTO_REGISTRY_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/IITD-Tech-Ambit/${repo}/dispatches" \
-              -d '{"event_type":"proto-updated","client_payload":{"package":"embedding.v1"}}'
+            success=false
+            for attempt in 1 2 3; do
+              if curl -sf -X POST \
+                -H "Authorization: Bearer ${{ secrets.PROTO_REGISTRY_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/IITD-Tech-Ambit/${repo}/dispatches" \
+                -d '{"event_type":"proto-updated","client_payload":{"package":"embedding.v1"}}'; then
+                success=true
+                break
+              fi
+              echo "Dispatch to ${repo} failed (attempt ${attempt}/3), retrying..."
+              sleep $((RANDOM % 5 + 1))
+            done
+            if [ "$success" = false ]; then
+              echo "::error::Failed to notify ${repo} after 3 attempts — it will not auto-regenerate stubs for this proto update and needs a manual sync."
+              FAILED="${FAILED} ${repo}"
+            fi
           done
+          if [ -n "$FAILED" ]; then
+            echo "::error::Consumers not notified:${FAILED}"
+            exit 1
+          fi
