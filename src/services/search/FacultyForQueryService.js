@@ -162,7 +162,7 @@ export default class FacultyForQueryService {
     }
 
     /** Build the size:0 OpenSearch aggregation query (basic BM25 or hybrid) for the People sidebar. */
-    async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing, bm25HitCount = null) {
+    async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing) {
         const { facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineAnchor } = narrowing;
         const facultyAggs = this.filterBuilder.facultyForQueryAggregations();
 
@@ -188,16 +188,15 @@ export default class FacultyForQueryService {
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
-        // Sidebar counts must agree with AuthorScopedSearch's own BM25-preferred admission (see
-        // QueryBuilder.buildNormalizedHybridQuery): prefer BM25-only recall here too, and only
-        // fall back to including kNN if BM25 found literally nothing for this query+scope
-        // (bm25HitCount === 0 already short-circuits to an empty response before reaching here
-        // in advanced mode, so this is mostly a defensive default for future callers).
+        // Same recall arms as SearchService's own advanced search (BM25 + kNN) so totals agree
+        // with the papers list — restrictKnn previously forced a BM25-only bar here, which
+        // under-counted relative to the papers list whenever kNN legitimately admitted results
+        // (same bug and fix as the IP search's People sidebar).
         const base = this.queryBuilder.buildNormalizedHybridQuery(
             query, embedding, queryFilters, 1, 1,
             searchInNorm, facultyAuthorIds, authorRefineNarrow,
             refineAnchor, facultyKerberosIds,
-            { refineChain, restrictKnn: true, bm25AdmitsNothing: bm25HitCount === 0 }
+            { refineChain }
         );
         // Prior refinement terms become strict lexical FILTERS so per-faculty counts reflect
         // the same monotonically narrowed pool as the papers list. buildNormalizedHybridQuery
@@ -479,7 +478,7 @@ export default class FacultyForQueryService {
             }
         }
 
-        const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing, bm25HitCount);
+        const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing);
 
         this.logger.info({ query, mode, search_in: searchInNorm }, 'Faculty-for-query: querying OpenSearch aggregation');
         const osResponse = await this.opensearch.search({

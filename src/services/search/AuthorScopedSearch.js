@@ -219,25 +219,11 @@ export default class AuthorScopedSearch {
                 const refineFilters = (refineChain.length > 0 && !authorRefineNarrow)
                     ? await Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, authorFilter)))
                     : [];
-                const scopeFilters = [authorFilter, ...refineFilters];
 
-                // BM25 is the only recall arm within an author's own scope by default (kNN
-                // excluded — see buildNormalizedHybridQuery). Its N-of-M admission bar can be
-                // mathematically unreachable for a paraphrased query with several stopwords, so
-                // probe it first against the SAME constrained pool (author + any refine-chain
-                // narrowing) the real query will run against — only let kNN back in as a last
-                // resort when BM25 alone finds nothing there, not as a standing co-equal arm.
-                const bm25OnlyClause = authorRefineNarrow
-                    ? this.queryBuilder.buildAuthorRefineNarrowMust(query, refineAnchor, facultyAuthorIds, { fuzziness: 'AUTO' }, facultyKerberosIds, normalizeChain(refineChain).slice(1))
-                    : (searchInNorm?.length > 0
-                        ? this.queryBuilder.buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO', authorScoped: true }, facultyAuthorIds, facultyKerberosIds)
-                        : this.queryBuilder._buildDefaultBm25Clause(query, this.filterBuilder.getHybridSearchFields(searchInNorm), { fuzziness: 'AUTO' }, true));
-                const bm25PrecheckResp = await this.opensearch.search({
-                    index: this.indexName,
-                    body: { size: 0, track_total_hits: true, query: { bool: { must: [bm25OnlyClause], filter: scopeFilters } } }
-                });
-                const bm25AdmitsNothing = bm25PrecheckResp.body.hits.total.value === 0;
-
+                // BM25 is the only recall arm within an author's own scope, unconditionally (kNN
+                // excluded — see buildNormalizedHybridQuery: a small single-author candidate pool
+                // makes embedding similarity too flat to trust as an admission signal on its own).
+                //
                 // Pass our own already-computed (id-membership) refine filters through so
                 // buildNormalizedHybridQuery doesn't fall back to its internal literal-AND
                 // computation — that fallback would get pushed into the SAME filter array
@@ -248,7 +234,7 @@ export default class AuthorScopedSearch {
                     query, embedding, effFilters, page, per_page,
                     searchInNorm, facultyAuthorIds, authorRefineNarrow,
                     refineAnchor, facultyKerberosIds,
-                    { authorScoped: true, refineChain, refineFilterClauses: refineFilters, bm25AdmitsNothing }
+                    { authorScoped: true, refineChain, refineFilterClauses: refineFilters }
                 );
 
                 // Every hybrid arm carries its own filter array (see QueryBuilder.buildNormalizedHybridQuery) —

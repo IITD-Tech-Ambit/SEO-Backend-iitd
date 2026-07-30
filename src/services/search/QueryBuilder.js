@@ -744,7 +744,7 @@ export default class QueryBuilder {
      * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
      * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, bm25AdmitsNothing = false, restrictKnn = false } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, restrictKnn = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -787,23 +787,14 @@ export default class QueryBuilder {
 
         const bm25Arm = { bool: { must: [bm25Clause], should: boostClauses, filter: filterClauses } };
         const knnArm = { bool: { must: [{ knn: { embedding: { vector: embedding, k: 100 } } }], filter: filterClauses } };
-        // Pure-kNN recall is excluded when scoped to one author by default: within a small
-        // single-person candidate pool, embedding similarity is often nearly flat, so its "top"
-        // neighbor can be little more than the least-bad of an unrelated bunch. But BM25's N-of-M
-        // admission bar can be mathematically unreachable for a paraphrased query with several
-        // stopwords (each stopword can never satisfy a term slot, yet still counts toward the
-        // required total) — with kNN excluded there's no fallback, so a genuinely matching paper
-        // becomes permanently unfindable within that author's scope. bm25AdmitsNothing (the
-        // caller's own BM25-only precheck) allows kNN back in only as a last resort, not a
-        // co-equal arm, keeping the noise-reduction intent while removing the hard cliff.
-        //
-        // `restrictKnn` applies this same BM25-preferred admission rule to the People sidebar's
-        // full-corpus aggregation query (FacultyForQueryService), which has no per-author filter
-        // to key off `authorScoped`. Without it, the aggregation's kNN arm can admit a paper into
-        // a faculty member's bucket purely on semantic similarity even though that faculty
-        // member's OWN scoped search (AuthorScopedSearch, BM25-only by default) would never
-        // surface it — the sidebar count then overcounts relative to the drill-down.
-        const excludeKnn = (authorScoped || restrictKnn) && !bm25AdmitsNothing;
+        // kNN excluded unconditionally when scoped to one author: in a small candidate pool its
+        // score is nearly flat regardless of relevance, so it can't be trusted to admit papers alone
+        // (same fix applied to the IP search's InventorScopedSearch after an out-of-domain query
+        // scoped to one inventor returned confidently wrong "relevant" results via kNN-only
+        // admission — verified there that an on-topic query's own score tail overlapped an
+        // unrelated query's full score range within a single person's corpus).
+        // `restrictKnn` applies the same rule to the People sidebar aggregation (FacultyForQueryService).
+        const excludeKnn = !!authorScoped || restrictKnn;
         const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
 
         return {
