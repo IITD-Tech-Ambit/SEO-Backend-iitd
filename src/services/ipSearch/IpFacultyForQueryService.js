@@ -91,6 +91,14 @@ export default class IpFacultyForQueryService {
         };
 
         if (mode === 'basic') {
+            // Same two-tier strategy as IpSearchService._runBasicSearch: phrase-first recall, and
+            // only fall back to the looser term-AND/inventor-OR query if the phrase tier finds
+            // nothing — skipping straight to the loose tier let a multi-word name query like
+            // "Mohan Kumar Singh Verma" OR-match on any single common name token (Kumar, Singh)
+            // and pull in hundreds of unrelated inventors.
+            const phraseQuery = patch(this.queryBuilder.buildBasicPhraseQuery(query, filters, 1, 1, 'relevance', searchInNorm, chain));
+            const phraseCount = await this.opensearch.search({ index: this.indexName, body: phraseQuery });
+            if (phraseCount.body.hits.total.value > 0) return phraseQuery;
             return patch(this.queryBuilder.buildBasicQuery(query, filters, 1, 1, 'relevance', searchInNorm, chain));
         }
 
