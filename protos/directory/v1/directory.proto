@@ -331,6 +331,7 @@ message AtlasRefineRequest {
   // When "department" or "faculty", skip token text search so dept/faculty
   // picks do not leak papers that merely mention those words in the title.
   string entity = 4;          // JSON: entity — "" | "department" | "faculty"
+  string base_entity = 5;     // JSON: baseEntity — primary query kind
 }
 message AtlasRefineResponse {
   string base_query = 1;      // JSON: baseQuery
