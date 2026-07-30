@@ -177,32 +177,17 @@ export default class InventorScopedSearch {
                     ? await Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, scopeFilters)))
                     : [];
 
-                // BM25 is the only recall arm within an inventor's own scope by default (kNN
-                // excluded — see buildNormalizedHybridQuery). Its N-of-M admission bar can be
-                // mathematically unreachable for a paraphrased query with several stopwords, so
-                // probe it first against the SAME constrained pool (inventor + refine narrowing)
-                // the real query will run against — only let kNN back in as a last resort when
-                // BM25 alone finds nothing there, not as a standing co-equal arm.
-                const bm25OnlyClause = searchInNorm?.length > 0
-                    ? this.queryBuilder.buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO' })
-                    : this.queryBuilder._buildAdvancedBm25Clause(query, searchInNorm, this.filterBuilder.getHybridSearchFields(searchInNorm), { fuzziness: 'AUTO' });
-                const scopeFilterClauses = [
-                    { nested: { path: 'inventors', query: { term: { 'inventors.kerberos': kerberosId } } } },
-                    ...refineFilters
-                ];
-                const bm25PrecheckResp = await this.opensearch.search({
-                    index: this.indexName,
-                    body: { size: 0, track_total_hits: true, query: { bool: { must: [bm25OnlyClause], filter: scopeFilterClauses } } }
-                });
-                const bm25AdmitsNothing = bm25PrecheckResp.body.hits.total.value === 0;
-
+                // BM25 is the only recall arm within an inventor's own scope, unconditionally (kNN
+                // excluded — see buildNormalizedHybridQuery: a small single-inventor candidate pool
+                // makes embedding similarity too flat to trust as an admission signal on its own).
+                //
                 // Pass our own already-computed (id-membership) refine filters through so
                 // buildNormalizedHybridQuery doesn't fall back to its internal literal-AND
                 // computation into the SAME filter array (see AuthorScopedSearch for why that
                 // would silently veto everything).
                 const base = this.queryBuilder.buildNormalizedHybridQuery(
                     query, embedding, scopeFilters, page, per_page, searchInNorm,
-                    { refineChain, refineFilterClauses: refineFilters, bm25AdmitsNothing }
+                    { refineChain, refineFilterClauses: refineFilters }
                 );
 
                 delete base.aggs;
