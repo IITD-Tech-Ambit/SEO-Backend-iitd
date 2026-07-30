@@ -10,7 +10,7 @@ import { normalizeChain } from './QueryBuilder.js';
  * simpler: IP inventors carry kerberos directly (no scopus_id merge needed).
  */
 export default class IpFacultyForQueryService {
-    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, candidateK, rrfPipeline }) {
+    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, candidateK, rrfPipeline, refineChainResolver }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -22,6 +22,7 @@ export default class IpFacultyForQueryService {
         this.embeddingService = embeddingService;
         this.candidateK = candidateK;
         this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
+        this.refineChainResolver = refineChainResolver;
     }
 
     _buildCacheKey(query, mode, searchInNorm, refineChain, filters) {
@@ -72,11 +73,11 @@ export default class IpFacultyForQueryService {
     }
 
     /**
-     * bm25HitCount/candidateK must match what IpSearchService's own advanced search resolves
-     * for the same query, or the two pick different (fixed vs adaptive) min_score bars and the
-     * per-person counts shown here stop agreeing with what a click-through actually returns.
+     * candidateK must match what IpSearchService's own advanced search resolves for the same
+     * query, or the two pick different (fixed vs adaptive) min_score bars and the per-person
+     * counts shown here stop agreeing with what a click-through actually returns.
      */
-    async _buildAggQuery(mode, query, filters, searchInNorm, refineChain, bm25HitCount) {
+    async _buildAggQuery(mode, query, filters, searchInNorm, refineChain, refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
         const patch = (base) => {
             const body = { ...base };
@@ -94,38 +95,12 @@ export default class IpFacultyForQueryService {
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
-        // Sidebar counts must agree with InventorScopedSearch's own BM25-preferred admission
-        // (see QueryBuilder.buildNormalizedHybridQuery): prefer BM25-only recall here too, and
-        // only fall back to including kNN if BM25 found literally nothing for this query+scope
-        // (bm25HitCount === 0 already short-circuits to an empty response before reaching here
-        // in advanced mode, so this is mostly a defensive default for future callers).
+        // Same recall arms as IpSearchService._runAdvancedSearch (BM25 + kNN) so totals agree with the patents list.
         return patch(this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, 1, 1, searchInNorm, {
             refineChain: chain,
-            restrictKnn: true,
-            bm25AdmitsNothing: bm25HitCount === 0,
+            refineFilterClauses,
             candidateK: this.candidateK
         }));
-    }
-
-    async _bm25PreCheck(query, searchInNorm, refineChain) {
-        const chain = normalizeChain(refineChain);
-        let preCheckClause;
-        if (searchInNorm && searchInNorm.length > 0) {
-            preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO' });
-        } else {
-            const textMatch = {
-                multi_match: { query, fields: ['title', 'abstract', 'field_of_invention'], type: 'cross_fields', minimum_should_match: '1' }
-            };
-            const inventorClause = this.queryBuilder.buildInventorMatchClause(query, { fuzziness: 'AUTO' });
-            preCheckClause = inventorClause
-                ? { bool: { should: [textMatch, inventorClause], minimum_should_match: 1 } }
-                : textMatch;
-        }
-        const body = (chain.length > 0)
-            ? { size: 0, query: { bool: { must: [preCheckClause], filter: this.queryBuilder.buildRefineFilterClauses(chain, searchInNorm) } } }
-            : { size: 0, query: preCheckClause };
-        const response = await this.opensearch.search({ index: this.indexName, body });
-        return response.body.hits.total.value;
     }
 
     /** Resolve Faculty docs (with profile image) for the matched kerberos buckets, grouped by department. */
@@ -206,9 +181,12 @@ export default class IpFacultyForQueryService {
             return { ...response, cacheHit: false };
         }
 
-        let bm25HitCount = null;
+        let refineFilterClauses = null;
         if (mode === 'advanced') {
-            bm25HitCount = await this._bm25PreCheck(query, searchInNorm, refineChain);
+            const refineAnchors = await this.refineChainResolver.buildAdvancedRefineAnchors(refineChain, searchInNorm, effFilters);
+            refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
+
+            const bm25HitCount = await this.refineChainResolver.bm25PreCheck(query, searchInNorm, refineChain, refineFilterClauses);
             if (bm25HitCount === 0) {
                 const emptyResponse = { departments: [], total_faculty: 0, total_matching_ip: 0 };
                 try {
@@ -220,7 +198,7 @@ export default class IpFacultyForQueryService {
             }
         }
 
-        const osQuery = await this._buildAggQuery(mode, query, effFilters, searchInNorm, refineChain, bm25HitCount);
+        const osQuery = await this._buildAggQuery(mode, query, effFilters, searchInNorm, refineChain, refineFilterClauses);
         const osResponse = await this.opensearch.search({
             index: this.indexName,
             body: osQuery,
