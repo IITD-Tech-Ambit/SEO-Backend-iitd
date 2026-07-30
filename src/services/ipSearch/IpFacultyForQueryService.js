@@ -77,11 +77,11 @@ export default class IpFacultyForQueryService {
     }
 
     /**
-     * bm25HitCount/candidateK must match what IpSearchService's own advanced search resolves
-     * for the same query, or the two pick different (fixed vs adaptive) min_score bars and the
-     * per-person counts shown here stop agreeing with what a click-through actually returns.
+     * candidateK must match what IpSearchService's own advanced search resolves for the same
+     * query, or the two pick different (fixed vs adaptive) min_score bars and the per-person
+     * counts shown here stop agreeing with what a click-through actually returns.
      */
-    async _buildAggQuery(mode, query, filters, searchInNorm, refineChain, bm25HitCount, refineFilterClauses = null) {
+    async _buildAggQuery(mode, query, filters, searchInNorm, refineChain, refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
         const patch = (base) => {
             const body = { ...base };
@@ -99,16 +99,21 @@ export default class IpFacultyForQueryService {
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
-        // Sidebar counts must agree with InventorScopedSearch's own BM25-preferred admission
-        // (see QueryBuilder.buildNormalizedHybridQuery): prefer BM25-only recall here too, and
-        // only fall back to including kNN if BM25 found literally nothing for this query+scope
-        // (bm25HitCount === 0 already short-circuits to an empty response before reaching here
-        // in advanced mode, so this is mostly a defensive default for future callers).
+        // Must use the SAME recall arms as IpSearchService._runAdvancedSearch (BM25 + kNN, no
+        // restrictKnn) so total_faculty/total_matching_ip agree with the patents list — this
+        // endpoint's own docstring promises that. `restrictKnn` previously forced a BM25-only
+        // admission bar here to try to match InventorScopedSearch's per-inventor drill-down, but
+        // that drill-down independently re-derives its own bm25AdmitsNothing PER inventor's scoped
+        // candidate pool; approximating it with one corpus-wide flag doesn't hold in practice — a
+        // document can be kNN-only-admitted for one inventor while another inventor's own drill-down
+        // legitimately falls back to kNN too, and a single global flag can't represent both. That
+        // mismatch was silently dropping the large majority of real, faculty-attributed matches
+        // (observed: 45 faculty across 46 patents in the results list vs. 2 in the sidebar).
+        // bm25HitCount === 0 already short-circuits to an empty response before reaching here in
+        // advanced mode, so bm25AdmitsNothing would always be false by this point anyway.
         return patch(this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, 1, 1, searchInNorm, {
             refineChain: chain,
             refineFilterClauses,
-            restrictKnn: true,
-            bm25AdmitsNothing: bm25HitCount === 0,
             candidateK: this.candidateK
         }));
     }
@@ -191,7 +196,6 @@ export default class IpFacultyForQueryService {
             return { ...response, cacheHit: false };
         }
 
-        let bm25HitCount = null;
         let refineFilterClauses = null;
         if (mode === 'advanced') {
             // Same anchor-based narrowing as IpSearchService._runAdvancedSearch: a refine term can
@@ -202,7 +206,7 @@ export default class IpFacultyForQueryService {
             const refineAnchors = await this.refineChainResolver.buildAdvancedRefineAnchors(refineChain, searchInNorm, effFilters);
             refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
 
-            bm25HitCount = await this.refineChainResolver.bm25PreCheck(query, searchInNorm, refineChain, refineFilterClauses);
+            const bm25HitCount = await this.refineChainResolver.bm25PreCheck(query, searchInNorm, refineChain, refineFilterClauses);
             if (bm25HitCount === 0) {
                 const emptyResponse = { departments: [], total_faculty: 0, total_matching_ip: 0 };
                 try {
@@ -214,7 +218,7 @@ export default class IpFacultyForQueryService {
             }
         }
 
-        const osQuery = await this._buildAggQuery(mode, query, effFilters, searchInNorm, refineChain, bm25HitCount, refineFilterClauses);
+        const osQuery = await this._buildAggQuery(mode, query, effFilters, searchInNorm, refineChain, refineFilterClauses);
         const osResponse = await this.opensearch.search({
             index: this.indexName,
             body: osQuery,
