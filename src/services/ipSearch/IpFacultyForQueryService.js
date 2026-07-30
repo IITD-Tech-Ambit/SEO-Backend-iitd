@@ -22,10 +22,6 @@ export default class IpFacultyForQueryService {
         this.embeddingService = embeddingService;
         this.candidateK = candidateK;
         this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
-        // Same anchor-based narrowing IpSearchService uses for /ip/search, so this endpoint's
-        // total_faculty agrees with what the results list actually found for a refine chain
-        // (a chain term can admit a document semantically without the term appearing literally
-        // in its text — see RefineChainResolver.buildRefineAnchorIdFilter).
         this.refineChainResolver = refineChainResolver;
     }
 
@@ -99,18 +95,7 @@ export default class IpFacultyForQueryService {
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
-        // Must use the SAME recall arms as IpSearchService._runAdvancedSearch (BM25 + kNN, no
-        // restrictKnn) so total_faculty/total_matching_ip agree with the patents list — this
-        // endpoint's own docstring promises that. `restrictKnn` previously forced a BM25-only
-        // admission bar here to try to match InventorScopedSearch's per-inventor drill-down, but
-        // that drill-down independently re-derives its own bm25AdmitsNothing PER inventor's scoped
-        // candidate pool; approximating it with one corpus-wide flag doesn't hold in practice — a
-        // document can be kNN-only-admitted for one inventor while another inventor's own drill-down
-        // legitimately falls back to kNN too, and a single global flag can't represent both. That
-        // mismatch was silently dropping the large majority of real, faculty-attributed matches
-        // (observed: 45 faculty across 46 patents in the results list vs. 2 in the sidebar).
-        // bm25HitCount === 0 already short-circuits to an empty response before reaching here in
-        // advanced mode, so bm25AdmitsNothing would always be false by this point anyway.
+        // Same recall arms as IpSearchService._runAdvancedSearch (BM25 + kNN) so totals agree with the patents list.
         return patch(this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, 1, 1, searchInNorm, {
             refineChain: chain,
             refineFilterClauses,
@@ -198,11 +183,6 @@ export default class IpFacultyForQueryService {
 
         let refineFilterClauses = null;
         if (mode === 'advanced') {
-            // Same anchor-based narrowing as IpSearchService._runAdvancedSearch: a refine term can
-            // admit a document semantically without literally appearing in its text, so the
-            // pre-check (and the aggregation query below) must filter on the anchor's real result
-            // membership, not a literal AND-of-terms match — otherwise this endpoint under-counts
-            // (or zeroes out) refine chains the main results list legitimately satisfies.
             const refineAnchors = await this.refineChainResolver.buildAdvancedRefineAnchors(refineChain, searchInNorm, effFilters);
             refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
 

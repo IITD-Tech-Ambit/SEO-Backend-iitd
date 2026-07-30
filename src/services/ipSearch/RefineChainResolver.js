@@ -1,12 +1,6 @@
 import { normalizeChain } from './QueryBuilder.js';
 
-/**
- * Shared refine-chain resolution for advanced-mode IP search. Both the main results endpoint
- * (IpSearchService) and the full-corpus People sidebar (IpFacultyForQueryService) must narrow a
- * refine chain identically, or the sidebar's total_faculty/total_matching_ip disagrees with what
- * the results list actually found — see buildRefineAnchorIdFilter for why literal keyword
- * co-occurrence is the wrong test for "does this refine term admit this document."
- */
+// Shared by IpSearchService and IpFacultyForQueryService so a refine chain narrows identically for both.
 export default class RefineChainResolver {
     constructor({ opensearch, indexName, embeddingService, queryBuilder, rrfPipeline, candidateK, maxResultWindow, logger }) {
         this.opensearch = opensearch;
@@ -19,9 +13,7 @@ export default class RefineChainResolver {
         this.logger = logger;
     }
 
-    /**
-     * Lenient BM25 pre-check (OR across terms) so partial-vocabulary queries pass but gibberish does not.
-     */
+    /** Lenient BM25 pre-check (OR across terms) so partial-vocabulary queries pass but gibberish does not. */
     async bm25PreCheck(query, search_in = null, refineChain = [], refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
 
@@ -43,9 +35,6 @@ export default class RefineChainResolver {
                 : textMatch;
         }
 
-        // Refinement terms are filters so the pre-check reflects the narrowed pool. In advanced
-        // mode this uses the anchor's actual result-id membership (see buildRefineAnchorIdFilter)
-        // rather than a literal AND-of-terms match.
         const body = (chain.length > 0)
             ? { size: 0, query: { bool: { must: [preCheckClause], filter: refineFilterClauses || this.queryBuilder.buildRefineFilterClauses(chain, search_in) } } }
             : { size: 0, query: preCheckClause };
@@ -54,38 +43,17 @@ export default class RefineChainResolver {
         return response.body.hits.total.value;
     }
 
-    /**
-     * True "search within previous results" narrowing: each refine-chain term is re-resolved to
-     * its own actual min-score-gated advanced-search result ids (capped generously), and the
-     * filter restricts subsequent narrowing to that real membership set. Each doc's own anchor
-     * score is also captured (see buildRefineAnchorIdFilter) so ranking can compound relevance
-     * across the chain instead of discarding it once a doc passes the membership gate.
-     *
-     * A looser re-derived match clause (e.g. fuzzy-BM25 OR raw kNN) is the wrong tool for the
-     * filter itself: a kNN clause in filter context ignores min_score and always contributes up to
-     * k neighbors regardless of true relevance, so it can make the "narrowed" count larger than the
-     * anchor's own result count — the opposite of narrowing. Filtering on the anchor's real ids is
-     * the only way to guarantee the pool never grows while still keeping every doc the anchor step
-     * actually surfaced (including ones that only matched it semantically).
-     */
+    /** Search-within-previous-results narrowing: each refine term is re-resolved to its own real result-id membership (not a literal AND-of-terms match), so a doc that only matched semantically isn't wrongly evicted. */
     async buildAdvancedRefineAnchors(refineChain, searchInNorm, filters) {
         if (!refineChain.length) return null;
         return Promise.all(refineChain.map((term) => this.buildRefineAnchorIdFilter(term, searchInNorm, filters)));
     }
 
-    /** Re-runs `term` as its own advanced search (same filters as the real search, e.g. an
-     *  inventor kerberos scope, no further refinement) to capture the real doc ids AND per-doc
-     *  scores it matched, capped at `maxResultWindow` (or 2000). Anchoring without the current
-     *  filters would let a broad/common anchor phrase compete against the WHOLE corpus for a
-     *  spot in that cap — a filter-scoped candidate's real matches can rank outside the
-     *  unscoped top-`cap` even though they'd be the obvious top matches within the filtered set. */
+    /** Re-runs `term` as its own advanced search to capture the real doc ids (and scores) it matched, capped at `maxResultWindow` (or 2000). */
     async buildRefineAnchorIdFilter(term, searchInNorm, filters = {}) {
         const cap = Math.min(this.maxResultWindow, 2000);
         try {
             const embedding = await this.embeddingService.embedQuery(term);
-            // Must resolve the same bm25HitCount-driven min_score/weights regime the anchor's own
-            // original search used — passing bm25HitCount: null falls back to the loosest bar,
-            // capturing far more "members" than the anchor actually returned as results.
             const bm25HitCount = await this.bm25PreCheck(term, searchInNorm, []);
             const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
                 term, embedding, filters, 1, cap, searchInNorm,

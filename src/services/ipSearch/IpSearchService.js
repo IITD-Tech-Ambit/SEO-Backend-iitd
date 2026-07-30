@@ -60,8 +60,6 @@ export default class IpSearchService {
             logger: this.logger,
             secondaryField: 'inventor_names'
         });
-        // Shared by this service and facultyForQuery so a refine chain narrows identically for
-        // both the main results list and the People sidebar's full-corpus aggregation.
         this.refineChainResolver = new RefineChainResolver({
             opensearch: this.opensearch,
             indexName: this.indexName,
