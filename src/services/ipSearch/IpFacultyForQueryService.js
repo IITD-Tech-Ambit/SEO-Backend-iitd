@@ -10,7 +10,7 @@ import { normalizeChain } from './QueryBuilder.js';
  * simpler: IP inventors carry kerberos directly (no scopus_id merge needed).
  */
 export default class IpFacultyForQueryService {
-    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, candidateK, rrfPipeline }) {
+    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, candidateK, rrfPipeline, refineChainResolver }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -22,6 +22,11 @@ export default class IpFacultyForQueryService {
         this.embeddingService = embeddingService;
         this.candidateK = candidateK;
         this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
+        // Same anchor-based narrowing IpSearchService uses for /ip/search, so this endpoint's
+        // total_faculty agrees with what the results list actually found for a refine chain
+        // (a chain term can admit a document semantically without the term appearing literally
+        // in its text — see RefineChainResolver.buildRefineAnchorIdFilter).
+        this.refineChainResolver = refineChainResolver;
     }
 
     _buildCacheKey(query, mode, searchInNorm, refineChain, filters) {
@@ -76,7 +81,7 @@ export default class IpFacultyForQueryService {
      * for the same query, or the two pick different (fixed vs adaptive) min_score bars and the
      * per-person counts shown here stop agreeing with what a click-through actually returns.
      */
-    async _buildAggQuery(mode, query, filters, searchInNorm, refineChain, bm25HitCount) {
+    async _buildAggQuery(mode, query, filters, searchInNorm, refineChain, bm25HitCount, refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
         const patch = (base) => {
             const body = { ...base };
@@ -101,31 +106,11 @@ export default class IpFacultyForQueryService {
         // in advanced mode, so this is mostly a defensive default for future callers).
         return patch(this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, 1, 1, searchInNorm, {
             refineChain: chain,
+            refineFilterClauses,
             restrictKnn: true,
             bm25AdmitsNothing: bm25HitCount === 0,
             candidateK: this.candidateK
         }));
-    }
-
-    async _bm25PreCheck(query, searchInNorm, refineChain) {
-        const chain = normalizeChain(refineChain);
-        let preCheckClause;
-        if (searchInNorm && searchInNorm.length > 0) {
-            preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO' });
-        } else {
-            const textMatch = {
-                multi_match: { query, fields: ['title', 'abstract', 'field_of_invention'], type: 'cross_fields', minimum_should_match: '1' }
-            };
-            const inventorClause = this.queryBuilder.buildInventorMatchClause(query, { fuzziness: 'AUTO' });
-            preCheckClause = inventorClause
-                ? { bool: { should: [textMatch, inventorClause], minimum_should_match: 1 } }
-                : textMatch;
-        }
-        const body = (chain.length > 0)
-            ? { size: 0, query: { bool: { must: [preCheckClause], filter: this.queryBuilder.buildRefineFilterClauses(chain, searchInNorm) } } }
-            : { size: 0, query: preCheckClause };
-        const response = await this.opensearch.search({ index: this.indexName, body });
-        return response.body.hits.total.value;
     }
 
     /** Resolve Faculty docs (with profile image) for the matched kerberos buckets, grouped by department. */
@@ -207,8 +192,17 @@ export default class IpFacultyForQueryService {
         }
 
         let bm25HitCount = null;
+        let refineFilterClauses = null;
         if (mode === 'advanced') {
-            bm25HitCount = await this._bm25PreCheck(query, searchInNorm, refineChain);
+            // Same anchor-based narrowing as IpSearchService._runAdvancedSearch: a refine term can
+            // admit a document semantically without literally appearing in its text, so the
+            // pre-check (and the aggregation query below) must filter on the anchor's real result
+            // membership, not a literal AND-of-terms match — otherwise this endpoint under-counts
+            // (or zeroes out) refine chains the main results list legitimately satisfies.
+            const refineAnchors = await this.refineChainResolver.buildAdvancedRefineAnchors(refineChain, searchInNorm, effFilters);
+            refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
+
+            bm25HitCount = await this.refineChainResolver.bm25PreCheck(query, searchInNorm, refineChain, refineFilterClauses);
             if (bm25HitCount === 0) {
                 const emptyResponse = { departments: [], total_faculty: 0, total_matching_ip: 0 };
                 try {
@@ -220,7 +214,7 @@ export default class IpFacultyForQueryService {
             }
         }
 
-        const osQuery = await this._buildAggQuery(mode, query, effFilters, searchInNorm, refineChain, bm25HitCount);
+        const osQuery = await this._buildAggQuery(mode, query, effFilters, searchInNorm, refineChain, bm25HitCount, refineFilterClauses);
         const osResponse = await this.opensearch.search({
             index: this.indexName,
             body: osQuery,
