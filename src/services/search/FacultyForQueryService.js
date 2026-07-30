@@ -188,15 +188,14 @@ export default class FacultyForQueryService {
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
-        // Same recall arms as SearchService's own advanced search (BM25 + kNN) so totals agree
-        // with the papers list — restrictKnn previously forced a BM25-only bar here, which
-        // under-counted relative to the papers list whenever kNN legitimately admitted results
-        // (same bug and fix as the IP search's People sidebar).
+        // restrictKnn: per-faculty counts here must match what clicking into that person's own
+        // scoped view shows (AuthorScopedSearch, BM25-only, unconditionally) — a product decision,
+        // not the IP search's choice to match the broader papers-list total instead.
         const base = this.queryBuilder.buildNormalizedHybridQuery(
             query, embedding, queryFilters, 1, 1,
             searchInNorm, facultyAuthorIds, authorRefineNarrow,
             refineAnchor, facultyKerberosIds,
-            { refineChain }
+            { refineChain, restrictKnn: true }
         );
         // Prior refinement terms become strict lexical FILTERS so per-faculty counts reflect
         // the same monotonically narrowed pool as the papers list. buildNormalizedHybridQuery
