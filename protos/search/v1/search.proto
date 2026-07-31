@@ -185,6 +185,9 @@ message FacultyForQueryRequest {
   // "basic" | "advanced"; empty string means the service default ("advanced").
   string mode = 2;
   repeated string search_in = 3;
+  optional string refine_within = 4;
+  repeated string refine_chain = 5;
+  SearchFilters filters = 6;
 }
 message Faculty {
   string name = 1;

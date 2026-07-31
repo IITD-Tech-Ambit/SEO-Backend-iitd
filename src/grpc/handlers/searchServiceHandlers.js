@@ -164,10 +164,9 @@ export function createSearchServiceHandlers({
             }
         },
 
-        // GET /api/v1/search/faculty-for-query — wire contract preserved verbatim
-        // (unchanged from the original single-RPC server; do not regress).
+        // GET /api/v1/search/faculty-for-query
         async FacultyForQuery(call, callback) {
-            const { query, mode, search_in: searchIn } = call.request;
+            const { query, mode, search_in: searchIn, refine_within: refineWithin, refine_chain: refineChain, filters } = call.request;
             if (!query) {
                 return callback({ code: grpc.status.INVALID_ARGUMENT, message: 'query is required' });
             }
@@ -176,7 +175,10 @@ export function createSearchServiceHandlers({
                 const result = await searchService.getAllFacultyForQuery(
                     query,
                     mode || 'advanced',
-                    searchIn && searchIn.length ? searchIn : undefined
+                    searchIn && searchIn.length ? searchIn : undefined,
+                    refineWithin || undefined,
+                    filters && Object.keys(filters).length ? filters : undefined,
+                    refineChain && refineChain.length ? refineChain : undefined
                 );
                 callback(null, {
                     departments: (result.departments || []).map((dept) => ({
