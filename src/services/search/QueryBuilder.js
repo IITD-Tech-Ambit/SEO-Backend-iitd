@@ -775,7 +775,7 @@ export default class QueryBuilder {
      * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
      * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, restrictKnn = false } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, restrictKnn = false, knnK = 100 } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -826,7 +826,7 @@ export default class QueryBuilder {
                     knn: {
                         embedding: {
                             vector: embedding,
-                            k: 100,
+                            k: knnK,
                             ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
                         }
                     }
@@ -844,6 +844,18 @@ export default class QueryBuilder {
         // doesn't apply here — admitting it just adds embedding-similar-but-unfiltered papers on
         // top of an already-precise match. Measured: for a narrow-by-name-then-refine-by-topic
         // author drilldown, this inflated the result from ~134 (correct) to 300+.
+        //
+        // When kNN IS admitted with an active refine chain (the case above), callers scoped to
+        // one author/inventor should pass a small knnK instead of the corpus-wide default of 100:
+        // once the anchor has narrowed candidates to just that person's own papers, a pool that
+        // size is often smaller than k itself, so "top k nearest neighbors" degenerates into "the
+        // entire pool" — admitting every one of their papers regardless of actual relevance to the
+        // current term. Measured directly: scores across a 32-patent single-inventor pool ranged
+        // 1.54-1.76 with no clean separation anywhere EXCEPT between rank 1 and rank 2 (a gap
+        // ~4-10x larger than any other adjacent gap) — there's a real top match, it's just not
+        // reachable by a raw score threshold on this scale. A small k relies on rank instead of an
+        // absolute score cutoff, so it still surfaces that genuine top match without admitting
+        // everyone the raw k=100 pool would have let through.
         const excludeKnn = ((!!authorScoped || restrictKnn) && chain.length === 0) || (authorRefineNarrow && authorOnly);
         const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
 

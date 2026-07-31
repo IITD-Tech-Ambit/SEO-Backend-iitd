@@ -206,9 +206,13 @@ export default class InventorScopedSearch {
                 // buildNormalizedHybridQuery doesn't fall back to its internal literal-AND
                 // computation into the SAME filter array (see AuthorScopedSearch for why that
                 // would silently veto everything).
+                // Once a refine chain is active, kNN gets admitted (see excludeKnn in
+                // buildNormalizedHybridQuery) — but this pool is already scoped to just this
+                // inventor's own patents, so a small knnK keeps it rank- rather than
+                // admit-everyone (see that function for the measured score-distribution rationale).
                 const base = this.queryBuilder.buildNormalizedHybridQuery(
                     query, embedding, scopeFilters, page, per_page, searchInNorm,
-                    { refineChain, refineFilterClauses: refineFilters }
+                    { refineChain, refineFilterClauses: refineFilters, knnK: 5 }
                 );
 
                 delete base.aggs;

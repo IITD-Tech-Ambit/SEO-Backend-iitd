@@ -526,7 +526,7 @@ export default class QueryBuilder {
      * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
      * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, restrictKnn = false, forceIncludeKnn = false } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, restrictKnn = false, forceIncludeKnn = false, knnK = 100 } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -561,7 +561,7 @@ export default class QueryBuilder {
                     knn: {
                         embedding: {
                             vector: embedding,
-                            k: 100,
+                            k: knnK,
                             ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
                         }
                     }
@@ -573,6 +573,14 @@ export default class QueryBuilder {
         // "vagina" false-match case came from). `forceIncludeKnn` bypasses this for refine-chain
         // anchor computation, where the result only feeds a doc-id filter, not a relevance verdict,
         // and excluding kNN there made an anchor's own literal-text match a single point of failure.
+        //
+        // When kNN IS admitted with an active refine chain, callers scoped to one inventor should
+        // pass a small knnK — once the anchor has narrowed to just that inventor's own patents, a
+        // pool that size is often smaller than k=100 itself, so "top k nearest neighbors" becomes
+        // "the entire pool" regardless of actual relevance to the current term (measured: a
+        // 32-patent single-inventor pool scored 1.54-1.76 with no clean cutoff anywhere except
+        // between rank 1 and rank 2 — a real top match exists, it's just not reachable by a raw
+        // score threshold at this scale; a small k relies on rank instead).
         const excludeKnn = (!!filters?.kerberos || restrictKnn) && !forceIncludeKnn && chain.length === 0;
         const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
 
