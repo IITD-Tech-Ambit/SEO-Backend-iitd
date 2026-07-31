@@ -13,6 +13,14 @@ export default class RefineChainResolver {
         this.logger = logger;
     }
 
+    /** Without pagination_depth, a `hybrid` query silently returns far fewer than `size` hits
+     *  once the true match count is large, regardless of the requested size. */
+    _withPaginationDepth(body) {
+        if (!body?.query?.hybrid) return body;
+        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), 1), this.maxResultWindow);
+        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
+    }
+
     /** Lenient BM25 pre-check (OR across terms) so partial-vocabulary queries pass but gibberish does not. */
     async bm25PreCheck(query, search_in = null, refineChain = [], refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
@@ -49,22 +57,33 @@ export default class RefineChainResolver {
         return Promise.all(refineChain.map((term) => this.buildRefineAnchorIdFilter(term, searchInNorm, filters)));
     }
 
-    /** Re-runs `term` as its own advanced search to capture the real doc ids (and scores) it matched, capped at `maxResultWindow` (or 2000). */
+    /** Re-runs `term` as its own advanced search to capture the real doc ids (and scores) it
+     *  matched, capped at `maxResultWindow` rather than a smaller fixed ceiling — this anchor is
+     *  shared across every faculty member's aggregation at once, so a low cap can miss an
+     *  individual's real matches. */
     async buildRefineAnchorIdFilter(term, searchInNorm, filters = {}) {
-        const cap = Math.min(this.maxResultWindow, 2000);
-        try {
+        const cap = this.maxResultWindow;
+        const runAnchorQuery = async (forceIncludeKnn, bm25HitCount) => {
             const embedding = await this.embeddingService.embedQuery(term);
-            const bm25HitCount = await this.bm25PreCheck(term, searchInNorm, []);
             const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
                 term, embedding, filters, 1, cap, searchInNorm,
-                { bm25HitCount, candidateK: this.candidateK, refineChain: [] }
+                { bm25HitCount, candidateK: this.candidateK, refineChain: [], forceIncludeKnn }
             );
             osQuery.size = cap;
             osQuery.from = 0;
             osQuery._source = ['mongo_id'];
             delete osQuery.aggs;
-
-            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery, search_pipeline: this.rrfPipeline });
+            return this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
+        };
+        try {
+            // BM25-only first; only widen via kNN if that finds nothing — kNN's k is sized for
+            // corpus-wide recall, and admitting via it whenever BM25 already found real matches
+            // risks pulling in embedding-adjacent-but-off-topic documents for no reason (see
+            // InventorScopedSearch._buildRefineAnchorIdFilter for a scoped case where this went
+            // from "no filtering effect" to "the anchor's own candidate pool WAS the filter").
+            const bm25HitCount = await this.bm25PreCheck(term, searchInNorm, []);
+            let resp = await runAnchorQuery(false, bm25HitCount);
+            if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(true, bm25HitCount);
             const ids = [];
             const scoreById = {};
             for (const hit of resp.body.hits.hits) {

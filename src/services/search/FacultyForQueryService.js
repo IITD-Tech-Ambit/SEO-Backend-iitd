@@ -4,13 +4,14 @@ import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
 
 /**
  * People sidebar (GET /search/faculty-for-query): all IITD faculty matching a query across
- * the entire result set, grouped by department and sorted by relevance.
+ * the entire result set, grouped by department (the professor's own Faculty.department, not
+ * the paper's field_associated tag) and sorted by total citation count, highest first.
  *
  * Uses the SAME query builders and relevance bar as POST /search so the sidebar's
  * total_matching_papers and every per-faculty paper_count agree with the papers list.
  */
 export default class FacultyForQueryService {
-    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, rosterService, embeddingService, rrfPipeline }) {
+    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, rosterService, embeddingService, rrfPipeline, maxResultWindow }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -22,6 +23,7 @@ export default class FacultyForQueryService {
         this.rosterService = rosterService;
         this.embeddingService = embeddingService;
         this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
+        this.maxResultWindow = maxResultWindow || 10000;
     }
 
     /**
@@ -31,35 +33,42 @@ export default class FacultyForQueryService {
      */
     _mergeAuthorAggBuckets(flatBuckets, nestedBuckets) {
         const byKey = new Map();
-        const accumulate = (buckets) => {
+        const accumulate = (buckets, getDocCount) => {
             for (const bucket of buckets) {
                 const key = bucket.key == null ? '' : String(bucket.key).trim();
                 if (!key) continue;
-                const dc = bucket.doc_count || 0;
+                const dc = getDocCount(bucket) || 0;
                 const maxRel = bucket.max_relevance?.value || 0;
                 const avgRel = bucket.avg_relevance?.value || 0;
+                const totalCitations = bucket.total_citations?.value || 0;
                 const prev = byKey.get(key);
                 if (!prev) {
                     byKey.set(key, {
                         key,
                         doc_count: dc,
                         max_relevance: { value: maxRel },
-                        avg_relevance: { value: avgRel }
+                        avg_relevance: { value: avgRel },
+                        total_citations: { value: totalCitations }
                     });
                 } else {
                     prev.doc_count = Math.max(prev.doc_count, dc);
                     prev.max_relevance = { value: Math.max(prev.max_relevance.value, maxRel) };
                     prev.avg_relevance = { value: Math.max(prev.avg_relevance.value, avgRel) };
+                    // Same docs counted in both buckets, like doc_count above — max, not sum.
+                    prev.total_citations = { value: Math.max(prev.total_citations.value, totalCitations) };
                 }
             }
         };
-        accumulate(flatBuckets);
-        accumulate(nestedBuckets);
+        accumulate(flatBuckets, (b) => b.doc_count);
+        // Nested bucket doc_count counts nested sub-documents, not parent papers — use the
+        // reverse_nested paper_count sub-agg (see FilterBuilder.facultyForQueryAggregations).
+        accumulate(nestedBuckets, (b) => b.paper_count?.doc_count ?? b.doc_count);
         return [...byKey.values()].map((b) => ({
             key: b.key,
             doc_count: b.doc_count,
             max_relevance: b.max_relevance,
-            avg_relevance: b.avg_relevance
+            avg_relevance: b.avg_relevance,
+            total_citations: b.total_citations
         }));
     }
 
@@ -121,6 +130,46 @@ export default class FacultyForQueryService {
         return { facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineAnchor };
     }
 
+    /** Mirrors SearchService._buildAdvancedRefineAnchors: resolves each prior refine-chain term
+     *  to its own real result-id membership rather than a literal AND-of-terms, so a paper that
+     *  only matched a prior term semantically isn't wrongly evicted. */
+    async _buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow, filters) {
+        if (authorRefineNarrow || !refineChain.length) return null;
+        return Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, filters)));
+    }
+
+    /** Mirrors SearchService._buildRefineAnchorIdFilter, but uses the full maxResultWindow — this
+     *  anchor is shared across every faculty member's aggregation at once, so a low cap can miss
+     *  an individual's real matches. */
+    async _buildRefineAnchorIdFilter(term, searchInNorm, filters = {}) {
+        const cap = this.maxResultWindow;
+        const runAnchorQuery = async (restrictKnn) => {
+            const embedding = await this.embeddingService.embedQuery(term);
+            const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
+                term, embedding, filters, 1, cap, searchInNorm, null, false, null, null,
+                { refineChain: [], restrictKnn }
+            );
+            osQuery.size = cap;
+            osQuery.from = 0;
+            osQuery._source = ['mongo_id'];
+            delete osQuery.aggs;
+            return this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
+        };
+        try {
+            // BM25-only first; only widen via kNN if that finds nothing (see
+            // InventorScopedSearch._buildRefineAnchorIdFilter for why admitting via kNN whenever
+            // BM25 already found real matches is unsafe once this anchor is used somewhere its
+            // own candidate pool is small).
+            let resp = await runAnchorQuery(true);
+            if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(false);
+            const ids = resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
+            return { filter: ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} } };
+        } catch (err) {
+            this.logger.warn({ err: err?.message, term }, 'Faculty-for-query: refine anchor lookup failed; falling back to literal narrowing');
+            return { filter: this.queryBuilder.buildLiteralPrimaryClause(term, searchInNorm) };
+        }
+    }
+
     /**
      * BM25 pre-check: does at least one query token appear in at least one document?
      * Mirrors SearchService._bm25PreCheck so the People sidebar and POST /search agree on
@@ -128,7 +177,7 @@ export default class FacultyForQueryService {
      * aggregation's kNN arm surfaces nearest-neighbor faculty even for gibberish queries that
      * the papers list (correctly) returns nothing for.
      */
-    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null) {
+    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null, refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
         const useAuthorRefine = authorRefineNarrow && authorOnly && chain.length >= 1;
@@ -154,7 +203,7 @@ export default class FacultyForQueryService {
         }
 
         const body = (!useAuthorRefine && chain.length > 0)
-            ? { size: 0, query: { bool: { must: [preCheckClause], filter: this.queryBuilder.buildRefineFilterClauses(chain, search_in, {}) } } }
+            ? { size: 0, query: { bool: { must: [preCheckClause], filter: refineFilterClauses || this.queryBuilder.buildRefineFilterClauses(chain, search_in, {}) } } }
             : { size: 0, query: preCheckClause };
 
         const response = await this.opensearch.search({ index: this.indexName, body });
@@ -162,7 +211,7 @@ export default class FacultyForQueryService {
     }
 
     /** Build the size:0 OpenSearch aggregation query (basic BM25 or hybrid) for the People sidebar. */
-    async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing, bm25HitCount = null) {
+    async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing, refineFilterClauses = null) {
         const { facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineAnchor } = narrowing;
         const facultyAggs = this.filterBuilder.facultyForQueryAggregations();
 
@@ -188,21 +237,17 @@ export default class FacultyForQueryService {
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
-        // Sidebar counts must agree with AuthorScopedSearch's own BM25-preferred admission (see
-        // QueryBuilder.buildNormalizedHybridQuery): prefer BM25-only recall here too, and only
-        // fall back to including kNN if BM25 found literally nothing for this query+scope
-        // (bm25HitCount === 0 already short-circuits to an empty response before reaching here
-        // in advanced mode, so this is mostly a defensive default for future callers).
+        // restrictKnn: per-faculty counts here must match what clicking into that person's own
+        // scoped view shows (AuthorScopedSearch, BM25-only, unconditionally) — a product decision,
+        // not the IP search's choice to match the broader papers-list total instead. Prior refine
+        // terms still use anchor-based (not literal) narrowing, matching AuthorScopedSearch, so a
+        // refine chain doesn't collapse to fewer results here than it does there.
         const base = this.queryBuilder.buildNormalizedHybridQuery(
             query, embedding, queryFilters, 1, 1,
             searchInNorm, facultyAuthorIds, authorRefineNarrow,
             refineAnchor, facultyKerberosIds,
-            { refineChain, restrictKnn: true, bm25AdmitsNothing: bm25HitCount === 0 }
+            { refineChain, refineFilterClauses, restrictKnn: true }
         );
-        // Prior refinement terms become strict lexical FILTERS so per-faculty counts reflect
-        // the same monotonically narrowed pool as the papers list. buildNormalizedHybridQuery
-        // already bakes refineFilterClauses into every hybrid arm when passed explicitly, so
-        // pass them at construction time instead of splicing the (now per-arm) filter arrays.
         return patchFacultyAggBody(base);
     }
 
@@ -229,10 +274,12 @@ export default class FacultyForQueryService {
             const maxRel = bucket.max_relevance?.value || 0;
             const avgRel = bucket.avg_relevance?.value || 0;
             const paperCount = bucket.doc_count;
+            const citationCount = bucket.total_citations?.value || 0;
             const authorScore = 0.6 * maxRel + 0.3 * avgRel + 0.1 * Math.log2(1 + paperCount);
             return {
                 scopus_author_id: bucket.key,
                 paper_count: paperCount,
+                citation_count: citationCount,
                 max_relevance: maxRel,
                 avg_relevance: avgRel,
                 author_score: authorScore
@@ -308,12 +355,14 @@ export default class FacultyForQueryService {
             if (facultyDedup.has(key)) {
                 const existing = facultyDedup.get(key);
                 existing.paper_count += author.paper_count;
+                existing.citation_count += author.citation_count;
                 existing.author_score = Math.max(existing.author_score, author.author_score);
             } else {
                 facultyDedup.set(key, {
                     name: facultyName,
                     expert_id: faculty.expert_id,
                     paper_count: author.paper_count,
+                    citation_count: author.citation_count,
                     author_score: author.author_score,
                     deptName: faculty?.department?.name || 'Other'
                 });
@@ -328,18 +377,21 @@ export default class FacultyForQueryService {
             const maxRel = bucket.max_relevance?.value || 0;
             const avgRel = bucket.avg_relevance?.value || 0;
             const paperCount = bucket.doc_count;
+            const citationCount = bucket.total_citations?.value || 0;
             const authorScore = 0.6 * maxRel + 0.3 * avgRel + 0.1 * Math.log2(1 + paperCount);
 
             const key = faculty.expert_id;
             if (facultyDedup.has(key)) {
                 const existing = facultyDedup.get(key);
                 existing.paper_count = Math.max(existing.paper_count, paperCount);
+                existing.citation_count = Math.max(existing.citation_count, citationCount);
                 existing.author_score = Math.max(existing.author_score, authorScore);
             } else {
                 facultyDedup.set(key, {
                     name: `${faculty.firstName} ${faculty.lastName}`.trim(),
                     expert_id: faculty.expert_id,
                     paper_count: paperCount,
+                    citation_count: citationCount,
                     author_score: authorScore,
                     deptName: faculty?.department?.name || 'Other'
                 });
@@ -347,6 +399,15 @@ export default class FacultyForQueryService {
         }
 
         return facultyDedup;
+    }
+
+    /** A `hybrid` query silently caps results below from+size without this hint. Mirrors
+     *  SearchService._withPaginationDepth — this class calls OpenSearch directly, so it needs
+     *  its own copy. No-op on non-hybrid bodies. */
+    _withPaginationDepth(body) {
+        if (!body?.query?.hybrid) return body;
+        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), 1), this.maxResultWindow);
+        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
     }
 
     /**
@@ -357,7 +418,8 @@ export default class FacultyForQueryService {
     async _correctPaperCountsViaMongo(osQuery, totalDocs, facultyDedup, facultyDocs, kerberosFacultyDocs) {
         if (facultyDedup.size === 0) return;
         try {
-            const idsQuery = { ...osQuery, size: totalDocs, _source: ['mongo_id'], aggs: undefined };
+            const clampedSize = Math.min(totalDocs, this.maxResultWindow);
+            const idsQuery = this._withPaginationDepth({ ...osQuery, size: clampedSize, from: 0, _source: ['mongo_id'], aggs: undefined });
             delete idsQuery.aggs;
             const idsResponse = await this.opensearch.search({
                 index: this.indexName,
@@ -401,7 +463,12 @@ export default class FacultyForQueryService {
         }
     }
 
-    /** Group deduped faculty by department, scored by avg top-3 relevance with a size bonus. */
+    /**
+     * Group deduped faculty by department. Departments are sorted by total citations across
+     * their matching papers (highest-cited department first); the prior avg top-3 relevance
+     * score (with a size bonus) is kept only as a tiebreaker for departments with equal
+     * citations (e.g. all-zero, common for very recent papers).
+     */
     _groupByDepartment(facultyDedup) {
         const deptMap = new Map();
         let includedCount = 0;
@@ -409,17 +476,19 @@ export default class FacultyForQueryService {
         for (const [, merged] of facultyDedup) {
             const deptName = merged.deptName;
             if (!deptMap.has(deptName)) {
-                deptMap.set(deptName, { name: deptName, faculty: [], facultyScores: [], totalPaperCount: 0 });
+                deptMap.set(deptName, { name: deptName, faculty: [], facultyScores: [], totalPaperCount: 0, totalCitationCount: 0 });
             }
             const dept = deptMap.get(deptName);
             dept.faculty.push({
                 name: merged.name,
                 author_id: merged.expert_id,
                 paper_count: merged.paper_count,
+                citation_count: merged.citation_count,
                 relevance_score: Math.round(merged.author_score * 100) / 100
             });
             dept.facultyScores.push(merged.author_score);
             dept.totalPaperCount += merged.paper_count;
+            dept.totalCitationCount += merged.citation_count;
             includedCount++;
         }
 
@@ -432,12 +501,14 @@ export default class FacultyForQueryService {
                     name: dept.name,
                     faculty: dept.faculty.sort((a, b) => b.relevance_score - a.relevance_score),
                     total_paper_count: dept.totalPaperCount,
+                    total_citation_count: dept.totalCitationCount,
                     _deptScore: deptScore
                 };
             })
             .sort((a, b) => {
                 if (a.name === 'Other') return 1;
                 if (b.name === 'Other') return -1;
+                if (b.total_citation_count !== a.total_citation_count) return b.total_citation_count - a.total_citation_count;
                 return b._deptScore - a._deptScore;
             })
             .map(({ _deptScore, ...dept }) => dept);
@@ -461,11 +532,15 @@ export default class FacultyForQueryService {
         // nearest neighbors — even for gibberish. Gate it behind the SAME BM25 pre-check as
         // POST /search so the People sidebar stays empty whenever the papers list is empty.
         let bm25HitCount = null;
+        let refineFilterClauses = null;
         if (mode === 'advanced') {
+            const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm, narrowing.authorRefineNarrow, effFilters);
+            refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
+
             bm25HitCount = await this._bm25PreCheck(
                 query, searchInNorm,
                 narrowing.facultyAuthorIds, narrowing.authorRefineNarrow,
-                refineChain, narrowing.facultyKerberosIds
+                refineChain, narrowing.facultyKerberosIds, refineFilterClauses
             );
             if (bm25HitCount === 0) {
                 this.logger.info({ query, mode }, 'Faculty-for-query: BM25 pre-check returned 0 hits — no faculty');
@@ -479,7 +554,7 @@ export default class FacultyForQueryService {
             }
         }
 
-        const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing, bm25HitCount);
+        const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing, refineFilterClauses);
 
         this.logger.info({ query, mode, search_in: searchInNorm }, 'Faculty-for-query: querying OpenSearch aggregation');
         const osResponse = await this.opensearch.search({

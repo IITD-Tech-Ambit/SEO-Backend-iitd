@@ -49,21 +49,34 @@ export default class InventorScopedSearch {
      * otherwise a broad/common anchor phrase competes against the ENTIRE corpus for a spot
      * in the top-`cap` results, and this inventor's real (but comparatively niche) matches
      * can rank outside that cutoff. Mirrors AuthorScopedSearch._buildRefineAnchorIdFilter.
+     *
+     * Tries BM25-only first; only falls back to a kNN-inclusive rerun if that finds nothing.
+     * kNN's `k` is sized for corpus-wide recall, but here it's scoped to just one inventor's
+     * own patents — an inventor with fewer total patents than k makes kNN structurally unable
+     * to discriminate (querying for the "top k nearest neighbors" within a pool smaller than k
+     * just returns the whole pool), so admitting via kNN whenever BM25 already found real
+     * matches would silently widen a supposedly-narrowing anchor to this inventor's entire
+     * portfolio. kNN is only trustworthy here as a fallback for the case it was added for: a
+     * term that's genuinely absent from this inventor's other patents, where BM25 alone would
+     * wrongly collapse the anchor to match_none.
      */
     async _buildRefineAnchorIdFilter(term, searchInNorm, scopeFilters) {
         const cap = Math.min(this.maxResultWindow, 2000);
-        try {
+        const runAnchorQuery = async (forceIncludeKnn) => {
             const embedding = await this.embeddingService.embedQuery(term);
             const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
-                term, embedding, scopeFilters, 1, cap, searchInNorm, { refineChain: [] }
+                term, embedding, scopeFilters, 1, cap, searchInNorm, { refineChain: [], forceIncludeKnn }
             );
             osQuery.size = cap;
             osQuery.from = 0;
             osQuery._source = ['mongo_id'];
             delete osQuery.aggs;
-
             const resp = await this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
-            const ids = resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
+            return resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
+        };
+        try {
+            let ids = await runAnchorQuery(false);
+            if (ids.length === 0) ids = await runAnchorQuery(true);
             return ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} };
         } catch (err) {
             this.logger.warn({ err: err?.message, term }, 'Inventor-scoped refine anchor lookup failed; falling back to literal narrowing');
@@ -177,32 +190,17 @@ export default class InventorScopedSearch {
                     ? await Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, scopeFilters)))
                     : [];
 
-                // BM25 is the only recall arm within an inventor's own scope by default (kNN
-                // excluded — see buildNormalizedHybridQuery). Its N-of-M admission bar can be
-                // mathematically unreachable for a paraphrased query with several stopwords, so
-                // probe it first against the SAME constrained pool (inventor + refine narrowing)
-                // the real query will run against — only let kNN back in as a last resort when
-                // BM25 alone finds nothing there, not as a standing co-equal arm.
-                const bm25OnlyClause = searchInNorm?.length > 0
-                    ? this.queryBuilder.buildConstrainedSearchInClause(query, searchInNorm, { fuzziness: 'AUTO' })
-                    : this.queryBuilder._buildAdvancedBm25Clause(query, searchInNorm, this.filterBuilder.getHybridSearchFields(searchInNorm), { fuzziness: 'AUTO' });
-                const scopeFilterClauses = [
-                    { nested: { path: 'inventors', query: { term: { 'inventors.kerberos': kerberosId } } } },
-                    ...refineFilters
-                ];
-                const bm25PrecheckResp = await this.opensearch.search({
-                    index: this.indexName,
-                    body: { size: 0, track_total_hits: true, query: { bool: { must: [bm25OnlyClause], filter: scopeFilterClauses } } }
-                });
-                const bm25AdmitsNothing = bm25PrecheckResp.body.hits.total.value === 0;
-
+                // BM25 is the only recall arm within an inventor's own scope, unconditionally (kNN
+                // excluded — see buildNormalizedHybridQuery: a small single-inventor candidate pool
+                // makes embedding similarity too flat to trust as an admission signal on its own).
+                //
                 // Pass our own already-computed (id-membership) refine filters through so
                 // buildNormalizedHybridQuery doesn't fall back to its internal literal-AND
                 // computation into the SAME filter array (see AuthorScopedSearch for why that
                 // would silently veto everything).
                 const base = this.queryBuilder.buildNormalizedHybridQuery(
                     query, embedding, scopeFilters, page, per_page, searchInNorm,
-                    { refineChain, refineFilterClauses: refineFilters, bm25AdmitsNothing }
+                    { refineChain, refineFilterClauses: refineFilters }
                 );
 
                 delete base.aggs;

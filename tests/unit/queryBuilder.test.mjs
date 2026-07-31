@@ -77,9 +77,21 @@ test('buildStrictBm25Must: <=3 terms require all terms (must)', () => {
 
 test('buildStrictBm25Must: 4+ terms relax to ~75% minimum_should_match', () => {
     const qb = makeQB();
-    const clause = qb.buildStrictBm25Must('a b c d e f', ['title']);
+    const clause = qb.buildStrictBm25Must('alpha beta gamma delta epsilon zeta', ['title']);
     assert.ok(clause.bool.should);
     assert.equal(clause.bool.minimum_should_match, Math.max(3, Math.ceil(6 * 0.75)));
+});
+
+test('buildStrictBm25Must: stopwords are excluded from the term-count threshold', () => {
+    // A stopword's per-term clause queries fields analyzed with the same english_stop filter
+    // that strips it from indexed content, so it can never match — counting it toward "N of M
+    // terms" would make a sentence query with several stopwords structurally unsatisfiable.
+    const qb = makeQB();
+    const clause = qb.buildStrictBm25Must('the impact of alpha on beta and gamma', ['title']);
+    assert.ok(clause.bool.should);
+    // Content terms only: impact, alpha, beta, gamma = 4 (the, of, on, and are stopwords).
+    assert.equal(clause.bool.should.length, 4);
+    assert.equal(clause.bool.minimum_should_match, Math.max(3, Math.ceil(4 * 0.75)));
 });
 
 test('buildIITDAuthorMatchClause returns null when roster is empty', () => {

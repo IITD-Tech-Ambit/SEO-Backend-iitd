@@ -10,6 +10,16 @@ const FUZZY_MAX_EXPANSIONS = 10;
 // let them compound the clause count for no real recall benefit.
 const MAX_TERMS_FOR_IDENTITY_ARMS = 6;
 
+// Lucene's default English stopword list — matches what OpenSearch's `english` analyzer strips
+// via its own english_stop filter. A per-term clause for one of these words can never actually
+// match anything on the stemmed fields it's built against (the field's own analyzer strips it
+// the same way), so it must not count toward a "match N of M terms" admission threshold.
+const STOPWORDS = new Set([
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it',
+    'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these',
+    'they', 'this', 'to', 'was', 'will', 'with'
+]);
+
 function withExpansionCap(fuzz) {
     return (fuzz && fuzz.fuzziness != null) ? { ...fuzz, max_expansions: FUZZY_MAX_EXPANSIONS } : fuzz;
 }
@@ -376,8 +386,8 @@ export default class QueryBuilder {
     }
 
     /**
-     * Per-term BM25 clause for advanced mode.
-     * <=3 terms: all terms required (strict). 4+: should with ~75% minimum_should_match.
+     * Per-term BM25 clause for advanced mode, over content (non-stopword) terms.
+     * <=3 terms: all required (strict). 4+: should with ~75% minimum_should_match.
      */
     buildStrictBm25Must(query, searchFields, fuzz = { fuzziness: 'AUTO' }, { strict = false } = {}) {
         const terms = query.trim().split(/\s+/).filter(t => t.length > 0);
@@ -400,18 +410,21 @@ export default class QueryBuilder {
             };
         }
 
-        // Per-term admission relies on stopword-aware analysis: `title`/`abstract` (unsuffixed)
-        // use OpenSearch's built-in `english` analyzer, which strips stopwords via its own
-        // english_stop filter. `.standard`/`.exact` are literal/un-stemmed fields for phrase-level
-        // precision elsewhere (see _buildPhraseBoostTiers) — including them here lets a single
-        // common word like "at" satisfy a whole term slot in the N-of-M admission count.
         const perTermFields = searchFields.filter(f => !/\.(standard|exact)(\^|$)/.test(f));
         const matchFields = perTermFields.length ? perTermFields : searchFields;
         // A fixed numeric fuzziness (unlike 'AUTO') lets a short term fuzzy-match almost anything
         // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
         const fuzzFor = (term) => withExpansionCap((fuzz?.fuzziness != null && fuzz.fuzziness !== 'AUTO' && term.length <= 2) ? {} : fuzz);
 
-        const clauses = terms.map(term => {
+        // A stopword's per-term clause queries `matchFields`, which are analyzed with the same
+        // english_stop filter that strips it from the indexed content — so that clause can never
+        // actually match anything. Drop stopwords before requiring/counting terms, or a sentence
+        // query with several of them (e.g. "the impact of X on Y") can make the N-of-M admission
+        // threshold below structurally impossible to satisfy, silently returning zero BM25 matches.
+        const contentTerms = terms.filter(t => !STOPWORDS.has(t.toLowerCase()));
+        const requiredTerms = contentTerms.length > 0 ? contentTerms : terms;
+
+        const clauses = requiredTerms.map(term => {
             const termFuzz = fuzzFor(term);
             const variant = getSpellingVariant(term);
             if (variant) {
@@ -430,11 +443,11 @@ export default class QueryBuilder {
             };
         });
 
-        if (terms.length <= 3 || strict) {
+        if (requiredTerms.length <= 3 || strict) {
             return { bool: { must: clauses } };
         }
 
-        const minRequired = Math.max(3, Math.ceil(terms.length * 0.75));
+        const minRequired = Math.max(3, Math.ceil(requiredTerms.length * 0.75));
         return { bool: { should: clauses, minimum_should_match: minRequired } };
     }
 
@@ -608,7 +621,16 @@ export default class QueryBuilder {
             bm25Clause = this._buildDefaultBm25Clause(query, searchFields, { fuzziness: 'AUTO' }, authorScoped);
         }
 
-        const knnRecall = { knn: { embedding: { vector: embedding, k: 100 } } };
+        // Filter inside knn, not a sibling bool.filter — see buildNormalizedHybridQuery.
+        const knnRecall = {
+            knn: {
+                embedding: {
+                    vector: embedding,
+                    k: 100,
+                    ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                }
+            }
+        };
         // Pure-kNN recall is excluded when scoped to one author (authorScoped): within a small
         // single-person candidate pool, embedding similarity across the corpus is often nearly
         // flat, so min_score stops discriminating and admits unrelated papers. kNN still ranks
@@ -671,7 +693,16 @@ export default class QueryBuilder {
             bm25Clause = this._buildDefaultBm25Clause(query, searchFields, { fuzziness: 'AUTO' }, authorScoped);
         }
 
-        const knnRecall = { knn: { embedding: { vector: embedding, k: 100 } } };
+        // See buildHybridQuery: filter goes inside the knn field (efficient k-NN filtering).
+        const knnRecall = {
+            knn: {
+                embedding: {
+                    vector: embedding,
+                    k: 100,
+                    ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                }
+            }
+        };
         const recallArms = authorScoped ? [bm25Clause] : [bm25Clause, knnRecall];
         const recallGate = { bool: { should: recallArms, minimum_should_match: 1 } };
 
@@ -744,7 +775,7 @@ export default class QueryBuilder {
      * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
      * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, bm25AdmitsNothing = false, restrictKnn = false } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, restrictKnn = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -786,24 +817,27 @@ export default class QueryBuilder {
         }
 
         const bm25Arm = { bool: { must: [bm25Clause], should: boostClauses, filter: filterClauses } };
-        const knnArm = { bool: { must: [{ knn: { embedding: { vector: embedding, k: 100 } } }], filter: filterClauses } };
-        // Pure-kNN recall is excluded when scoped to one author by default: within a small
-        // single-person candidate pool, embedding similarity is often nearly flat, so its "top"
-        // neighbor can be little more than the least-bad of an unrelated bunch. But BM25's N-of-M
-        // admission bar can be mathematically unreachable for a paraphrased query with several
-        // stopwords (each stopword can never satisfy a term slot, yet still counts toward the
-        // required total) — with kNN excluded there's no fallback, so a genuinely matching paper
-        // becomes permanently unfindable within that author's scope. bm25AdmitsNothing (the
-        // caller's own BM25-only precheck) allows kNN back in only as a last resort, not a
-        // co-equal arm, keeping the noise-reduction intent while removing the hard cliff.
-        //
-        // `restrictKnn` applies this same BM25-preferred admission rule to the People sidebar's
-        // full-corpus aggregation query (FacultyForQueryService), which has no per-author filter
-        // to key off `authorScoped`. Without it, the aggregation's kNN arm can admit a paper into
-        // a faculty member's bucket purely on semantic similarity even though that faculty
-        // member's OWN scoped search (AuthorScopedSearch, BM25-only by default) would never
-        // surface it — the sidebar count then overcounts relative to the drill-down.
-        const excludeKnn = (authorScoped || restrictKnn) && !bm25AdmitsNothing;
+        // Filter goes inside knn (efficient k-NN filtering), not as a sibling bool.filter — a
+        // sibling filter runs kNN unfiltered against the whole index first, so a scoped candidate
+        // whose matches don't rank in the global top-100 gets zero kNN recall.
+        const knnArm = {
+            bool: {
+                must: [{
+                    knn: {
+                        embedding: {
+                            vector: embedding,
+                            k: 100,
+                            ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                        }
+                    }
+                }]
+            }
+        };
+        // kNN excluded when scoped to one author on a fresh (no refine chain) query — a small
+        // candidate pool makes its score too flat to trust for admission. Once a refine chain is
+        // active, candidates are already confined to the anchor's validated matches, so kNN is
+        // safe to admit on (and excluding it there previously collapsed valid refine matches to 0).
+        const excludeKnn = (!!authorScoped || restrictKnn) && chain.length === 0;
         const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
 
         return {

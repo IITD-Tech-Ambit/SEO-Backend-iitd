@@ -207,29 +207,38 @@ export default class FilterBuilder {
     facultyForQueryAggregations() {
         const scoreStats = {
             max_relevance: { max: { script: '_score' } },
-            avg_relevance: { avg: { script: '_score' } }
+            avg_relevance: { avg: { script: '_score' } },
+            total_citations: { sum: { field: 'citation_count' } }
         };
+        // Default shard_size (~310) can undercount a prolific author on a broad query across
+        // research_documents' 3 shards; raised well above realistic per-shard author cardinality.
+        const shardSize = 2000;
         return {
             from_author_ids: {
                 filter: { exists: { field: 'author_ids' } },
                 aggs: {
                     by_scopus_author: {
-                        terms: { field: 'author_ids', size: 200, min_doc_count: 1 },
+                        terms: { field: 'author_ids', size: 200, shard_size: shardSize, min_doc_count: 1 },
                         aggs: scoreStats
                     }
                 }
             },
+            // A nested terms bucket's own doc_count counts matching nested AUTHOR sub-documents,
+            // not parent papers — a paper with the same author_id listed twice (a real data
+            // artifact seen on the IP side; not implausible here) would count as 2 papers for
+            // them instead of 1. reverse_nested joins back to the parent doc level so paper_count
+            // stays a distinct-paper count, matching what AuthorScopedSearch shows on click.
             from_nested_authors: {
                 nested: { path: 'authors' },
                 aggs: {
                     by_scopus_author: {
-                        terms: { field: 'authors.author_id', size: 200, min_doc_count: 1 },
-                        aggs: scoreStats
+                        terms: { field: 'authors.author_id', size: 200, shard_size: shardSize, min_doc_count: 1 },
+                        aggs: { ...scoreStats, paper_count: { reverse_nested: {} } }
                     }
                 }
             },
             from_kerberos: {
-                terms: { field: 'kerberos', size: 200, min_doc_count: 1 },
+                terms: { field: 'kerberos', size: 200, shard_size: shardSize, min_doc_count: 1 },
                 aggs: scoreStats
             }
         };

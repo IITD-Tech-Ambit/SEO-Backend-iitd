@@ -9,6 +9,15 @@ const FUZZY_MAX_EXPANSIONS = 10;
 // let it compound the clause count for no real recall benefit.
 const MAX_TERMS_FOR_IDENTITY_ARMS = 6;
 
+// Lucene's default English stopword list — matches what OpenSearch's `english` analyzer strips
+// via its own english_stop filter. See buildStrictBm25Must for why these can't count toward a
+// "match N of M terms" admission threshold.
+const STOPWORDS = new Set([
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it',
+    'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these',
+    'they', 'this', 'to', 'was', 'will', 'with'
+]);
+
 function withExpansionCap(fuzz) {
     return (fuzz && fuzz.fuzziness != null) ? { ...fuzz, max_expansions: FUZZY_MAX_EXPANSIONS } : fuzz;
 }
@@ -234,26 +243,28 @@ export default class QueryBuilder {
             };
         }
 
-        // Per-term admission relies on stopword-aware analysis: `title`/`abstract` (unsuffixed)
-        // use OpenSearch's built-in `english` analyzer, which strips stopwords via its own
-        // english_stop filter. `.standard`/`.exact` are literal/un-stemmed fields for phrase-level
-        // precision elsewhere (see _buildPhraseBoostTiers) — including them here lets a single
-        // common word like "at" satisfy a whole term slot in the N-of-M admission count.
         const perTermFields = searchFields.filter((f) => !/\.(standard|exact)(\^|$)/.test(f));
         const matchFields = perTermFields.length ? perTermFields : searchFields;
         // A fixed numeric fuzziness (unlike 'AUTO') lets a short term fuzzy-match almost anything
         // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
         const fuzzFor = (term) => withExpansionCap((fuzz?.fuzziness != null && fuzz.fuzziness !== 'AUTO' && term.length <= 2) ? {} : fuzz);
 
-        const clauses = terms.map((term) => ({
+        // Drop stopwords before requiring/counting terms — their per-term clause queries
+        // matchFields, which strip the same stopword during analysis, so it could never match
+        // anything anyway. Left in, a sentence query with several of them can make the N-of-M
+        // threshold below structurally impossible to satisfy.
+        const contentTerms = terms.filter((t) => !STOPWORDS.has(t.toLowerCase()));
+        const requiredTerms = contentTerms.length > 0 ? contentTerms : terms;
+
+        const clauses = requiredTerms.map((term) => ({
             multi_match: { query: term, fields: matchFields, type: 'best_fields', tie_breaker: 0.3, ...fuzzFor(term) }
         }));
 
-        if (terms.length <= 3 || strict) {
+        if (requiredTerms.length <= 3 || strict) {
             return { bool: { must: clauses } };
         }
 
-        const minRequired = Math.max(3, Math.ceil(terms.length * 0.75));
+        const minRequired = Math.max(3, Math.ceil(requiredTerms.length * 0.75));
         return { bool: { should: clauses, minimum_should_match: minRequired } };
     }
 
@@ -437,7 +448,20 @@ export default class QueryBuilder {
         }
 
         const bm25Clause = this._buildAdvancedBm25Clause(query, searchIn, searchFields, { fuzziness: 'AUTO' });
-        const knnRecall = { knn: { embedding: { vector: embedding, k: 100 } } };
+
+        // Anchor result-id membership, not literal AND-of-terms (see _buildRefineAnchorIdFilter) —
+        // pushed before knnRecall so its embedded filter (efficient k-NN filtering) sees it.
+        filterClauses.push(...(refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn)));
+
+        const knnRecall = {
+            knn: {
+                embedding: {
+                    vector: embedding,
+                    k: 100,
+                    ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                }
+            }
+        };
         // Fold basic's literal term-AND into recall so date-sorted advanced is a structural basic superset.
         const basicSupersetClause = this.buildLiteralPrimaryClause(query, searchIn);
         // See buildNormalizedHybridQuery: pure-kNN recall is unreliable within a single inventor's
@@ -446,11 +470,6 @@ export default class QueryBuilder {
             ? [bm25Clause, basicSupersetClause]
             : [bm25Clause, knnRecall, basicSupersetClause];
         const recallGate = { bool: { should: recallArms, minimum_should_match: 1 } };
-
-        // Advanced mode: narrow using the anchor's actual result-id membership (computed by the
-        // service via _buildRefineAnchorIdFilter), not a literal AND-of-terms — otherwise a doc
-        // that only matched the anchor semantically gets wrongly evicted on refine.
-        filterClauses.push(...(refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn)));
 
         return {
             size: perPage,
@@ -507,7 +526,7 @@ export default class QueryBuilder {
      * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
      * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, bm25AdmitsNothing = false, restrictKnn = false } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, restrictKnn = false, forceIncludeKnn = false } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -534,25 +553,27 @@ export default class QueryBuilder {
         filterClauses.push(...(refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn)));
 
         const bm25Arm = { bool: { must: [bm25Clause], should: boostClauses, filter: filterClauses } };
-        const knnArm = { bool: { must: [{ knn: { embedding: { vector: embedding, k: 100 } } }], filter: filterClauses } };
-        // Pure-kNN recall is excluded when scoped to one inventor (filters.kerberos): within a
-        // small single-person candidate pool, embedding similarity across an entire domain-
-        // specific corpus is often nearly flat (observed <0.15 spread across a query's whole
-        // top-15), so its "top" neighbor can be little more than the least-bad of an unrelated
-        // bunch. kNN still ranks normally once there's no hard identity filter to fall back on.
-        // But BM25's N-of-M admission bar can be mathematically unreachable for a paraphrased
-        // query with several stopwords — with kNN excluded there's no fallback, so a genuinely
-        // matching patent becomes permanently unfindable within that inventor's scope.
-        // bm25AdmitsNothing (the caller's own BM25-only precheck against the same scoped pool)
-        // allows kNN back in only as a last resort, not a co-equal arm.
-        //
-        // `restrictKnn` applies this exact same BM25-preferred admission rule to the People
-        // sidebar's full-corpus aggregation query (IpFacultyForQueryService), which has no
-        // per-inventor filter to key off `filters.kerberos`. Without it, the aggregation's kNN
-        // arm can admit a document into an inventor's bucket purely on semantic similarity even
-        // though that inventor's OWN scoped search (InventorScopedSearch, BM25-only by default)
-        // would never surface it — the sidebar count then overcounts relative to the drill-down.
-        const excludeKnn = (filters?.kerberos || restrictKnn) && !bm25AdmitsNothing;
+        // Filter inside knn, not a sibling bool.filter — see the general-search twin of this
+        // function (QueryBuilder.buildNormalizedHybridQuery) for the measured impact.
+        const knnArm = {
+            bool: {
+                must: [{
+                    knn: {
+                        embedding: {
+                            vector: embedding,
+                            k: 100,
+                            ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                        }
+                    }
+                }]
+            }
+        };
+        // kNN excluded when scoped to one inventor on a fresh (no refine chain) query — a small
+        // candidate pool makes its score too flat to trust for admission (this is what the
+        // "vagina" false-match case came from). `forceIncludeKnn` bypasses this for refine-chain
+        // anchor computation, where the result only feeds a doc-id filter, not a relevance verdict,
+        // and excluding kNN there made an anchor's own literal-text match a single point of failure.
+        const excludeKnn = (!!filters?.kerberos || restrictKnn) && !forceIncludeKnn && chain.length === 0;
         const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
 
         return {
