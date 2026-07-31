@@ -42,6 +42,31 @@ export default class AuthorScopedSearch {
     }
 
     /**
+     * Pushes an author-scoping filter into every arm of a hybrid query, built for the `must:
+     * [bm25Clause], filter: [...]` shape (BM25 arm) — but the kNN arm's filter lives nested
+     * inside must[0].knn.embedding.filter.bool.filter instead (efficient k-NN filtering — see
+     * QueryBuilder.buildNormalizedHybridQuery), not as a sibling bool.filter array. A plain
+     * `arm.bool.filter.push` silently skips the kNN arm, leaving it to search embedding
+     * similarity across the WHOLE corpus (when included) instead of just this author's papers —
+     * measured directly: an author-refine-narrow drilldown returned as many hits as the
+     * unscoped corpus-wide total, because the kNN arm's admissions were never actually scoped.
+     */
+    _scopeHybridQueryToAuthor(hybridQuery, authorFilter) {
+        if (!authorFilter) return;
+        for (const arm of hybridQuery?.query?.hybrid?.queries || []) {
+            if (Array.isArray(arm.bool?.filter)) {
+                arm.bool.filter.push(authorFilter);
+                continue;
+            }
+            const knnClause = arm.bool?.must?.[0]?.knn?.embedding;
+            if (knnClause) {
+                if (!knnClause.filter) knnClause.filter = { bool: { filter: [] } };
+                knnClause.filter.bool.filter.push(authorFilter);
+            }
+        }
+    }
+
+    /**
      * Re-runs a prior refine-chain term as its own real hybrid search (not a literal-AND
      * filter) and narrows to the doc ids it actually matched. A literal-AND filter requires
      * every refine term to appear verbatim in the doc — but the anchor step itself may have
@@ -66,25 +91,7 @@ export default class AuthorScopedSearch {
             // phrase competes against the ENTIRE corpus for a spot in the top `cap` results, and
             // this author's real (but comparatively niche) matches can rank outside that cutoff
             // even though they'd be the obvious top matches within just their own papers.
-            //
-            // The kNN arm's filter lives nested inside must[0].knn.embedding.filter.bool.filter
-            // (efficient k-NN filtering — see buildNormalizedHybridQuery), not as a sibling
-            // bool.filter array like the BM25 arm — a plain `arm.bool.filter.push` silently
-            // skips it, leaving kNN recall (when included) unscoped across the WHOLE corpus
-            // instead of just this author's papers.
-            if (authorFilter) {
-                for (const arm of osQuery.query?.hybrid?.queries || []) {
-                    if (Array.isArray(arm.bool?.filter)) {
-                        arm.bool.filter.push(authorFilter);
-                        continue;
-                    }
-                    const knnClause = arm.bool?.must?.[0]?.knn?.embedding;
-                    if (knnClause) {
-                        if (!knnClause.filter) knnClause.filter = { bool: { filter: [] } };
-                        knnClause.filter.bool.filter.push(authorFilter);
-                    }
-                }
-            }
+            this._scopeHybridQueryToAuthor(osQuery, authorFilter);
 
             return this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
         };
@@ -264,15 +271,7 @@ export default class AuthorScopedSearch {
                     { authorScoped: true, refineChain, refineFilterClauses: refineFilters }
                 );
 
-                // Every hybrid arm carries its own filter array (see QueryBuilder.buildNormalizedHybridQuery) —
-                // in practice they share the same array reference, but push into each distinct
-                // array once (by identity) rather than assume that internal detail.
-                const uniqueFilterArrays = [...new Set(
-                    (base.query?.hybrid?.queries || [])
-                        .map((arm) => arm.bool?.filter)
-                        .filter(Array.isArray)
-                )];
-                for (const filterArr of uniqueFilterArrays) filterArr.push(authorFilter);
+                this._scopeHybridQueryToAuthor(base, authorFilter);
 
                 delete base.aggs;
                 osQuery = base;
