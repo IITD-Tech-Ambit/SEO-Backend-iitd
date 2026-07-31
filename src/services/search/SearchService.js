@@ -265,22 +265,29 @@ export default class SearchService {
      *  though they'd be the obvious top matches within the filtered set. */
     async _buildRefineAnchorIdFilter(term, searchInNorm, filters = {}) {
         const cap = Math.min(this.maxResultWindow, 2000);
-        try {
+        // Must resolve the same bm25HitCount-driven min_score/weights regime the anchor's own
+        // original search used — passing bm25HitCount: null falls back to the loosest bar,
+        // capturing far more "members" than the anchor actually returned as results.
+        const runAnchorQuery = async (restrictKnn, bm25HitCount) => {
             const embedding = await this.embeddingService.embedQuery(term);
-            // Must resolve the same bm25HitCount-driven min_score/weights regime the anchor's own
-            // original search used — passing bm25HitCount: null falls back to the loosest bar,
-            // capturing far more "members" than the anchor actually returned as results.
-            const bm25HitCount = await this._bm25PreCheck(term, searchInNorm, null, false, [], null);
             const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
                 term, embedding, filters, 1, cap, searchInNorm, null, false, null, null,
-                { bm25HitCount, candidateK: this.candidateK, refineChain: [] }
+                { bm25HitCount, candidateK: this.candidateK, refineChain: [], restrictKnn }
             );
             osQuery.size = cap;
             osQuery.from = 0;
             osQuery._source = ['mongo_id'];
             delete osQuery.aggs;
-
-            const resp = await this.opensearch.search({ index: this.indexName, body: osQuery, search_pipeline: this.rrfPipeline });
+            return this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
+        };
+        try {
+            const bm25HitCount = await this._bm25PreCheck(term, searchInNorm, null, false, [], null);
+            // BM25-only first; only widen via kNN if that finds nothing (see
+            // InventorScopedSearch._buildRefineAnchorIdFilter and AuthorScopedSearch's twin for
+            // why admitting via kNN whenever BM25 already found real matches is unsafe once this
+            // anchor is used somewhere its own candidate pool is small).
+            let resp = await runAnchorQuery(true, bm25HitCount);
+            if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(false, bm25HitCount);
             const ids = [];
             const scoreById = {};
             for (const hit of resp.body.hits.hits) {

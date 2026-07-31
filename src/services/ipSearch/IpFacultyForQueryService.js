@@ -42,7 +42,14 @@ export default class IpFacultyForQueryService {
         return null;
     }
 
-    /** Nested agg: only faculty (affiliated) inventors, bucketed by kerberos. */
+    /**
+     * Nested agg: only faculty (affiliated) inventors, bucketed by kerberos. A nested terms
+     * bucket's own doc_count counts matching nested INVENTOR sub-documents, not parent patents —
+     * a patent with the same inventor listed twice (a real data artifact seen in the index) would
+     * otherwise count as 2 patents for them instead of 1. reverse_nested joins back to the parent
+     * document level so patent_count reflects distinct patents, matching what InventorScopedSearch
+     * (a normal, non-nested hit count) shows on click.
+     */
     _facultyInventorAggs() {
         return {
             faculty_inventors: {
@@ -51,7 +58,12 @@ export default class IpFacultyForQueryService {
                     affiliated: {
                         filter: { term: { 'inventors.is_faculty': true } },
                         aggs: {
-                            by_kerberos: { terms: { field: 'inventors.kerberos', size: 500 } }
+                            by_kerberos: {
+                                terms: { field: 'inventors.kerberos', size: 500 },
+                                aggs: {
+                                    patent_count: { reverse_nested: {} }
+                                }
+                            }
                         }
                     }
                 }
@@ -103,11 +115,13 @@ export default class IpFacultyForQueryService {
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
-        // Same recall arms as IpSearchService._runAdvancedSearch (BM25 + kNN) so totals agree with the patents list.
+        // restrictKnn: per-inventor counts must match InventorScopedSearch's own BM25-only scoped
+        // view (same product decision as the general search's People sidebar).
         return patch(this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, 1, 1, searchInNorm, {
             refineChain: chain,
             refineFilterClauses,
-            candidateK: this.candidateK
+            candidateK: this.candidateK,
+            restrictKnn: true
         }));
     }
 
@@ -135,6 +149,7 @@ export default class IpFacultyForQueryService {
             const faculty = facultyByKerberos.get(k);
             if (!faculty) continue;
 
+            const ipCount = bucket.patent_count?.doc_count ?? bucket.doc_count;
             const deptName = faculty?.department?.name || 'Other';
             if (!deptMap.has(deptName)) deptMap.set(deptName, { name: deptName, faculty: [], totalIpCount: 0 });
             const dept = deptMap.get(deptName);
@@ -144,9 +159,9 @@ export default class IpFacultyForQueryService {
                 expert_id: faculty.expert_id,
                 kerberos: k,
                 profile_image_url: faculty.profile_image_url || null,
-                ipCount: bucket.doc_count
+                ipCount
             });
-            dept.totalIpCount += bucket.doc_count;
+            dept.totalIpCount += ipCount;
             includedCount++;
         }
 

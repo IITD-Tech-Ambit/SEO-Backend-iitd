@@ -134,6 +134,7 @@ export const searchResponseSchema = {
                     publication_year: { type: 'integer' },
                     document_type: { type: 'string' },
                     field_associated: { type: 'string' },
+                    department: { type: 'string', description: "Professor department resolved via Faculty.department for the paper's first IITD author (distinct from field_associated)." },
                     subject_area: { type: 'array' },
                     citation_count: { type: 'integer' },
                     reference_count: { type: 'integer' },
@@ -163,7 +164,8 @@ export const searchResponseSchema = {
                         },
                         nullable: true
                     },
-                    paperCount: { type: 'integer' }
+                    paperCount: { type: 'integer' },
+                    citationCount: { type: 'integer' }
                 }
             }
         },
@@ -449,11 +451,13 @@ export const facultyForQueryResponseSchema = {
                                 name: { type: 'string' },
                                 author_id: { type: 'string' },
                                 paper_count: { type: 'integer' },
+                                citation_count: { type: 'integer' },
                                 relevance_score: { type: 'number' }
                             }
                         }
                     },
-                    total_paper_count: { type: 'integer' }
+                    total_paper_count: { type: 'integer' },
+                    total_citation_count: { type: 'integer' }
                 }
             }
         },

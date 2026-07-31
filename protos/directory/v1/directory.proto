@@ -64,6 +64,16 @@ message FacultyCard {
   optional Department department = 7;   // JSON null when unset
   optional string profile_image_url = 8; // JSON: profileImageUrl, null when unset
   optional string designation = 9;      // JSON null when unset
+  repeated DominantDomain dominant_domains = 10; // JSON: dominant_domains
+}
+
+// Faculty.dominant_domains element (formatDominantDomains) — the faculty's
+// precomputed dominant taxonomy Domains, used by the profile page's clickable
+// Research Areas section. Distinct from research_areas (a padded string list).
+message DominantDomain {
+  string name = 1;
+  string slug = 2;
+  int32 paper_count = 3;   // JSON: paperCount
 }
 
 // Full directory faculty DTO (formatDirectoryFaculty). orc/scopus/scholar are
@@ -83,6 +93,7 @@ message Faculty {
   optional string profile_image_url = 12; // JSON: profileImageUrl, null when unset
   optional string designation = 13;      // JSON null when unset
   optional int32 working_from_year = 14; // JSON: workingFromYear, null when unset
+  repeated DominantDomain dominant_domains = 15; // JSON: dominant_domains
 }
 
 message Pagination {

@@ -52,10 +52,10 @@ export default class AuthorScopedSearch {
      */
     async _buildRefineAnchorIdFilter(term, searchInNorm, authorFilter) {
         const cap = Math.min(this.maxResultWindow, 2000);
-        try {
+        const runAnchorQuery = async (restrictKnn) => {
             const embedding = await this.embeddingService.embedQuery(term);
             const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
-                term, embedding, {}, 1, cap, searchInNorm, null, false, null, null, { refineChain: [] }
+                term, embedding, {}, 1, cap, searchInNorm, null, false, null, null, { refineChain: [], restrictKnn }
             );
             osQuery.size = cap;
             osQuery.from = 0;
@@ -66,13 +66,40 @@ export default class AuthorScopedSearch {
             // phrase competes against the ENTIRE corpus for a spot in the top `cap` results, and
             // this author's real (but comparatively niche) matches can rank outside that cutoff
             // even though they'd be the obvious top matches within just their own papers.
+            //
+            // The kNN arm's filter lives nested inside must[0].knn.embedding.filter.bool.filter
+            // (efficient k-NN filtering — see buildNormalizedHybridQuery), not as a sibling
+            // bool.filter array like the BM25 arm — a plain `arm.bool.filter.push` silently
+            // skips it, leaving kNN recall (when included) unscoped across the WHOLE corpus
+            // instead of just this author's papers.
             if (authorFilter) {
                 for (const arm of osQuery.query?.hybrid?.queries || []) {
-                    if (Array.isArray(arm.bool?.filter)) arm.bool.filter.push(authorFilter);
+                    if (Array.isArray(arm.bool?.filter)) {
+                        arm.bool.filter.push(authorFilter);
+                        continue;
+                    }
+                    const knnClause = arm.bool?.must?.[0]?.knn?.embedding;
+                    if (knnClause) {
+                        if (!knnClause.filter) knnClause.filter = { bool: { filter: [] } };
+                        knnClause.filter.bool.filter.push(authorFilter);
+                    }
                 }
             }
 
-            const resp = await this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
+            return this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
+        };
+        try {
+            // BM25-only first; only widen via kNN if that finds nothing. kNN's k is sized for
+            // corpus-wide recall, but here it's scoped to just this one author's own papers — an
+            // author with fewer total (filter-matching) papers than k makes kNN structurally
+            // unable to discriminate: "top k nearest neighbors within a pool smaller than k" is
+            // just the whole pool, so admitting via kNN whenever BM25 already found real matches
+            // would silently widen a supposedly-narrowing anchor to nearly this author's entire
+            // history (measured on the IP search's InventorScopedSearch twin: an inventor's
+            // 88-patent portfolio, entirely unfiltered, for a refine term real BM25 matched only
+            // 15 of).
+            let resp = await runAnchorQuery(true);
+            if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(false);
             const ids = resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
             return ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} };
         } catch (err) {

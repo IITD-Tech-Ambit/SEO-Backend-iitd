@@ -49,21 +49,34 @@ export default class InventorScopedSearch {
      * otherwise a broad/common anchor phrase competes against the ENTIRE corpus for a spot
      * in the top-`cap` results, and this inventor's real (but comparatively niche) matches
      * can rank outside that cutoff. Mirrors AuthorScopedSearch._buildRefineAnchorIdFilter.
+     *
+     * Tries BM25-only first; only falls back to a kNN-inclusive rerun if that finds nothing.
+     * kNN's `k` is sized for corpus-wide recall, but here it's scoped to just one inventor's
+     * own patents — an inventor with fewer total patents than k makes kNN structurally unable
+     * to discriminate (querying for the "top k nearest neighbors" within a pool smaller than k
+     * just returns the whole pool), so admitting via kNN whenever BM25 already found real
+     * matches would silently widen a supposedly-narrowing anchor to this inventor's entire
+     * portfolio. kNN is only trustworthy here as a fallback for the case it was added for: a
+     * term that's genuinely absent from this inventor's other patents, where BM25 alone would
+     * wrongly collapse the anchor to match_none.
      */
     async _buildRefineAnchorIdFilter(term, searchInNorm, scopeFilters) {
         const cap = Math.min(this.maxResultWindow, 2000);
-        try {
+        const runAnchorQuery = async (forceIncludeKnn) => {
             const embedding = await this.embeddingService.embedQuery(term);
             const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
-                term, embedding, scopeFilters, 1, cap, searchInNorm, { refineChain: [] }
+                term, embedding, scopeFilters, 1, cap, searchInNorm, { refineChain: [], forceIncludeKnn }
             );
             osQuery.size = cap;
             osQuery.from = 0;
             osQuery._source = ['mongo_id'];
             delete osQuery.aggs;
-
             const resp = await this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
-            const ids = resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
+            return resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
+        };
+        try {
+            let ids = await runAnchorQuery(false);
+            if (ids.length === 0) ids = await runAnchorQuery(true);
             return ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} };
         } catch (err) {
             this.logger.warn({ err: err?.message, term }, 'Inventor-scoped refine anchor lookup failed; falling back to literal narrowing');

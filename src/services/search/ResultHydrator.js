@@ -51,6 +51,10 @@ export default class ResultHydrator {
     /**
      * Keep only paper authors whose Scopus author_id is on a Faculty record (IIT Delhi roster).
      * Uses paper.kerberos to guarantee the primary faculty author is always retained.
+     * Also stamps each document with `department` — the professor department (Faculty.department)
+     * of its first remaining IITD author — for department grouping in the UI. This is deliberately
+     * NOT the paper's `field_associated` tag: that's a Scopus subject-field string on the paper
+     * itself, unrelated to which IIT Delhi department the authoring professor belongs to.
      * Mutates each document in place.
      */
     async filterAuthorsToFacultyRoster(results) {
@@ -73,20 +77,26 @@ export default class ResultHydrator {
         const Faculty = this.mongoose.model('Faculty');
         const [scopusFacultyDocs, kerberosFacultyDocs] = await Promise.all([
             scopusIds.size > 0
-                ? Faculty.find({ scopus_id: { $in: [...scopusIds] } }, { scopus_id: 1 }).lean()
+                ? Faculty.find({ scopus_id: { $in: [...scopusIds] } }, { scopus_id: 1, department: 1 })
+                    .populate('department', 'name').lean()
                 : [],
             kerberosValues.size > 0
                 ? Faculty.find(
                     { email: { $in: [...kerberosValues].map(k => new RegExp(`^${k}@`, 'i')) } },
-                    { scopus_id: 1, email: 1, title: 1, firstName: 1, lastName: 1 }
-                ).lean()
+                    { scopus_id: 1, email: 1, title: 1, firstName: 1, lastName: 1, department: 1 }
+                ).populate('department', 'name').lean()
                 : []
         ]);
 
         const allowed = new Set();
+        const deptNameByScopusId = new Map();
         for (const f of [...scopusFacultyDocs, ...kerberosFacultyDocs]) {
+            const deptName = f.department?.name;
             for (const sid of f.scopus_id || []) {
-                if (sid != null && String(sid).trim()) allowed.add(String(sid).trim());
+                if (sid == null || !String(sid).trim()) continue;
+                const key = String(sid).trim();
+                allowed.add(key);
+                if (deptName) deptNameByScopusId.set(key, deptName);
             }
         }
 
@@ -113,6 +123,17 @@ export default class ResultHydrator {
                     }
                 }
             }
+
+            let department;
+            for (const a of doc.authors || []) {
+                const deptName = deptNameByScopusId.get(String(a.author_id).trim());
+                if (deptName) { department = deptName; break; }
+            }
+            if (!department && doc.kerberos) {
+                const faculty = kerberosFacultyMap.get(String(doc.kerberos).trim().toLowerCase());
+                department = faculty?.department?.name;
+            }
+            if (department) doc.department = department;
         }
     }
 
@@ -249,6 +270,7 @@ export default class ResultHydrator {
         }
 
         const facultyPaperSets = new Map();
+        const facultyCitationSums = new Map();
         for (let i = 0; i < results.length; i++) {
             const doc = results[i];
             const docKey = doc._id?.toString() || String(i);
@@ -270,6 +292,7 @@ export default class ResultHydrator {
             for (const eid of matched) {
                 if (!facultyPaperSets.has(eid)) facultyPaperSets.set(eid, new Set());
                 facultyPaperSets.get(eid).add(docKey);
+                facultyCitationSums.set(eid, (facultyCitationSums.get(eid) || 0) + (doc.citation_count || 0));
             }
         }
 
@@ -283,7 +306,8 @@ export default class ResultHydrator {
                 email: f.email,
                 expert_id: f.expert_id,
                 department: f.department,
-                paperCount: paperSet.size
+                paperCount: paperSet.size,
+                citationCount: facultyCitationSums.get(expertId) || 0
             });
         }
 
