@@ -264,11 +264,15 @@ export default class AuthorScopedSearch {
                 // alongside ours, and since every entry in a filter array is required, its
                 // near-impossible-to-satisfy literal-AND would silently veto everything even
                 // when our id-membership filter alone correctly matches.
+                // Once a refine chain is active, kNN gets admitted (see excludeKnn in
+                // buildNormalizedHybridQuery) — but this pool is already scoped to just this
+                // author's own papers, so a small knnK keeps it rank- rather than admit-everyone
+                // (see that function for the measured score-distribution rationale).
                 const base = this.queryBuilder.buildNormalizedHybridQuery(
                     query, embedding, effFilters, page, per_page,
                     searchInNorm, facultyAuthorIds, authorRefineNarrow,
                     refineAnchor, facultyKerberosIds,
-                    { authorScoped: true, refineChain, refineFilterClauses: refineFilters }
+                    { authorScoped: true, refineChain, refineFilterClauses: refineFilters, knnK: 5 }
                 );
 
                 this._scopeHybridQueryToAuthor(base, authorFilter);
