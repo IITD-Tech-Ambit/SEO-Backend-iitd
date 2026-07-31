@@ -837,7 +837,14 @@ export default class QueryBuilder {
         // candidate pool makes its score too flat to trust for admission. Once a refine chain is
         // active, candidates are already confined to the anchor's validated matches, so kNN is
         // safe to admit on (and excluding it there previously collapsed valid refine matches to 0).
-        const excludeKnn = (!!authorScoped || restrictKnn) && chain.length === 0;
+        //
+        // authorRefineNarrow mode is excluded regardless of chain length: buildAuthorRefineNarrowMust
+        // already restricts to this author's own papers via exact scopus_id/kerberos matching (not
+        // fuzzy verbatim text), so kNN's "avoid a false zero from a non-verbatim term" rationale
+        // doesn't apply here — admitting it just adds embedding-similar-but-unfiltered papers on
+        // top of an already-precise match. Measured: for a narrow-by-name-then-refine-by-topic
+        // author drilldown, this inflated the result from ~134 (correct) to 300+.
+        const excludeKnn = ((!!authorScoped || restrictKnn) && chain.length === 0) || (authorRefineNarrow && authorOnly);
         const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
 
         return {

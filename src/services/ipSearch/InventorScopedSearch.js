@@ -177,7 +177,15 @@ export default class InventorScopedSearch {
             const isBasic = mode === 'basic';
             let osQuery;
 
-            if (isBasic) {
+            if (!query || !query.trim()) {
+                // Filter-only browse (e.g. a department chip click) — mirrors
+                // IpSearchService._runBrowseSearch. buildBasicQuery has no empty-query handling
+                // of its own (its primary clause always requires the query text to match
+                // something), so an empty string silently matched nothing instead of running an
+                // unfiltered browse of this inventor's patents.
+                osQuery = this.queryBuilder.buildBrowseQuery(scopeFilters, page, per_page, 'relevance');
+                delete osQuery.aggs;
+            } else if (isBasic) {
                 const base = this.queryBuilder.buildBasicQuery(query, scopeFilters, page, per_page, 'relevance', searchInNorm, refineChain);
                 delete base.aggs;
                 osQuery = base;

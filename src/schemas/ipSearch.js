@@ -256,9 +256,9 @@ export const inventorScopedSearchRequestSchema = {
     properties: {
         query: {
             type: 'string',
-            minLength: 1,
+            minLength: 0,
             maxLength: 500,
-            description: 'Search query string'
+            description: 'Search query string. Empty string runs a filter-only browse of this inventor\'s patents (e.g. a department chip click), with no text-relevance gate.'
         },
         inventor_id: {
             type: 'string',
