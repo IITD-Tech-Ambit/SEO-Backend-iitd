@@ -55,14 +55,7 @@ export default class FilterBuilder {
             mustFilters.push({ term: { country: filters.country } });
         }
 
-        if (filters?.kerberos) {
-            mustFilters.push({
-                nested: {
-                    path: 'inventors',
-                    query: { term: { 'inventors.kerberos': filters.kerberos } }
-                }
-            });
-        }
+        mustFilters.push(...this.buildScopeFilters(filters));
 
         // inventor_position 0 == primary inventor (P.I.).
         if (filters?.primary_inventor_only === true) {
@@ -75,6 +68,33 @@ export default class FilterBuilder {
         }
 
         return mustFilters;
+    }
+
+    /**
+     * The identity-scoping subset of `buildFilters`: whose corpus is being searched, as opposed
+     * to the facet filters a user toggles on top of a result set.
+     *
+     * Only these belong inside a kNN clause's own `filter`. Pre-filtering the ANN search is what
+     * lets a scoped inventor earn kNN recall even when their patents don't rank in the global
+     * top-k — but it also makes the recall pool depend on the filter, so pre-filtering a *facet*
+     * made "top k nearest Patents" a different, larger set than the Patents inside the unfiltered
+     * top k. On the paper side that made a facet advertising 56 documents return 307 when clicked.
+     * Facet filters are applied as ordinary sibling filters instead, which can only narrow, so
+     * every facet count equals the total you get after selecting it.
+     */
+    buildScopeFilters(filters) {
+        const scopeFilters = [];
+
+        if (filters?.kerberos) {
+            scopeFilters.push({
+                nested: {
+                    path: 'inventors',
+                    query: { term: { 'inventors.kerberos': filters.kerberos } }
+                }
+            });
+        }
+
+        return scopeFilters;
     }
 
     /**

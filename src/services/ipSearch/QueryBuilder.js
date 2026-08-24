@@ -1,22 +1,21 @@
 import { buildHighlightQuery, buildHighlightBlock, HIGHLIGHT_FIELDS } from '../../utils/highlight.js';
 
-// Bounds fuzzy per-term candidate fan-out: with several fields x several overlapping
-// recall arms x many query terms, uncapped fuzzy matching (default max_expansions: 50)
-// can exceed OpenSearch's maxClauseCount (1024) on long, common-word queries.
+// Cap fuzzy expansions so long queries don't blow OpenSearch's maxClauseCount (1024).
 const FUZZY_MAX_EXPANSIONS = 10;
-// Beyond this many terms, a query is a natural-language sentence, not "name + topic" —
-// skip the inventor-matching arm (which redoes fuzzy matching per term again) rather than
-// let it compound the clause count for no real recall benefit.
 const MAX_TERMS_FOR_IDENTITY_ARMS = 6;
+// Flat inventor_names ORs tokens; require 2 so one junk token matching a surname isn't a name match.
+const NAME_MIN_TOKENS = '2';
 
-// Lucene's default English stopword list — matches what OpenSearch's `english` analyzer strips
-// via its own english_stop filter. See buildStrictBm25Must for why these can't count toward a
-// "match N of M terms" admission threshold.
 const STOPWORDS = new Set([
     'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it',
     'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these',
     'they', 'this', 'to', 'was', 'will', 'with'
 ]);
+
+// Topic text is exact. Fuzzy expansion maps real terms onto other real terms with no edit penalty.
+// Typos go through _fuzzyFallbackSearch; inventor names stay fuzzy.
+const TOPIC_TEXT_FUZZ = {};
+const IDENTITY_FUZZ = { fuzziness: 'AUTO' };
 
 function withExpansionCap(fuzz) {
     return (fuzz && fuzz.fuzziness != null) ? { ...fuzz, max_expansions: FUZZY_MAX_EXPANSIONS } : fuzz;
@@ -56,17 +55,14 @@ export default class QueryBuilder {
     }
 
     /**
-     * Inventor match across nested `inventors.name` and flat `inventor_names`.
-     * A fixed numeric fuzziness (unlike 'AUTO', which scales edit distance to term length) lets
-     * a short term like "at" fuzzy-match almost any short fragment — e.g. an initial in a
-     * co-inventor's name — regardless of the query's actual intent. Terms of length <=2 always
-     * match exactly here, mirroring the length band 'AUTO' itself already uses.
+     * Inventor match on nested `inventors.name` and flat `inventor_names`.
+     * Forwards every fuzz option (not just `fuzziness`). Terms of length <=2 match exactly.
      */
-    buildInventorMatchClause(query, { fuzziness, boost } = {}) {
+    buildInventorMatchClause(query, { boost, ...fuzz } = {}) {
         const terms = (query || '').trim().split(/\s+/).filter(Boolean);
         if (!terms.length) return null;
         const b = this.searchConfig.fieldBoosts;
-        const fuzzFor = (term) => withExpansionCap((fuzziness != null && term.length > 2) ? { fuzziness } : {});
+        const fuzzFor = (term) => withExpansionCap((fuzz.fuzziness != null && term.length > 2) ? fuzz : {});
         const nested = {
             nested: {
                 path: 'inventors',
@@ -81,7 +77,16 @@ export default class QueryBuilder {
             }
         };
         const flat = {
-            match: { inventor_names: { query, boost: b.inventorName, ...withExpansionCap(fuzziness != null ? { fuzziness: 'AUTO' } : {}) } }
+            // Flat field ORs tokens; NAME_MIN_TOKENS requires corroboration. Short names still match
+            // because Lucene requires all clauses when the query has fewer terms than the threshold.
+            match: {
+                inventor_names: {
+                    query,
+                    boost: b.inventorName,
+                    minimum_should_match: NAME_MIN_TOKENS,
+                    ...withExpansionCap(fuzz.fuzziness != null ? { ...fuzz, fuzziness: 'AUTO' } : {})
+                }
+            }
         };
         const clause = { bool: { should: [nested, flat], minimum_should_match: 1 } };
         if (boost != null) clause.boost = boost;
@@ -114,7 +119,14 @@ export default class QueryBuilder {
         if (!terms.length) return { match_all: {} };
         // A fixed numeric fuzziness (unlike 'AUTO') lets a short term fuzzy-match almost anything
         // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
-        const fuzzFor = (term) => withExpansionCap((matchOpts.fuzziness != null && term.length > 2) ? { fuzziness: matchOpts.fuzziness } : {});
+        const bandFor = (fuzziness, term) => withExpansionCap((fuzziness != null && term.length > 2) ? { fuzziness } : {});
+        // Inventor names stay fuzzy; topic text does not once the caller opts in (see
+        // TOPIC_TEXT_FUZZ). Tested with hasOwn, not `!== undefined`: "text must not be fuzzed" is
+        // expressed as an explicitly-present undefined, which a value check cannot tell apart
+        // from "unspecified" (the fuzzy-fallback path, which must still fuzz everything).
+        const textFuzziness = Object.hasOwn(matchOpts, 'textFuzziness') ? matchOpts.textFuzziness : matchOpts.fuzziness;
+        const nameFuzzFor = (term) => bandFor(matchOpts.fuzziness, term);
+        const fuzzFor = (term) => bandFor(textFuzziness, term);
         const b = this.searchConfig.fieldBoosts;
         const literalMatch = !!matchOpts.literalMatch;
 
@@ -151,7 +163,7 @@ export default class QueryBuilder {
         };
 
         const inventorTerm = (term) => {
-            const fuzz = fuzzFor(term);
+            const fuzz = nameFuzzFor(term);
             return {
                 bool: {
                     should: [
@@ -282,6 +294,24 @@ export default class QueryBuilder {
         return inventorClause
             ? { bool: { should: [base, inventorClause], minimum_should_match: 1 } }
             : base;
+    }
+
+    /**
+     * Membership filter for a prior refine-chain term: the ids that term actually matched, OR
+     * the term's own literal clause.
+     *
+     * The id list is capped by the anchor query's result window, so for a broad anchor it is a
+     * truncated slice rather than the full match set — filtering on it alone silently drops
+     * documents the anchor really did match, making a refinement return FEWER results than the
+     * same narrowing in basic mode. ORing the literal clause back in restores exactly those
+     * documents while keeping the id list's ranking-aware recall for the niche terms it was
+     * added for. Mirrors the paper stack's QueryBuilder.buildRefineAnchorFilter.
+     */
+    buildRefineAnchorFilter(term, ids = [], searchIn = null) {
+        const lexical = this.buildLiteralPrimaryClause(term, searchIn);
+        if (!ids || ids.length === 0) return lexical || { match_none: {} };
+        const idFilter = { terms: { mongo_id: ids } };
+        return lexical ? { bool: { should: [idFilter, lexical], minimum_should_match: 1 } } : idFilter;
     }
 
     /**
@@ -447,18 +477,23 @@ export default class QueryBuilder {
             boostClauses.push({ match: { field_of_invention: { query: query, boost: 1.5 } } });
         }
 
-        const bm25Clause = this._buildAdvancedBm25Clause(query, searchIn, searchFields, { fuzziness: 'AUTO' });
+        const bm25Clause = this._buildAdvancedBm25Clause(query, searchIn, searchFields, IDENTITY_FUZZ, TOPIC_TEXT_FUZZ);
 
-        // Anchor result-id membership, not literal AND-of-terms (see _buildRefineAnchorIdFilter) —
-        // pushed before knnRecall so its embedded filter (efficient k-NN filtering) sees it.
-        filterClauses.push(...(refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn)));
+        // Anchor result-id membership, not literal AND-of-terms (see _buildRefineAnchorIdFilter).
+        // A refine chain narrows which corpus is being searched, so it scopes the ANN search too.
+        const knnScopeClauses = this.filters.buildScopeFilters(filters);
+        const refineClauses = refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn);
+        filterClauses.push(...refineClauses);
+        knnScopeClauses.push(...refineClauses);
 
+        // Scope filters inside knn; facet filters are left to the sibling bool.filter below so the
+        // recall pool doesn't shift with the selected facet — see buildNormalizedHybridQuery.
         const knnRecall = {
             knn: {
                 embedding: {
                     vector: embedding,
                     k: 100,
-                    ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                    ...(knnScopeClauses.length > 0 ? { filter: { bool: { filter: knnScopeClauses } } } : {})
                 }
             }
         };
@@ -485,12 +520,16 @@ export default class QueryBuilder {
         };
     }
 
-    /** Advanced BM25 honoring search_in; inventor arm included for all-field searches. */
-    _buildAdvancedBm25Clause(query, searchIn, searchFields, fuzz) {
+    /**
+     * Advanced BM25 honoring search_in; inventor arm included for all-field searches.
+     * `fuzz` governs the identity (inventor-name) arms; `textFuzz` governs topic text, and
+     * defaults to `fuzz` so the fuzzy fallback path can still fuzz everything (see TOPIC_TEXT_FUZZ).
+     */
+    _buildAdvancedBm25Clause(query, searchIn, searchFields, fuzz, textFuzz = fuzz) {
         if (searchIn && searchIn.length > 0) {
-            return this.buildConstrainedSearchInClause(query, searchIn, fuzz);
+            return this.buildConstrainedSearchInClause(query, searchIn, { ...fuzz, textFuzziness: textFuzz.fuzziness });
         }
-        const textBm25 = this.buildStrictBm25Must(query, searchFields, fuzz);
+        const textBm25 = this.buildStrictBm25Must(query, searchFields, textFuzz);
         const termCount = query.trim().split(/\s+/).filter(Boolean).length;
         // Long queries are natural-language sentences, not "name + topic" — the inventor arm
         // below redoes fuzzy per-term matching again, which is what pushes long/common-word
@@ -526,7 +565,7 @@ export default class QueryBuilder {
      * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
      * but correctness matters far more than that ordering refinement.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, restrictKnn = false, forceIncludeKnn = false, knnK = 100 } = {}) {
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, { refineChain = [], refineFilterClauses = null, restrictKnn = false, allowKnnRecall = false, knnK = 100 } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -536,7 +575,7 @@ export default class QueryBuilder {
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
 
-        const bm25Clause = this._buildAdvancedBm25Clause(query, searchIn, searchFields, { fuzziness: 'AUTO' });
+        const bm25Clause = this._buildAdvancedBm25Clause(query, searchIn, searchFields, IDENTITY_FUZZ, TOPIC_TEXT_FUZZ);
 
         const boostClauses = [];
         if (isMultiWord && (searchAllFields || searchIn.includes('title') || searchIn.includes('abstract'))) {
@@ -550,11 +589,19 @@ export default class QueryBuilder {
             boostClauses.push({ match: { field_of_invention: { query: query, boost: 1.5 } } });
         }
 
-        filterClauses.push(...(refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn)));
+        // A refine chain narrows which corpus is being searched, so it scopes the ANN search too.
+        const knnScopeClauses = this.filters.buildScopeFilters(filters);
+        const refineClauses = refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn);
+        filterClauses.push(...refineClauses);
+        knnScopeClauses.push(...refineClauses);
 
         const bm25Arm = { bool: { must: [bm25Clause], should: boostClauses, filter: filterClauses } };
-        // Filter inside knn, not a sibling bool.filter — see the general-search twin of this
-        // function (QueryBuilder.buildNormalizedHybridQuery) for the measured impact.
+        // Scope filters go inside knn (efficient k-NN filtering), not as a sibling bool.filter — a
+        // sibling filter runs kNN unfiltered against the whole index first, so a scoped inventor
+        // whose patents don't rank in the global top-k gets zero kNN recall. Facet filters stay
+        // OUTSIDE as a sibling filter on purpose: pre-filtering them would re-target the ANN search
+        // at the selected bucket and recall a different, larger set than the facet counted. See
+        // FilterBuilder.buildScopeFilters.
         const knnArm = {
             bool: {
                 must: [{
@@ -562,26 +609,16 @@ export default class QueryBuilder {
                         embedding: {
                             vector: embedding,
                             k: knnK,
-                            ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                            ...(knnScopeClauses.length > 0 ? { filter: { bool: { filter: knnScopeClauses } } } : {})
                         }
                     }
-                }]
+                }],
+                filter: filterClauses
             }
         };
-        // kNN excluded when scoped to one inventor on a fresh (no refine chain) query — a small
-        // candidate pool makes its score too flat to trust for admission (this is what the
-        // "vagina" false-match case came from). `forceIncludeKnn` bypasses this for refine-chain
-        // anchor computation, where the result only feeds a doc-id filter, not a relevance verdict,
-        // and excluding kNN there made an anchor's own literal-text match a single point of failure.
-        //
-        // When kNN IS admitted with an active refine chain, callers scoped to one inventor should
-        // pass a small knnK — once the anchor has narrowed to just that inventor's own patents, a
-        // pool that size is often smaller than k=100 itself, so "top k nearest neighbors" becomes
-        // "the entire pool" regardless of actual relevance to the current term (measured: a
-        // 32-patent single-inventor pool scored 1.54-1.76 with no clean cutoff anywhere except
-        // between rank 1 and rank 2 — a real top match exists, it's just not reachable by a raw
-        // score threshold at this scale; a small k relies on rank instead).
-        const excludeKnn = (!!filters?.kerberos || restrictKnn) && !forceIncludeKnn && chain.length === 0;
+        // kNN excluded when scoped to one inventor on a fresh query (small pool, flat scores).
+        // allowKnnRecall opts back in — same name as the paper stack.
+        const excludeKnn = (!!filters?.kerberos || restrictKnn) && !allowKnnRecall && chain.length === 0;
         const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
 
         return {

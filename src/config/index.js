@@ -1,3 +1,21 @@
+/**
+ * Cache namespace for rerank scores, derived from the model the embedding service loads.
+ * Do not use a separate RERANK_MODEL_VERSION — two models sharing a label share scores.
+ * Bump RERANK_MODEL_REVISION when weights change under the same name.
+ */
+export function deriveRerankModelVersion(modelName, revision) {
+    const slug = (value) => String(value ?? '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+    const base = slug(modelName);
+    if (!base) return 'unset-model';
+
+    const rev = slug(revision);
+    return rev ? `${base}-${rev}` : base;
+}
+
 export default {
     port: parseInt(process.env.PORT || '3001'),
     host: process.env.HOST || '0.0.0.0',
@@ -32,10 +50,11 @@ export default {
             queryEmbedding: 86400,
             authorDocuments: 300,
             coAuthors: 600,
-            // Kerberos-filtered IP search (faculty profile "Patents" section): filings for a
-            // given inventor barely ever change between crawls, so these cache far longer than
-            // generic topic searches.
-            authorScopedSearchResults: parseInt(process.env.IP_AUTHOR_SEARCH_CACHE_TTL || '900')
+            inventorScopedSearchResults: parseInt(
+                process.env.IP_INVENTOR_SEARCH_CACHE_TTL
+                || process.env.IP_AUTHOR_SEARCH_CACHE_TTL // old name
+                || '900'
+            )
         }
     },
 
@@ -46,7 +65,7 @@ export default {
         envoyTarget: process.env.ENVOY_GRPC_TARGET || 'envoy:10000',
         url: process.env.EMBEDDING_SERVICE_URL || 'http://localhost:8000',
         timeout: 10000,
-        rerankTimeout: parseInt(process.env.RERANK_TIMEOUT_MS || '800')
+        rerankTimeout: parseInt(process.env.RERANK_TIMEOUT_MS || '15000')
     },
 
     // East-west gRPC listener (search.v1.SearchService)
@@ -132,6 +151,10 @@ export default {
         },
         candidateK: parseInt(process.env.CANDIDATE_K || '50'),
         rerankEnabled: (process.env.RERANK_ENABLED || 'true').toLowerCase() === 'true',
+        // Page-independent `pagination_depth` floor for hybrid queries. RRF fusion depends on
+        // how deep each arm ranks, so a depth that varied with the requested page reordered
+        // results between pages and produced duplicates. See services/search/paginationDepth.js.
+        rrfStableDepth: parseInt(process.env.RRF_STABLE_DEPTH || '500'),
         // OpenSearch's index.max_result_window bound on `from + size`. Deep pagination
         // (pages beyond the reranked window) uses from/size, so a requested page whose
         // window would exceed this cannot be served and total_pages is clamped accordingly.
@@ -140,8 +163,13 @@ export default {
     },
 
     reranker: {
-        timeout: parseInt(process.env.RERANK_TIMEOUT_MS || '800'),
-        modelVersion: process.env.RERANK_MODEL_VERSION || 'bge-reranker-base-v1',
+        timeout: parseInt(process.env.RERANK_TIMEOUT_MS || '15000'),
+        modelName: process.env.RERANK_MODEL_NAME || '',
+        modelVersion: deriveRerankModelVersion(
+            process.env.RERANK_MODEL_NAME,
+            process.env.RERANK_MODEL_REVISION
+        ),
+        declaredModelVersion: process.env.RERANK_MODEL_VERSION || '',
         scoreCacheTTL: parseInt(process.env.RERANK_CACHE_TTL || '3600'),
         // Score fusion: final = alpha * norm(rerank) + (1 - alpha) * norm(firstStage).
         // Bumping alpha trusts the cross-encoder more; lowering it preserves lexical ranking.

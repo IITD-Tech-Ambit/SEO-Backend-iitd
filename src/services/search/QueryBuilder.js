@@ -1,24 +1,25 @@
 import { getSpellingVariant } from './SpellingVariants.js';
 import { buildHighlightQuery, buildHighlightBlock, HIGHLIGHT_FIELDS } from '../../utils/highlight.js';
 
-// Bounds fuzzy per-term candidate fan-out: with several fields x several overlapping
-// recall arms x many query terms, uncapped fuzzy matching (default max_expansions: 50)
-// can exceed OpenSearch's maxClauseCount (1024) on long, common-word queries.
+// Cap fuzzy expansions so long queries don't blow OpenSearch's maxClauseCount (1024).
 const FUZZY_MAX_EXPANSIONS = 10;
-// Beyond this many terms, a query is a natural-language sentence, not "name + topic" —
-// skip the identity-matching arms (which redo fuzzy matching per term again) rather than
-// let them compound the clause count for no real recall benefit.
+// Skip identity (name) arms on long queries — they redo fuzzy matching per term.
 const MAX_TERMS_FOR_IDENTITY_ARMS = 6;
 
-// Lucene's default English stopword list — matches what OpenSearch's `english` analyzer strips
-// via its own english_stop filter. A per-term clause for one of these words can never actually
-// match anything on the stemmed fields it's built against (the field's own analyzer strips it
-// the same way), so it must not count toward a "match N of M terms" admission threshold.
+// Matches OpenSearch's english_stop filter. Stopwords cannot count toward N-of-M term thresholds.
 const STOPWORDS = new Set([
     'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it',
     'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these',
     'they', 'this', 'to', 'was', 'will', 'with'
 ]);
+
+// Topic text is exact. Fuzzy expansion maps real terms onto other real terms (oncology→ontology)
+// with no edit penalty. Typos go through _fuzzyFallbackSearch; names stay fuzzy.
+const TOPIC_TEXT_FUZZ = {};
+const IDENTITY_FUZZ = { fuzziness: 'AUTO' };
+
+const CORPUS_WIDE_KNN_K = 100;
+const AUTHOR_SCOPED_KNN_K = 5;
 
 function withExpansionCap(fuzz) {
     return (fuzz && fuzz.fuzziness != null) ? { ...fuzz, max_expansions: FUZZY_MAX_EXPANSIONS } : fuzz;
@@ -148,7 +149,7 @@ export default class QueryBuilder {
      * neither an all-terms-in-text clause nor an all-terms-in-author-name clause ever could.
      * No-op below 2 terms: single-term queries are already covered by the plain text/author arms.
      */
-    _buildMixedAuthorTextClause(query, searchFields, fuzz, authorScoped) {
+    _buildMixedAuthorTextClause(query, searchFields, fuzz, authorScoped, textFuzz = fuzz) {
         const terms = query.trim().split(/\s+/).filter(Boolean);
         if (terms.length < 2) return null;
         const roster = authorScoped ? null : this.roster.current();
@@ -156,7 +157,9 @@ export default class QueryBuilder {
         const b = this.searchConfig.fieldBoosts;
         // A fixed numeric fuzziness (unlike 'AUTO') lets a short term fuzzy-match almost anything
         // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
-        const fuzzFor = (term) => withExpansionCap((fuzz?.fuzziness != null && fuzz.fuzziness !== 'AUTO' && term.length <= 2) ? {} : fuzz);
+        const bandFor = (f, term) => withExpansionCap((f?.fuzziness != null && f.fuzziness !== 'AUTO' && term.length <= 2) ? {} : f);
+        const fuzzFor = (term) => bandFor(fuzz, term);
+        const textFuzzFor = (term) => bandFor(textFuzz, term);
 
         const authorNameShould = (term) => ({
             bool: {
@@ -171,7 +174,7 @@ export default class QueryBuilder {
         const termClause = (term) => ({
             bool: {
                 should: [
-                    { multi_match: { query: term, fields: searchFields, type: 'best_fields', tie_breaker: 0.3, ...fuzzFor(term) } },
+                    { multi_match: { query: term, fields: searchFields, type: 'best_fields', tie_breaker: 0.3, ...textFuzzFor(term) } },
                     {
                         nested: {
                             path: 'authors',
@@ -189,9 +192,13 @@ export default class QueryBuilder {
         return { bool: { must: terms.map(termClause) } };
     }
 
-    /** OR of text-BM25, author-name, and mixed author+text arms — the default (no search_in) match. */
-    _buildDefaultBm25Clause(query, searchFields, fuzz, authorScoped) {
-        const textBm25 = this.buildStrictBm25Must(query, searchFields, fuzz);
+    /**
+     * OR of text-BM25, author-name, and mixed author+text arms — the default (no search_in) match.
+     * `fuzz` governs the identity (author-name) arms; `textFuzz` governs topic text, and defaults
+     * to `fuzz` so the fuzzy fallback path can still fuzz everything (see TOPIC_TEXT_FUZZ).
+     */
+    _buildDefaultBm25Clause(query, searchFields, fuzz, authorScoped, textFuzz = fuzz) {
+        const textBm25 = this.buildStrictBm25Must(query, searchFields, textFuzz);
         const termCount = query.trim().split(/\s+/).filter(Boolean).length;
         // Long queries are natural-language sentences, not "name + topic" — the identity arms
         // below redo fuzzy per-term matching across every field again, which is what pushes
@@ -200,7 +207,7 @@ export default class QueryBuilder {
         const authorClause = authorScoped
             ? this._buildNonGatedAuthorMatchClause(query, fuzz)
             : this.buildIITDAuthorMatchClause(query, fuzz);
-        const mixedClause = this._buildMixedAuthorTextClause(query, searchFields, fuzz, authorScoped);
+        const mixedClause = this._buildMixedAuthorTextClause(query, searchFields, fuzz, authorScoped, textFuzz);
         const arms = [textBm25, authorClause, mixedClause].filter(Boolean);
         return arms.length > 1 ? { bool: { should: arms, minimum_should_match: 1 } } : arms[0];
     }
@@ -218,7 +225,13 @@ export default class QueryBuilder {
         if (!terms.length) return { match_all: {} };
         // A fixed numeric fuzziness (unlike 'AUTO') lets a short term fuzzy-match almost anything
         // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
-        const fuzzFor = (term) => withExpansionCap((matchOpts.fuzziness != null && term.length > 2) ? { fuzziness: matchOpts.fuzziness } : {});
+        const bandFor = (fuzziness, term) => withExpansionCap((fuzziness != null && term.length > 2) ? { fuzziness } : {});
+        // Names stay fuzzy; topic text does not once the caller opts in (see TOPIC_TEXT_FUZZ).
+        // Tested with `in`, not `!== undefined`: "text must not be fuzzed" is expressed as an
+        // explicitly-present undefined, which a value check cannot tell from "unspecified".
+        const textFuzziness = Object.hasOwn(matchOpts, 'textFuzziness') ? matchOpts.textFuzziness : matchOpts.fuzziness;
+        const nameFuzzFor = (term) => bandFor(matchOpts.fuzziness, term);
+        const fuzzFor = (term) => bandFor(textFuzziness, term);
         const b = this.searchConfig.fieldBoosts;
         const iitdScopusIds = this.roster.current();
         const authorScoped = !!matchOpts.authorScoped;
@@ -245,8 +258,8 @@ export default class QueryBuilder {
                 must: terms.map((term) => ({
                     bool: {
                         should: [
-                            { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...fuzzFor(term) } } },
-                            { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...fuzzFor(term) } } }
+                            { match: { 'authors.author_name': { query: term, boost: b.authorName * 1.5, ...nameFuzzFor(term) } } },
+                            { match: { 'authors.author_name_variants': { query: term, boost: b.authorVariants, ...nameFuzzFor(term) } } }
                         ],
                         minimum_should_match: 1
                     }
@@ -292,7 +305,7 @@ export default class QueryBuilder {
         };
 
         const authorTerm = (term) => {
-            const fuzz = fuzzFor(term);
+            const fuzz = nameFuzzFor(term);
             const nestedBool = {
                 must: [{
                     bool: {
@@ -316,7 +329,7 @@ export default class QueryBuilder {
         });
 
         const fieldTerm = (term) => ({
-            match: { field_associated: { query: term, boost: b.fieldAssociated * 1.2, ...fuzz } }
+            match: { field_associated: { query: term, boost: b.fieldAssociated * 1.2, ...fuzzFor(term) } }
         });
 
         const oneTermAcrossSelectedFields = (term) => {
@@ -359,6 +372,30 @@ export default class QueryBuilder {
         return refineChain
             .filter(term => term && term.trim())
             .map(term => this.buildLiteralPrimaryClause(term, searchIn, { authorScoped }));
+    }
+
+    /**
+     * The refine-chain FILTER for one already-executed anchor step: the anchor's own result ids
+     * OR the anchor term's strict lexical clause.
+     *
+     * The id list alone is not enough. SearchService caps it (see _buildRefineAnchorIdFilter) to
+     * keep the request body a sane size, which silently TRUNCATES a broad anchor to its top-N —
+     * while basic mode filters on the uncapped lexical clause. Measured on query "solar" refined
+     * within "energy": "energy" genuinely matches 15370 documents, the capped anchor held 2000 of
+     * them, and the advanced total collapsed to 510 against basic's 2267, inverting the guarantee
+     * that basic results are a subset of advanced. ORing the lexical clause back in restores that
+     * floor (2287 measured) while the ids still retain the documents the anchor step only matched
+     * semantically and which no lexical clause would keep.
+     *
+     * Both arms are FILTER clauses over documents the anchor step itself already matched, so the
+     * pool can still only shrink as the chain grows — unlike a re-derived kNN clause, which in
+     * filter context ignores min_score and admits up to k neighbours the anchor never returned.
+     */
+    buildRefineAnchorFilter(term, ids = [], searchIn = null, { authorScoped = false } = {}) {
+        const lexical = this.buildLiteralPrimaryClause(term, searchIn, { authorScoped });
+        if (!ids || ids.length === 0) return lexical || { match_none: {} };
+        const idFilter = { terms: { mongo_id: ids } };
+        return lexical ? { bool: { should: [idFilter, lexical], minimum_should_match: 1 } } : idFilter;
     }
 
     /**
@@ -416,11 +453,8 @@ export default class QueryBuilder {
         // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
         const fuzzFor = (term) => withExpansionCap((fuzz?.fuzziness != null && fuzz.fuzziness !== 'AUTO' && term.length <= 2) ? {} : fuzz);
 
-        // A stopword's per-term clause queries `matchFields`, which are analyzed with the same
-        // english_stop filter that strips it from the indexed content — so that clause can never
-        // actually match anything. Drop stopwords before requiring/counting terms, or a sentence
-        // query with several of them (e.g. "the impact of X on Y") can make the N-of-M admission
-        // threshold below structurally impossible to satisfy, silently returning zero BM25 matches.
+        // Drop stopwords before N-of-M: they never match stemmed fields, so counting them
+        // can make the threshold unsatisfiable.
         const contentTerms = terms.filter(t => !STOPWORDS.has(t.toLowerCase()));
         const requiredTerms = contentTerms.length > 0 ? contentTerms : terms;
 
@@ -611,23 +645,27 @@ export default class QueryBuilder {
             boostClauses.push({ match: { field_associated: { query: query, boost: 1.5 } } });
         }
 
-        const csiOpts = { fuzziness: 'AUTO', authorScoped };
+        const csiOpts = { ...IDENTITY_FUZZ, textFuzziness: TOPIC_TEXT_FUZZ.fuzziness, authorScoped };
         let bm25Clause;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
             bm25Clause = this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds, refineNarrowExtra);
         } else if (searchIn && searchIn.length > 0) {
             bm25Clause = this.buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
-            bm25Clause = this._buildDefaultBm25Clause(query, searchFields, { fuzziness: 'AUTO' }, authorScoped);
+            bm25Clause = this._buildDefaultBm25Clause(query, searchFields, IDENTITY_FUZZ, authorScoped, TOPIC_TEXT_FUZZ);
         }
 
-        // Filter inside knn, not a sibling bool.filter — see buildNormalizedHybridQuery.
+        // Scope filters inside knn; facet filters are left to the sibling bool.filter below so the
+        // recall pool doesn't shift with the selected facet — see buildNormalizedHybridQuery.
+        const knnScopeClauses = this.filters.buildScopeFilters(filters);
+        // search_in scopes the ANN search too — see buildNormalizedHybridQuery.
+        if (searchIn && searchIn.length > 0) knnScopeClauses.push(bm25Clause);
         const knnRecall = {
             knn: {
                 embedding: {
                     vector: embedding,
                     k: 100,
-                    ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                    ...(knnScopeClauses.length > 0 ? { filter: { bool: { filter: knnScopeClauses } } } : {})
                 }
             }
         };
@@ -683,23 +721,27 @@ export default class QueryBuilder {
             boostClauses.push(...this._buildPhraseBoostTiers(query));
         }
 
-        const csiOpts = { fuzziness: 'AUTO', authorScoped };
+        const csiOpts = { ...IDENTITY_FUZZ, textFuzziness: TOPIC_TEXT_FUZZ.fuzziness, authorScoped };
         let bm25Clause;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
             bm25Clause = this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds, refineNarrowExtra);
         } else if (searchIn && searchIn.length > 0) {
             bm25Clause = this.buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
-            bm25Clause = this._buildDefaultBm25Clause(query, searchFields, { fuzziness: 'AUTO' }, authorScoped);
+            bm25Clause = this._buildDefaultBm25Clause(query, searchFields, IDENTITY_FUZZ, authorScoped, TOPIC_TEXT_FUZZ);
         }
 
-        // See buildHybridQuery: filter goes inside the knn field (efficient k-NN filtering).
+        // See buildHybridQuery: scope filters go inside the knn field (efficient k-NN filtering),
+        // facet filters stay on the sibling bool.filter.
+        const knnScopeClauses = this.filters.buildScopeFilters(filters);
+        // search_in scopes the ANN search too — see buildNormalizedHybridQuery.
+        if (searchIn && searchIn.length > 0) knnScopeClauses.push(bm25Clause);
         const knnRecall = {
             knn: {
                 embedding: {
                     vector: embedding,
                     k: 100,
-                    ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                    ...(knnScopeClauses.length > 0 ? { filter: { bool: { filter: knnScopeClauses } } } : {})
                 }
             }
         };
@@ -759,23 +801,27 @@ export default class QueryBuilder {
     }
 
     /**
-     * Normalized hybrid (relevance sort): OpenSearch-native `hybrid` query, one arm per
-     * recall signal (BM25, kNN), combined by Reciprocal Rank Fusion (`search_pipeline` query
-     * param — see SearchService). RRF fuses by RANK, not raw score, so there's no BM25-vs-
-     * cosine scale mismatch to hand-tune and no min_score cliff: a real but weak match ranks
-     * low instead of vanishing when its raw score can't clear an arbitrary threshold. Each arm
-     * carries its own filter so filtering happens pre-fusion (OpenSearch 2.19's `hybrid` query
-     * has no top-level `filter` field yet).
-     *
-     * No separate "refine-chain anchor preference" arm: RRF fuses by UNION, so an arm whose
-     * query is unconditionally true within the anchor filter (as a pure re-rank booster would
-     * need to be) becomes an unconditional ADMISSION arm instead — it would re-admit the
-     * anchor's entire filtered candidate set regardless of the current query term, silently
-     * defeating refine-chain narrowing. The id-membership filter already applied to the real
-     * bm25/kNN arms is what actually narrows; ranking loses the old score-carry-forward nicety,
-     * but correctness matters far more than that ordering refinement.
+     * kNN arm policy. Fresh author-scoped queries omit kNN (scores go flat in a small pool)
+     * unless `allowKnnRecall` is set. `knnK` is rejected if no arm will be built.
+     * author-narrow (`search_in=["author"]` + chain) never widens.
      */
-    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, restrictKnn = false, knnK = 100 } = {}) {
+    _resolveKnnRecall({ authorScoped, restrictKnn, allowKnnRecall, knnK, chainLength, authorNarrowScoped }) {
+        if (allowKnnRecall && authorNarrowScoped) {
+            throw new Error('buildNormalizedHybridQuery: allowKnnRecall cannot be honoured for an author-narrow query (search_in=["author"] with a refine chain), whose exact-identity match must not be widened semantically');
+        }
+        const scopedFreshQuery = (!!authorScoped || restrictKnn) && chainLength === 0;
+        const include = !authorNarrowScoped && (!scopedFreshQuery || allowKnnRecall);
+        if (!include && knnK != null) {
+            throw new Error('buildNormalizedHybridQuery: knnK was passed for a query that builds no kNN arm; pass allowKnnRecall: true to opt a scoped query into semantic recall');
+        }
+        return { include, k: knnK ?? (authorScoped ? AUTHOR_SCOPED_KNN_K : CORPUS_WIDE_KNN_K) };
+    }
+
+    /**
+     * Normalized hybrid: BM25 + kNN fused by RRF (rank, not raw score). Each arm carries its
+     * own filter — OpenSearch 2.19 hybrid has no top-level filter.
+     */
+    buildNormalizedHybridQuery(query, embedding, filters, page, perPage, searchIn = null, facultyAuthorIds = null, authorRefineNarrow = false, refineWithinAnchor = null, facultyKerberosIds = null, { authorScoped = false, refineChain = [], refineFilterClauses = null, restrictKnn = false, allowKnnRecall = false, knnK = null } = {}) {
         const from = (page - 1) * perPage;
         const filterClauses = this.filters.buildFilters(filters);
         const searchFields = this.filters.getHybridSearchFields(searchIn);
@@ -787,15 +833,14 @@ export default class QueryBuilder {
         const words = query.trim().split(/\s+/);
         const isMultiWord = words.length >= 2;
 
-        const fuzzSetting = { fuzziness: 'AUTO' };
-        const csiOpts = { ...fuzzSetting, authorScoped };
+        const csiOpts = { ...IDENTITY_FUZZ, textFuzziness: TOPIC_TEXT_FUZZ.fuzziness, authorScoped };
         let bm25Clause;
         if (authorRefineNarrow && authorOnly && refineWithinAnchor?.trim()) {
             bm25Clause = this.buildAuthorRefineNarrowMust(query, refineWithinAnchor, facultyAuthorIds, csiOpts, facultyKerberosIds, refineNarrowExtra);
         } else if (searchIn && searchIn.length > 0) {
             bm25Clause = this.buildConstrainedSearchInClause(query, searchIn, csiOpts, facultyAuthorIds, facultyKerberosIds);
         } else {
-            bm25Clause = this._buildDefaultBm25Clause(query, searchFields, fuzzSetting, authorScoped);
+            bm25Clause = this._buildDefaultBm25Clause(query, searchFields, IDENTITY_FUZZ, authorScoped, TOPIC_TEXT_FUZZ);
         }
 
         const boostClauses = [];
@@ -812,52 +857,48 @@ export default class QueryBuilder {
             if (coverageClause) boostClauses.push(coverageClause);
         }
 
+        // A refine chain narrows which corpus is being searched, so it scopes the ANN search too.
+        const knnScopeClauses = this.filters.buildScopeFilters(filters);
         if (!authorRefineNarrow) {
-            filterClauses.push(...(refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn, { authorScoped })));
+            const refineClauses = refineFilterClauses || this.buildRefineFilterClauses(chain, searchIn, { authorScoped });
+            filterClauses.push(...refineClauses);
+            knnScopeClauses.push(...refineClauses);
         }
 
+        // search_in scopes ANN too: the embedding has no field structure, so an ungated kNN
+        // arm would admit docs that never mention the term in the requested field.
+        if (searchIn && searchIn.length > 0) knnScopeClauses.push(bm25Clause);
+
         const bm25Arm = { bool: { must: [bm25Clause], should: boostClauses, filter: filterClauses } };
-        // Filter goes inside knn (efficient k-NN filtering), not as a sibling bool.filter — a
+        const knnRecall = this._resolveKnnRecall({
+            authorScoped,
+            restrictKnn,
+            allowKnnRecall,
+            knnK,
+            chainLength: chain.length,
+            authorNarrowScoped: authorRefineNarrow && authorOnly
+        });
+        // Scope filters go inside knn (efficient k-NN filtering), not as a sibling bool.filter — a
         // sibling filter runs kNN unfiltered against the whole index first, so a scoped candidate
-        // whose matches don't rank in the global top-100 gets zero kNN recall.
+        // whose matches don't rank in the global top-100 gets zero kNN recall. Facet filters stay
+        // OUTSIDE as a sibling filter on purpose: pre-filtering them would re-target the ANN search
+        // at the selected bucket and recall a different, larger set than the facet counted. See
+        // FilterBuilder.buildScopeFilters.
         const knnArm = {
             bool: {
                 must: [{
                     knn: {
                         embedding: {
                             vector: embedding,
-                            k: knnK,
-                            ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {})
+                            k: knnRecall.k,
+                            ...(knnScopeClauses.length > 0 ? { filter: { bool: { filter: knnScopeClauses } } } : {})
                         }
                     }
-                }]
+                }],
+                filter: filterClauses
             }
         };
-        // kNN excluded when scoped to one author on a fresh (no refine chain) query — a small
-        // candidate pool makes its score too flat to trust for admission. Once a refine chain is
-        // active, candidates are already confined to the anchor's validated matches, so kNN is
-        // safe to admit on (and excluding it there previously collapsed valid refine matches to 0).
-        //
-        // authorRefineNarrow mode is excluded regardless of chain length: buildAuthorRefineNarrowMust
-        // already restricts to this author's own papers via exact scopus_id/kerberos matching (not
-        // fuzzy verbatim text), so kNN's "avoid a false zero from a non-verbatim term" rationale
-        // doesn't apply here — admitting it just adds embedding-similar-but-unfiltered papers on
-        // top of an already-precise match. Measured: for a narrow-by-name-then-refine-by-topic
-        // author drilldown, this inflated the result from ~134 (correct) to 300+.
-        //
-        // When kNN IS admitted with an active refine chain (the case above), callers scoped to
-        // one author/inventor should pass a small knnK instead of the corpus-wide default of 100:
-        // once the anchor has narrowed candidates to just that person's own papers, a pool that
-        // size is often smaller than k itself, so "top k nearest neighbors" degenerates into "the
-        // entire pool" — admitting every one of their papers regardless of actual relevance to the
-        // current term. Measured directly: scores across a 32-patent single-inventor pool ranged
-        // 1.54-1.76 with no clean separation anywhere EXCEPT between rank 1 and rank 2 (a gap
-        // ~4-10x larger than any other adjacent gap) — there's a real top match, it's just not
-        // reachable by a raw score threshold on this scale. A small k relies on rank instead of an
-        // absolute score cutoff, so it still surfaces that genuine top match without admitting
-        // everyone the raw k=100 pool would have let through.
-        const excludeKnn = ((!!authorScoped || restrictKnn) && chain.length === 0) || (authorRefineNarrow && authorOnly);
-        const arms = excludeKnn ? [bm25Arm] : [bm25Arm, knnArm];
+        const arms = knnRecall.include ? [bm25Arm, knnArm] : [bm25Arm];
 
         return {
             size: perPage,

@@ -1,24 +1,27 @@
 import { normalizeChain } from './QueryBuilder.js';
+import { withPaginationDepth, DEFAULT_STABLE_DEPTH } from '../search/paginationDepth.js';
+import { TYPO_FUZZ } from '../search/constants.js';
 
 // Shared by IpSearchService and IpFacultyForQueryService so a refine chain narrows identically for both.
 export default class RefineChainResolver {
-    constructor({ opensearch, indexName, embeddingService, queryBuilder, rrfPipeline, candidateK, maxResultWindow, logger }) {
+    constructor({ opensearch, indexName, embeddingService, queryBuilder, rrfPipeline, maxResultWindow, rrfStableDepth, logger }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.embeddingService = embeddingService;
         this.queryBuilder = queryBuilder;
         this.rrfPipeline = rrfPipeline;
-        this.candidateK = candidateK;
         this.maxResultWindow = maxResultWindow;
+        this.rrfStableDepth = rrfStableDepth || DEFAULT_STABLE_DEPTH;
         this.logger = logger;
     }
 
     /** Without pagination_depth, a `hybrid` query silently returns far fewer than `size` hits
      *  once the true match count is large, regardless of the requested size. */
     _withPaginationDepth(body) {
-        if (!body?.query?.hybrid) return body;
-        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), 1), this.maxResultWindow);
-        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
+        return withPaginationDepth(body, {
+            maxResultWindow: this.maxResultWindow,
+            stableDepth: this.rrfStableDepth
+        });
     }
 
     /** Lenient BM25 pre-check (OR across terms) so partial-vocabulary queries pass but gibberish does not. */
@@ -37,7 +40,7 @@ export default class RefineChainResolver {
                     minimum_should_match: '1'
                 }
             };
-            const inventorClause = this.queryBuilder.buildInventorMatchClause(query, { fuzziness: 'AUTO' });
+            const inventorClause = this.queryBuilder.buildInventorMatchClause(query, TYPO_FUZZ);
             preCheckClause = inventorClause
                 ? { bool: { should: [textMatch, inventorClause], minimum_should_match: 1 } }
                 : textMatch;
@@ -63,11 +66,11 @@ export default class RefineChainResolver {
      *  individual's real matches. */
     async buildRefineAnchorIdFilter(term, searchInNorm, filters = {}) {
         const cap = this.maxResultWindow;
-        const runAnchorQuery = async (forceIncludeKnn, bm25HitCount) => {
+        const runAnchorQuery = async (allowKnnRecall) => {
             const embedding = await this.embeddingService.embedQuery(term);
             const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
                 term, embedding, filters, 1, cap, searchInNorm,
-                { bm25HitCount, candidateK: this.candidateK, refineChain: [], forceIncludeKnn }
+                { refineChain: [], allowKnnRecall }
             );
             osQuery.size = cap;
             osQuery.from = 0;
@@ -76,14 +79,9 @@ export default class RefineChainResolver {
             return this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
         };
         try {
-            // BM25-only first; only widen via kNN if that finds nothing — kNN's k is sized for
-            // corpus-wide recall, and admitting via it whenever BM25 already found real matches
-            // risks pulling in embedding-adjacent-but-off-topic documents for no reason (see
-            // InventorScopedSearch._buildRefineAnchorIdFilter for a scoped case where this went
-            // from "no filtering effect" to "the anchor's own candidate pool WAS the filter").
             const bm25HitCount = await this.bm25PreCheck(term, searchInNorm, []);
-            let resp = await runAnchorQuery(false, bm25HitCount);
-            if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(true, bm25HitCount);
+            let resp = await runAnchorQuery(false);
+            if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(true);
             const ids = [];
             const scoreById = {};
             for (const hit of resp.body.hits.hits) {

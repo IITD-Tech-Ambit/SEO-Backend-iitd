@@ -54,12 +54,44 @@ function commonWordRatio(title) {
     return words.filter(w => COMMON_TITLE_WORDS.has(w)).length / words.length;
 }
 
-function abstractOnlyTerms(doc, minLen = 7, count = 4) {
+/**
+ * Document frequency of every abstract token across the sampled corpus, used to tell vocabulary
+ * that IDENTIFIES a document apart from vocabulary that merely appears in it.
+ */
+function buildAbstractDocFreq(docs) {
+    const df = new Map();
+    for (const doc of docs) {
+        for (const term of new Set(tokenize(doc.abstract))) df.set(term, (df.get(term) || 0) + 1);
+    }
+    return df;
+}
+
+/**
+ * Terms that occur in a document's abstract but not its title, ordered most-distinctive first.
+ *
+ * Ranks by corpus document frequency rather than taking the first few long words. Length is a
+ * poor proxy for distinctiveness: "generally", "globally", "critical" and "emerged" all clear a
+ * 7-character bar while describing nothing in particular, and the queries built from them
+ * ("emerged critical globally") asked retrieval to rank one arbitrary waste-management paper
+ * above the several hundred others those words describe equally well — a demand no ranking can
+ * satisfy, and not what this category is meant to measure. Its actual purpose is abstract-field
+ * recall: vocabulary that pins down the document but is absent from its title.
+ *
+ * `maxDocRatio` drops terms common enough that no amount of abstract matching should surface one
+ * specific document over its peers.
+ */
+function abstractOnlyTerms(doc, docFreq = null, { minLen = 7, count = 4, maxDocRatio = 0.05, corpusSize = 0 } = {}) {
     const titleSet = new Set(tokenize(doc.title));
-    return [...new Set(
+    const candidates = [...new Set(
         tokenize(doc.abstract)
             .filter(w => !titleSet.has(w) && w.length >= minLen && !COMMON_TITLE_WORDS.has(w))
-    )].slice(0, count);
+    )];
+    if (!docFreq || !corpusSize) return candidates.slice(0, count);
+
+    return candidates
+        .filter(w => (docFreq.get(w) || 1) / corpusSize <= maxDocRatio)
+        .sort((a, b) => (docFreq.get(a) || 1) - (docFreq.get(b) || 1))
+        .slice(0, count);
 }
 
 function buildTopicCluster(docs, queryWords, { minDocs = 3, maxJudged = 8 } = {}) {
@@ -257,8 +289,9 @@ export function buildHardGoldenSet(corpus) {
     }
 
     // ── 5. Semantic gap: abstract-only terms not present in title ──
+    const abstractDocFreq = buildAbstractDocFreq(docsWithAbstract);
     const abstractGapDocs = docsWithAbstract
-        .map(d => ({ doc: d, terms: abstractOnlyTerms(d) }))
+        .map(d => ({ doc: d, terms: abstractOnlyTerms(d, abstractDocFreq, { corpusSize: docsWithAbstract.length }) }))
         .filter(x => x.terms.length >= 3)
         .sort((a, b) => b.terms.length - a.terms.length);
     for (const { doc, terms } of pickDeterministic(abstractGapDocs.map(x => x.doc), 12, 6).map(d =>

@@ -10,10 +10,11 @@ import path from 'path';
  * Uses golden_set_comprehensive.json generated from test_corpus.json via:
  *   npm run test:dump && npm run test:golden
  *
- * Skips gracefully when fixtures or API are unavailable.
+ * Skips gracefully when the generated fixtures are absent, but an unreachable API is a hard
+ * failure: skipping it would report "fail 0" while checking none of the golden set.
  */
 
-const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3000}/api/v1`;
+const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3001}/api/v1`;
 const ROOT_BASE = API_BASE.replace(/\/api\/v1$/, '');
 const FIXTURES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
@@ -27,6 +28,7 @@ const goldenSet = loadJson('golden_set_comprehensive.json');
 const corpus = loadJson('test_corpus.json');
 
 let serverUp = false;
+let probeError = null;
 
 async function post(body) {
     const res = await fetch(`${API_BASE}/search`, {
@@ -45,12 +47,20 @@ before(async () => {
     try {
         const res = await fetch(`${ROOT_BASE}/health`, { signal: AbortSignal.timeout(3000) });
         serverUp = res.status === 200;
-    } catch {
+        if (!serverUp) probeError = `GET ${ROOT_BASE}/health returned ${res.status}`;
+    } catch (err) {
         serverUp = false;
+        probeError = err.message;
     }
-    if (!serverUp) console.warn('[corpus_retrieval] API not reachable — tests will skip.');
     if (!goldenSet) console.warn('[corpus_retrieval] golden_set_comprehensive.json missing — run npm run test:dump');
 });
+
+// Asserted inside each case rather than thrown from the hook: a failing hook cancels its
+// subtests, and cancelled tests are reported separately from failures, so the run still
+// summarises as "fail 0".
+function requireApi() {
+    assert.ok(serverUp, `API not reachable at ${ROOT_BASE} — ${probeError}`);
+}
 
 describe('Corpus golden set prerequisites', () => {
     it('fixture files exist', (t) => {
@@ -62,8 +72,8 @@ describe('Corpus golden set prerequisites', () => {
 
 describe('Exact title queries recall the source document', () => {
     for (const entry of (goldenSet?.queries || []).filter(q => q.type === 'exact_title').slice(0, 15)) {
-        it(`[${entry.id}] "${entry.query.slice(0, 40)}..."`, async (t) => {
-            if (!serverUp || !goldenSet) return t.skip('fixtures or API unavailable');
+        it(`[${entry.id}] "${entry.query.slice(0, 40)}..."`, async () => {
+            requireApi();
             const { status, body } = await post({
                 query: entry.query,
                 mode: 'advanced',
@@ -80,8 +90,8 @@ describe('Exact title queries recall the source document', () => {
 
 describe('Partial title queries recall the source document', () => {
     for (const entry of (goldenSet?.queries || []).filter(q => q.type === 'partial_title').slice(0, 10)) {
-        it(`[${entry.id}] "${entry.query}"`, async (t) => {
-            if (!serverUp || !goldenSet) return t.skip('fixtures or API unavailable');
+        it(`[${entry.id}] "${entry.query}"`, async () => {
+            requireApi();
             const { status, body } = await post({
                 query: entry.query,
                 mode: 'advanced',
@@ -102,8 +112,8 @@ describe('Corpus queries: basic_total <= advanced_total', () => {
         if (!byType[q.type]) byType[q.type] = q;
     }
     for (const entry of Object.values(byType)) {
-        it(`[${entry.type}] "${entry.query.slice(0, 50)}"`, async (t) => {
-            if (!serverUp || !goldenSet) return t.skip('fixtures or API unavailable');
+        it(`[${entry.type}] "${entry.query.slice(0, 50)}"`, async () => {
+            requireApi();
             const [basic, advanced] = await Promise.all([
                 post({ query: entry.query, mode: 'basic', per_page: 5 }),
                 post({ query: entry.query, mode: 'advanced', per_page: 5 }),
@@ -120,8 +130,8 @@ describe('Corpus queries: basic_total <= advanced_total', () => {
 
 describe('Corpus field queries return results', () => {
     for (const entry of (goldenSet?.queries || []).filter(q => q.type === 'field_broad').slice(0, 5)) {
-        it(`"${entry.query}" returns ≥ expected_min_results`, async (t) => {
-            if (!serverUp || !goldenSet) return t.skip('fixtures or API unavailable');
+        it(`"${entry.query}" returns ≥ expected_min_results`, async () => {
+            requireApi();
             const { status, body } = await post({
                 query: entry.query,
                 mode: 'advanced',
@@ -136,8 +146,8 @@ describe('Corpus field queries return results', () => {
 
 describe('Multi-relevant topic clusters return lexically matching results', () => {
     for (const entry of (goldenSet?.queries || []).filter(q => q.type === 'multi_relevant').slice(0, 5)) {
-        it(`[${entry.id}] "${entry.query}" returns title matches`, async (t) => {
-            if (!serverUp || !goldenSet) return t.skip('fixtures or API unavailable');
+        it(`[${entry.id}] "${entry.query}" returns title matches`, async () => {
+            requireApi();
             const { status, body } = await post({
                 query: entry.query,
                 mode: 'advanced',
@@ -169,8 +179,8 @@ describe('Gibberish tokens absent from corpus return 0', () => {
     });
 
     for (const q of ['qxzxqv', 'zzyyxxww', 'mnbvcxzq']) {
-        it(`advanced "${q}" → 0 results`, async (t) => {
-            if (!serverUp) return t.skip('API not reachable');
+        it(`advanced "${q}" → 0 results`, async () => {
+            requireApi();
             const { status, body } = await post({ query: q, mode: 'advanced', per_page: 5 });
             assert.equal(status, 200);
             assert.equal(totalOf(body), 0, `"${q}" should not match anything`);

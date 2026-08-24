@@ -2,25 +2,19 @@ import crypto from 'crypto';
 import '../../models/departments.js'; // Ensure Department model is registered for populate
 
 import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
-import { buildSearchConfig } from './constants.js';
+import { buildSearchConfig, PRECHECK_MIN_TOKENS, TYPO_FUZZ } from './constants.js';
 import FilterBuilder from './FilterBuilder.js';
 import FacultyRosterService from './FacultyRosterService.js';
 import QueryBuilder, { normalizeChain } from './QueryBuilder.js';
 import ResultHydrator from './ResultHydrator.js';
-import RerankService from './RerankService.js';
+import RerankService, { resolveRankedWindow } from './RerankService.js';
 import SuggestionService from './SuggestionService.js';
 import FacultyForQueryService from './FacultyForQueryService.js';
 import AuthorScopedSearch from './AuthorScopedSearch.js';
+import { withPaginationDepth, DEFAULT_STABLE_DEPTH } from './paginationDepth.js';
+import { isPastEndOfResults } from './hybridErrors.js';
 
-/**
- * Orchestrates hybrid search across OpenSearch and MongoDB.
- *
- * This class owns request flow (caching, mode selection, pagination, reranking, fallbacks)
- * and delegates focused concerns to collaborators: query construction (QueryBuilder),
- * filters/fields/aggregations (FilterBuilder), the IITD roster (FacultyRosterService),
- * result shaping (ResultHydrator), reranking (RerankService), suggestions (SuggestionService),
- * the People sidebar (FacultyForQueryService), and author drill-down (AuthorScopedSearch).
- */
+
 export default class SearchService {
     constructor({ opensearch, opensearchIndex, redis, redisTTL, mongoose, embeddingService, logger, config }) {
         this.opensearch = opensearch;
@@ -36,10 +30,8 @@ export default class SearchService {
         this.candidateK = config.search?.candidateK || 50;
         this.rerankEnabled = config.search?.rerankEnabled ?? true;
         this.maxResultWindow = config.search?.maxResultWindow || 10000;
+        this.rrfStableDepth = config.search?.rrfStableDepth || DEFAULT_STABLE_DEPTH;
         this.rerankConfig = config.reranker || {};
-        // Reciprocal Rank Fusion pipeline (registered once at cluster provisioning time) that
-        // buildNormalizedHybridQuery's `hybrid` query relies on to combine its BM25/kNN/anchor
-        // arms — see QueryBuilder.buildNormalizedHybridQuery for why RRF replaced raw-score fusion.
         this.rrfPipeline = config.search?.rrfPipeline || 'rrf-hybrid';
 
         const deps = {
@@ -52,7 +44,8 @@ export default class SearchService {
             searchConfig: this.searchConfig,
             embeddingService: this.embeddingService,
             rrfPipeline: this.rrfPipeline,
-            maxResultWindow: this.maxResultWindow
+            maxResultWindow: this.maxResultWindow,
+            rrfStableDepth: this.rrfStableDepth
         };
 
         this.filters = new FilterBuilder(this.searchConfig);
@@ -81,25 +74,15 @@ export default class SearchService {
         });
     }
 
-    /**
-     * OpenSearch's native `hybrid` query rejects any request whose from+size exceeds a default
-     * internal depth ("pagination_depth param is missing" / "Reached end of search result,
-     * increase pagination_depth") — it needs an explicit hint for how deep to rank each arm's
-     * candidates to support the requested page. Only meaningful on hybrid-shaped query bodies.
-     * Returns a new body (with a fresh `query.hybrid`) rather than mutating in place — callers
-     * elsewhere build sibling request bodies via `{...osQuery, ...}`, a shallow spread that
-     * would otherwise share (and cross-contaminate) the same nested hybrid object.
-     */
     _withPaginationDepth(body) {
-        if (!body?.query?.hybrid) return body;
-        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), this.candidateK), this.maxResultWindow);
-        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
+        return withPaginationDepth(body, {
+            candidateK: this.candidateK,
+            maxResultWindow: this.maxResultWindow,
+            stableDepth: this.rrfStableDepth
+        });
     }
 
-    /**
-     * Pre-resolve kerberos for an author_id facet filter so the OpenSearch filter emits the
-     * nested-author-id OR kerberos union clause (mirrors People sidebar / author drill-down).
-     */
+    /** Resolve Faculty.email kerberos for an author_id facet so the filter unions both identities. */
     async _resolveAuthorKerberos(filters) {
         if (!filters?.author_id || filters._authorKerberos) return;
         try {
@@ -245,34 +228,30 @@ export default class SearchService {
      * Author-narrow refinement (anchoring on a person, not free text) uses its own mechanism and
      * is untouched.
      *
-     * A looser re-derived match clause (e.g. fuzzy-BM25 OR raw kNN) is the wrong tool for the
-     * filter itself: a kNN clause in filter context ignores min_score and always contributes up to
-     * k neighbors regardless of true relevance, so it can make the "narrowed" count larger than the
-     * anchor's own result count — the opposite of narrowing. Filtering on the anchor's real ids is
-     * the only way to guarantee the pool never grows while still keeping every doc the anchor step
-     * actually surfaced (including ones that only matched it semantically).
+     * A looser re-derived SEMANTIC clause is the wrong tool for the filter itself: a kNN clause in
+     * filter context ignores min_score and always contributes up to k neighbors regardless of true
+     * relevance, so it can make the "narrowed" count larger than the anchor's own result count —
+     * the opposite of narrowing. Filtering on the anchor's real ids is what keeps every doc the
+     * anchor step actually surfaced, including ones that only matched it semantically.
+     *
+     * The ids are capped, though, so they are a partial view of a broad anchor. The strict LEXICAL
+     * clause is therefore OR'd back in (see QueryBuilder.buildRefineAnchorFilter) — it is bounded
+     * by the term's real occurrences rather than by k, so unlike a kNN arm it cannot admit anything
+     * the anchor step itself would not have matched.
      */
     async _buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow, filters) {
         if (authorRefineNarrow || !refineChain.length) return null;
         return Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, filters)));
     }
 
-    /** Re-runs `term` as its own advanced search (same filters as the real search, no further
-     *  refinement, no author scoping) to capture the real doc ids AND per-doc scores it matched,
-     *  capped at `maxResultWindow` or 2000. Anchoring without the current filters would let a
-     *  broad/common anchor phrase compete against the WHOLE corpus for a spot in that cap — a
-     *  filter-scoped candidate's real matches can rank outside the unscoped top-`cap` even
-     *  though they'd be the obvious top matches within the filtered set. */
+    /** Ids of documents `term` matches as its own advanced search, capped at maxResultWindow/2000. */
     async _buildRefineAnchorIdFilter(term, searchInNorm, filters = {}) {
         const cap = Math.min(this.maxResultWindow, 2000);
-        // Must resolve the same bm25HitCount-driven min_score/weights regime the anchor's own
-        // original search used — passing bm25HitCount: null falls back to the loosest bar,
-        // capturing far more "members" than the anchor actually returned as results.
-        const runAnchorQuery = async (restrictKnn, bm25HitCount) => {
+        const runAnchorQuery = async (restrictKnn) => {
             const embedding = await this.embeddingService.embedQuery(term);
             const osQuery = this.queryBuilder.buildNormalizedHybridQuery(
                 term, embedding, filters, 1, cap, searchInNorm, null, false, null, null,
-                { bm25HitCount, candidateK: this.candidateK, refineChain: [], restrictKnn }
+                { refineChain: [], restrictKnn }
             );
             osQuery.size = cap;
             osQuery.from = 0;
@@ -282,12 +261,11 @@ export default class SearchService {
         };
         try {
             const bm25HitCount = await this._bm25PreCheck(term, searchInNorm, null, false, [], null);
-            // BM25-only first; only widen via kNN if that finds nothing (see
-            // InventorScopedSearch._buildRefineAnchorIdFilter and AuthorScopedSearch's twin for
-            // why admitting via kNN whenever BM25 already found real matches is unsafe once this
-            // anchor is used somewhere its own candidate pool is small).
-            let resp = await runAnchorQuery(true, bm25HitCount);
-            if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(false, bm25HitCount);
+            // kNN returns neighbours for any vector; a term with no lexical hits must not become an anchor.
+            if (bm25HitCount === 0) return { filter: { match_none: {} }, scoreById: {} };
+
+            let resp = await runAnchorQuery(true);
+            if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(false);
             const ids = [];
             const scoreById = {};
             for (const hit of resp.body.hits.hits) {
@@ -296,8 +274,8 @@ export default class SearchService {
                 ids.push(id);
                 scoreById[id] = hit._score;
             }
-            const filter = ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} };
-            return { filter, scoreById };
+            // Truncated id list OR the term's lexical clause — see QueryBuilder.buildRefineAnchorFilter.
+            return { filter: this.queryBuilder.buildRefineAnchorFilter(term, ids, searchInNorm), scoreById };
         } catch (err) {
             this.logger.warn({ err: err?.message, term }, 'Refine anchor id-membership lookup failed; falling back to literal narrowing');
             return { filter: this.queryBuilder.buildLiteralPrimaryClause(term, searchInNorm), scoreById: {} };
@@ -312,10 +290,15 @@ export default class SearchService {
         const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow, filters);
         const refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
 
-        // BM25 pre-check: if nothing matches lexically (even fuzzy), skip hybrid kNN entirely,
-        // otherwise the kNN arm always returns nearest neighbors — even for gibberish.
+        // Skip hybrid kNN when nothing matches lexically — otherwise kNN returns neighbours for gibberish.
         const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds, refineFilterClauses);
         if (bm25HitCount === 0) {
+            // Exact match missed; probe typos without putting fuzziness into ranking.
+            const fuzzyHitCount = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds, refineFilterClauses, { fuzzy: true });
+            if (fuzzyHitCount > 0) {
+                this.logger.info({ query }, 'BM25 pre-check matched only fuzzily — routing to fuzzy fallback');
+                return this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds);
+            }
             this.logger.info({ query }, 'BM25 pre-check returned 0 hits — skipping hybrid search');
             const suggestions = await this.suggestions.getSuggestions(query);
             return {
@@ -332,16 +315,8 @@ export default class SearchService {
             };
         }
 
-        // 'relevance'/'normalized' -> normalized hybrid (comparable BM25/kNN scales).
-        // 'impact' -> citation/recency weighting. Anything else ('date'/'citations'/unknown)
-        // -> field-ordered hybrid, keyed off `sort` itself rather than an explicit branch, so
-        // adding a new field-ordered sort mode needs no change here.
-        // relevance/normalized bake refineFilterClauses directly into each hybrid arm at
-        // construction time (see QueryBuilder.buildNormalizedHybridQuery) rather than mutating
-        // the body afterward — the native `hybrid` query has no single shared bool.filter to
-        // splice into post-hoc the way the old function_score shape did.
         const usesRrf = sort === 'relevance' || sort === 'normalized';
-        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineFilterClauses };
+        const normalizedHybridArgs = { refineChain, refineFilterClauses };
         const hybridQueryBuildersBySort = {
             impact: () => this.queryBuilder.buildImpactQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain }),
             relevance: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, normalizedHybridArgs),
@@ -350,11 +325,6 @@ export default class SearchService {
         const buildFieldOrderedHybridQuery = () => this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineAnchor, facultyKerberosIds, { refineChain });
         let osQuery = (hybridQueryBuildersBySort[sort] || buildFieldOrderedHybridQuery)();
 
-        // Multi-step search-on-search: every prior term becomes a FILTER so the candidate pool
-        // can only shrink (monotonic narrowing). Uses the anchor's actual result-id membership
-        // (see _buildRefineAnchorIdFilter) rather than a literal AND-of-terms match, so a doc that
-        // only matched the anchor semantically isn't wrongly evicted. Only the impact/field-ordered
-        // (non-RRF) shapes need this post-hoc splice; relevance/normalized already baked it in above.
         if (!usesRrf && refineFilterClauses?.length > 0) {
             const filterArrays = [
                 osQuery.query?.bool?.filter,
@@ -364,8 +334,6 @@ export default class SearchService {
             this.logger.info({ refine_chain: refineChain }, 'Added refine_chain filters to advanced query');
         }
 
-        // Pagination: the top `candidateK` matches form the reranked window; pages beyond it are
-        // paginated in raw hybrid-score order via from/size (bounded by max_result_window).
         const rerankRequested = rerank !== false;
         const rerankApplicable = this.rerankEnabled && rerankRequested && (sort === 'relevance' || sort === 'normalized');
         const K = this.candidateK;
@@ -387,27 +355,17 @@ export default class SearchService {
 
         // Deep page beyond max_result_window: count only and return an honest empty page.
         if (!rerankEligible && rawExceedsWindow) {
-            let trueTotal = 0;
-            try {
-                const countBody = this._withPaginationDepth({ ...osQuery, size: 0, from: 0, _source: false });
-                delete countBody.aggs;
-                const countResp = await this.opensearch.search({ index: this.indexName, body: countBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
-                trueTotal = countResp.body.hits.total.value;
-            } catch (err) {
-                this.logger.warn({ err }, 'Deep-page count query failed; reporting 0 total');
-            }
-            return {
-                results: [],
-                related_faculty: [],
-                suggestions: [],
-                facets: {},
-                pagination: this._buildPagination(page, per_page, trueTotal, rerankApplicable),
-                mode: 'advanced',
-                cacheHit: false
-            };
+            return this._emptyPageWithTrueTotal(osQuery, usesRrf, page, per_page, rerankApplicable);
         }
 
-        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
+        let osResponse;
+        try {
+            osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
+        } catch (err) {
+            if (!isPastEndOfResults(err)) throw err;
+            this.logger.info({ query, page }, 'Requested page is past the end of the result set; serving an empty page');
+            return this._emptyPageWithTrueTotal(osQuery, usesRrf, page, per_page, rerankApplicable);
+        }
         const hits = osResponse.body.hits.hits;
         const total = osResponse.body.hits.total.value;
 
@@ -419,17 +377,15 @@ export default class SearchService {
         let results = await this.hydrator.hydrateFromMongoDB(hits);
         await this.hydrator.applyFacultyDisplayNames(results);
 
-        // Rerank the top-K window, then assemble this page from the reranked window and/or the
-        // raw tail beyond it.
+        let didRerank = false;
         if (rerankEligible && results.length > 0) {
             const reranked = await this.reranker.rerank(query, results);
             results = reranked.results;
+            didRerank = reranked.reranked === true;
 
             const sliceEnd = Math.min(pageEnd, K);
             results = results.slice(pageStart, sliceEnd);
 
-            // Straddle page: append raw-order docs for [K, pageEnd). The reranked window covers
-            // raw-ranks [0, K), so raw pagination resumes at offset K with no gap/duplicate.
             if (pageEnd > K && !rawExceedsWindow) {
                 try {
                     const rawBody = this._withPaginationDepth({ ...osQuery, from: K, size: pageEnd - K });
@@ -452,7 +408,10 @@ export default class SearchService {
             related_faculty,
             suggestions,
             facets: this.hydrator.parseFacets(osResponse.body.aggregations),
-            pagination: this._buildPagination(page, per_page, total, rerankApplicable),
+            pagination: this._buildPagination(page, per_page, total, resolveRankedWindow({
+                didRerank, rerankApplicable, rerankEligible, total, candidateK: K
+            })),
+            reranked: didRerank,
             mode: 'advanced'
         };
 
@@ -468,23 +427,42 @@ export default class SearchService {
         }
     }
 
-    /**
-     * Advanced-search pagination. `total` is the true relevant match count (track_total_hits at
-     * the relevance bar) and drives total_pages, clamped to the deepest page servable within
-     * OpenSearch's max_result_window. `ranked_window` reports how many candidates were reranked.
-     */
-    _buildPagination(page, per_page, total, rerankApplicable) {
-        const rankedWindow = rerankApplicable ? Math.min(total, this.candidateK) : total;
+    async _emptyPageWithTrueTotal(osQuery, usesRrf, page, per_page, rerankApplicable) {
+        let trueTotal = 0;
+        try {
+            const countBody = this._withPaginationDepth({ ...osQuery, size: 0, from: 0, _source: false });
+            delete countBody.aggs;
+            const countResp = await this.opensearch.search({ index: this.indexName, body: countBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
+            trueTotal = countResp.body.hits.total.value;
+        } catch (err) {
+            this.logger.warn({ err }, 'Deep-page count query failed; reporting 0 total');
+        }
+        return {
+            results: [],
+            related_faculty: [],
+            suggestions: [],
+            facets: {},
+            pagination: this._buildPagination(page, per_page, trueTotal, resolveRankedWindow({
+                didRerank: false,
+                rerankApplicable,
+                rerankEligible: false,
+                total: trueTotal,
+                candidateK: this.candidateK
+            })),
+            reranked: false,
+            mode: 'advanced',
+            cacheHit: false
+        };
+    }
+
+    _buildPagination(page, per_page, total, rankedWindow) {
         const maxNavPage = Math.max(1, Math.floor(this.maxResultWindow / per_page));
         const totalPages = Math.min(Math.ceil(total / per_page), maxNavPage);
         return { page, per_page, total, ranked_window: rankedWindow, total_pages: totalPages };
     }
 
-    /**
-     * BM25 pre-check: does at least one query token appear in at least one document?
-     * Lenient (OR across terms) so partial-vocabulary queries pass, but gibberish does not.
-     */
-    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null, refineFilterClauses = null) {
+    /** Lenient lexical probe: pass partial vocabulary, reject gibberish. */
+    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null, refineFilterClauses = null, { fuzzy = false } = {}) {
         const chain = normalizeChain(refineChain);
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
         const useAuthorRefine = authorRefineNarrow && authorOnly && chain.length >= 1;
@@ -499,8 +477,9 @@ export default class SearchService {
                 multi_match: {
                     query,
                     fields: ['title', 'abstract', 'subject_area', 'field_associated'],
-                    type: 'cross_fields',
-                    minimum_should_match: '1'
+                    minimum_should_match: PRECHECK_MIN_TOKENS,
+                    // cross_fields does not support fuzziness, so the typo probe uses best_fields.
+                    ...(fuzzy ? { type: 'best_fields', ...TYPO_FUZZ } : { type: 'cross_fields' })
                 }
             };
             const iitdAuthor = this.queryBuilder.buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
@@ -549,13 +528,14 @@ export default class SearchService {
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
         const useAuthorRefine = authorRefineNarrow && authorOnly && chain.length >= 1;
 
+        const fallbackFuzz = TYPO_FUZZ;
         let fuzzyMust;
         if (useAuthorRefine) {
-            fuzzyMust = this.queryBuilder.buildAuthorRefineNarrowMust(query, chain[0], facultyAuthorIds, { fuzziness: 2 }, facultyKerberosIds, chain.slice(1));
+            fuzzyMust = this.queryBuilder.buildAuthorRefineNarrowMust(query, chain[0], facultyAuthorIds, fallbackFuzz, facultyKerberosIds, chain.slice(1));
         } else if (search_in && search_in.length > 0) {
-            fuzzyMust = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 2 }, facultyAuthorIds, facultyKerberosIds);
+            fuzzyMust = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, fallbackFuzz, facultyAuthorIds, facultyKerberosIds);
         } else {
-            fuzzyMust = this.queryBuilder._buildDefaultBm25Clause(query, searchFields, { fuzziness: 2 }, false);
+            fuzzyMust = this.queryBuilder._buildDefaultBm25Clause(query, searchFields, fallbackFuzz, false);
         }
 
         const knnBoost = { knn: { embedding: { vector: embedding, k: 50 } } };

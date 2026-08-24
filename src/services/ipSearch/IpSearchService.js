@@ -7,20 +7,14 @@ import { buildSearchConfig } from './constants.js';
 import FilterBuilder from './FilterBuilder.js';
 import QueryBuilder, { normalizeChain } from './QueryBuilder.js';
 import ResultHydrator from './ResultHydrator.js';
-import RerankService from '../search/RerankService.js';
+import RerankService, { resolveRankedWindow } from '../search/RerankService.js';
 import SuggestionService from '../search/SuggestionService.js';
 import IpFacultyForQueryService from './IpFacultyForQueryService.js';
 import InventorScopedSearch from './InventorScopedSearch.js';
 import RefineChainResolver from './RefineChainResolver.js';
+import { withPaginationDepth, DEFAULT_STABLE_DEPTH } from '../search/paginationDepth.js';
+import { isPastEndOfResults } from '../search/hybridErrors.js';
 
-/**
- * Orchestrates hybrid search across the OpenSearch `ip_documents` index and MongoDB (IPMetaData).
- *
- * Owns request flow (caching, mode selection, pagination, reranking, fallbacks) and delegates
- * to QueryBuilder, FilterBuilder, ResultHydrator, and the shared RerankService.
- *
- * Modes: basic = strict BM25 only; advanced = BM25 + hybrid kNN with BM25 pre-check and fuzzy fallback.
- */
 export default class IpSearchService {
     constructor({ opensearch, opensearchIndex, redis, redisTTL, mongoose, embeddingService, logger, config }) {
         this.opensearch = opensearch;
@@ -36,10 +30,8 @@ export default class IpSearchService {
         this.candidateK = config.search?.candidateK || 50;
         this.rerankEnabled = config.search?.rerankEnabled ?? true;
         this.maxResultWindow = config.search?.maxResultWindow || 10000;
+        this.rrfStableDepth = config.search?.rrfStableDepth || DEFAULT_STABLE_DEPTH;
         this.rerankConfig = config.reranker || {};
-        // Reciprocal Rank Fusion pipeline (registered once at cluster provisioning time) that
-        // buildNormalizedHybridQuery's `hybrid` query relies on to combine its BM25/kNN/anchor
-        // arms — see QueryBuilder.buildNormalizedHybridQuery for why RRF replaced raw-score fusion.
         this.rrfPipeline = config.search?.rrfPipeline || 'rrf-hybrid';
 
         this.filters = new FilterBuilder(this.searchConfig);
@@ -51,7 +43,7 @@ export default class IpSearchService {
         this.reranker = new RerankService({
             embeddingService: this.embeddingService,
             redis: this.redis,
-            rerankConfig: { ...this.rerankConfig, modelVersion: `ip-${this.rerankConfig.modelVersion || 'bge-reranker-base-v1'}` },
+            rerankConfig: { ...this.rerankConfig, modelVersion: `ip-${this.rerankConfig.modelVersion}` },
             logger: this.logger
         });
         this.suggestions = new SuggestionService({
@@ -66,8 +58,8 @@ export default class IpSearchService {
             embeddingService: this.embeddingService,
             queryBuilder: this.queryBuilder,
             rrfPipeline: this.rrfPipeline,
-            candidateK: this.candidateK,
             maxResultWindow: this.maxResultWindow,
+            rrfStableDepth: this.rrfStableDepth,
             logger: this.logger
         });
         this.facultyForQuery = new IpFacultyForQueryService({
@@ -80,7 +72,6 @@ export default class IpSearchService {
             queryBuilder: this.queryBuilder,
             filterBuilder: this.filters,
             embeddingService: this.embeddingService,
-            candidateK: this.candidateK,
             rrfPipeline: this.rrfPipeline,
             refineChainResolver: this.refineChainResolver
         });
@@ -97,23 +88,17 @@ export default class IpSearchService {
             hydrator: this.hydrator,
             rrfPipeline: this.rrfPipeline,
             maxResultWindow: this.maxResultWindow,
-            candidateK: this.candidateK
+            candidateK: this.candidateK,
+            rrfStableDepth: this.rrfStableDepth
         });
     }
 
-    /**
-     * OpenSearch's native `hybrid` query rejects any request whose from+size exceeds a default
-     * internal depth ("pagination_depth param is missing" / "Reached end of search result,
-     * increase pagination_depth") — it needs an explicit hint for how deep to rank each arm's
-     * candidates to support the requested page. Only meaningful on hybrid-shaped query bodies.
-     * Returns a new body (with a fresh `query.hybrid`) rather than mutating in place — callers
-     * elsewhere build sibling request bodies via `{...osQuery, ...}`, a shallow spread that
-     * would otherwise share (and cross-contaminate) the same nested hybrid object.
-     */
     _withPaginationDepth(body) {
-        if (!body?.query?.hybrid) return body;
-        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), this.candidateK), this.maxResultWindow);
-        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
+        return withPaginationDepth(body, {
+            candidateK: this.candidateK,
+            maxResultWindow: this.maxResultWindow,
+            stableDepth: this.rrfStableDepth
+        });
     }
 
     /** Full-corpus People sidebar for patent search (mirrors search's getAllFacultyForQuery). */
@@ -171,7 +156,7 @@ export default class IpSearchService {
 
     /** Author-scoped (kerberos-filtered) results change far less often than open-ended topic searches. */
     _resolveCacheTtl(filters) {
-        return filters?.kerberos ? this.redisTTL.authorScopedSearchResults : this.redisTTL.searchResults;
+        return filters?.kerberos ? this.redisTTL.inventorScopedSearchResults : this.redisTTL.searchResults;
     }
 
     _normalizeRefineChain(refine_chain, refine_within) {
@@ -296,9 +281,8 @@ export default class IpSearchService {
             };
         }
 
-        // relevance/normalized -> score-normalized hybrid; date/other -> field-ordered hybrid.
         const usesRrf = sort === 'relevance' || sort === 'normalized';
-        const normalizedHybridArgs = { bm25HitCount, candidateK: this.candidateK, refineChain, refineFilterClauses };
+        const normalizedHybridArgs = { refineChain, refineFilterClauses };
         const hybridQueryBuildersBySort = {
             relevance: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, normalizedHybridArgs),
             normalized: () => this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, page, per_page, searchInNorm, normalizedHybridArgs)
@@ -306,7 +290,6 @@ export default class IpSearchService {
         const buildFieldOrderedHybridQuery = () => this.queryBuilder.buildHybridQuery(query, embedding, filters, page, per_page, sort, searchInNorm, { refineChain, refineFilterClauses });
         let osQuery = (hybridQueryBuildersBySort[sort] || buildFieldOrderedHybridQuery)();
 
-        // Top candidateK hits form the reranked window; deeper pages use raw hybrid-score order.
         const rerankRequested = rerank !== false;
         const rerankApplicable = this.rerankEnabled && rerankRequested && (sort === 'relevance' || sort === 'normalized');
         const K = this.candidateK;
@@ -326,28 +309,19 @@ export default class IpSearchService {
         }
         osQuery = this._withPaginationDepth(osQuery);
 
+        // Deep page beyond max_result_window: count only and return an honest empty page.
         if (!rerankEligible && rawExceedsWindow) {
-            let trueTotal = 0;
-            try {
-                const countBody = this._withPaginationDepth({ ...osQuery, size: 0, from: 0, _source: false });
-                delete countBody.aggs;
-                const countResp = await this.opensearch.search({ index: this.indexName, body: countBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
-                trueTotal = countResp.body.hits.total.value;
-            } catch (err) {
-                this.logger.warn({ err }, 'Deep-page count query failed; reporting 0 total');
-            }
-            return {
-                results: [],
-                related_faculty: [],
-                suggestions: [],
-                facets: {},
-                pagination: this._buildPagination(page, per_page, trueTotal, rerankApplicable),
-                mode: 'advanced',
-                cacheHit: false
-            };
+            return this._emptyPageWithTrueTotal(osQuery, usesRrf, page, per_page, rerankApplicable);
         }
 
-        const osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
+        let osResponse;
+        try {
+            osResponse = await this.opensearch.search({ index: this.indexName, body: osQuery, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
+        } catch (err) {
+            if (!isPastEndOfResults(err)) throw err;
+            this.logger.info({ query, page }, 'Requested page is past the end of the result set; serving an empty page');
+            return this._emptyPageWithTrueTotal(osQuery, usesRrf, page, per_page, rerankApplicable);
+        }
         const hits = osResponse.body.hits.hits;
         const total = osResponse.body.hits.total.value;
 
@@ -358,9 +332,11 @@ export default class IpSearchService {
 
         let results = await this.hydrator.hydrateFromMongoDB(hits);
 
+        let didRerank = false;
         if (rerankEligible && results.length > 0) {
             const reranked = await this.reranker.rerank(query, results);
             results = reranked.results;
+            didRerank = reranked.reranked === true;
 
             const sliceEnd = Math.min(pageEnd, K);
             results = results.slice(pageStart, sliceEnd);
@@ -387,7 +363,10 @@ export default class IpSearchService {
             related_faculty,
             suggestions,
             facets: this.hydrator.parseFacets(osResponse.body.aggregations),
-            pagination: this._buildPagination(page, per_page, total, rerankApplicable),
+            pagination: this._buildPagination(page, per_page, total, resolveRankedWindow({
+                didRerank, rerankApplicable, rerankEligible, total, candidateK: K
+            })),
+            reranked: didRerank,
             mode: 'advanced'
         };
 
@@ -403,9 +382,36 @@ export default class IpSearchService {
         }
     }
 
-    /** `total` is the true match count; total_pages is clamped to max_result_window. */
-    _buildPagination(page, per_page, total, rerankApplicable) {
-        const rankedWindow = rerankApplicable ? Math.min(total, this.candidateK) : total;
+    async _emptyPageWithTrueTotal(osQuery, usesRrf, page, per_page, rerankApplicable) {
+        let trueTotal = 0;
+        try {
+            const countBody = this._withPaginationDepth({ ...osQuery, size: 0, from: 0, _source: false });
+            delete countBody.aggs;
+            const countResp = await this.opensearch.search({ index: this.indexName, body: countBody, ...(usesRrf ? { search_pipeline: this.rrfPipeline } : {}) });
+            trueTotal = countResp.body.hits.total.value;
+        } catch (err) {
+            this.logger.warn({ err }, 'Deep-page count query failed; reporting 0 total');
+        }
+        return {
+            results: [],
+            related_faculty: [],
+            suggestions: [],
+            facets: {},
+            pagination: this._buildPagination(page, per_page, trueTotal, resolveRankedWindow({
+                didRerank: false,
+                rerankApplicable,
+                rerankEligible: false,
+                total: trueTotal,
+                candidateK: this.candidateK
+            })),
+            reranked: false,
+            mode: 'advanced',
+            cacheHit: false
+        };
+    }
+
+    /** `total` is the true match count; `ranked_window` is how many were actually reranked. */
+    _buildPagination(page, per_page, total, rankedWindow) {
         const maxNavPage = Math.max(1, Math.floor(this.maxResultWindow / per_page));
         const totalPages = Math.min(Math.ceil(total / per_page), maxNavPage);
         return { page, per_page, total, ranked_window: rankedWindow, total_pages: totalPages };

@@ -12,11 +12,11 @@ import assert from 'node:assert/strict';
  *  - Result relevance spot-checks for top results
  *  - Basic vs advanced result count comparison
  *
- * Requires a live search API at SEARCH_API_URL (default http://localhost:3000).
+ * Requires a live search API at SEARCH_API_URL (default http://localhost:3001).
  * Run: node --test tests/retrieval_quality.test.mjs
  */
 
-const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3000}/api/v1`;
+const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3001}/api/v1`;
 
 async function post(path, body) {
     const res = await fetch(`${API_BASE}${path}`, {
