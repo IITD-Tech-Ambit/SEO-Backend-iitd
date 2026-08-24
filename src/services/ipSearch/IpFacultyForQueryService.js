@@ -10,7 +10,7 @@ import { normalizeChain } from './QueryBuilder.js';
  * simpler: IP inventors carry kerberos directly (no scopus_id merge needed).
  */
 export default class IpFacultyForQueryService {
-    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, candidateK, rrfPipeline, refineChainResolver }) {
+    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, rrfPipeline, refineChainResolver }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -20,7 +20,6 @@ export default class IpFacultyForQueryService {
         this.queryBuilder = queryBuilder;
         this.filterBuilder = filterBuilder;
         this.embeddingService = embeddingService;
-        this.candidateK = candidateK;
         this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
         this.refineChainResolver = refineChainResolver;
     }
@@ -85,9 +84,8 @@ export default class IpFacultyForQueryService {
     }
 
     /**
-     * candidateK must match what IpSearchService's own advanced search resolves for the same
-     * query, or the two pick different (fixed vs adaptive) min_score bars and the per-person
-     * counts shown here stop agreeing with what a click-through actually returns.
+     * Size-0 query bodies for the Inventors sidebar. Same recall shape as IpSearchService
+     * so per-inventor counts agree with a click-through.
      */
     async _buildAggQuery(mode, query, filters, searchInNorm, refineChain, refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
@@ -120,7 +118,6 @@ export default class IpFacultyForQueryService {
         return patch(this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, 1, 1, searchInNorm, {
             refineChain: chain,
             refineFilterClauses,
-            candidateK: this.candidateK,
             restrictKnn: true
         }));
     }

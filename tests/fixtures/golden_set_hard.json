@@ -3,7 +3,7 @@
   "description": "Hard golden set: corpus-analyzed difficult queries stressing all IR metrics",
   "corpus_documents": 500,
   "corpus_sample_size": 500,
-  "exported_at": "2026-06-21T22:44:52.640Z",
+  "exported_at": "2026-08-24T05:22:15.140Z",
   "categories": {
     "hard_exact_rank1": "Truncated long title — MRR/P@1 must find exact source at rank 1",
     "hard_partial_common": "Partial query with corpus-common words — precision under noise",
@@ -40,7 +40,7 @@
         "69dec9f34e2d2a5b77ecdfa1": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:52.721Z",
+      "calibrated_at": "2026-08-24T05:22:16.417Z",
       "calibrated_top_k": 50
     },
     {
@@ -59,7 +59,7 @@
         "69dec9f74e2d2a5b77ece6d9": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:52.741Z",
+      "calibrated_at": "2026-08-24T05:22:18.113Z",
       "calibrated_top_k": 50
     },
     {
@@ -78,7 +78,7 @@
         "69dec9f94e2d2a5b77ecec3b": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:52.758Z",
+      "calibrated_at": "2026-08-24T05:22:19.200Z",
       "calibrated_top_k": 50
     },
     {
@@ -97,7 +97,7 @@
         "69dec9fd4e2d2a5b77ecf399": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:52.772Z",
+      "calibrated_at": "2026-08-24T05:22:20.359Z",
       "calibrated_top_k": 50
     },
     {
@@ -116,7 +116,7 @@
         "69dec9fe4e2d2a5b77ecf7f7": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:52.787Z",
+      "calibrated_at": "2026-08-24T05:22:21.500Z",
       "calibrated_top_k": 50
     },
     {
@@ -135,7 +135,7 @@
         "69deca004e2d2a5b77ecfad8": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:52.807Z",
+      "calibrated_at": "2026-08-24T05:22:22.777Z",
       "calibrated_top_k": 50
     },
     {
@@ -154,7 +154,7 @@
         "69deca024e2d2a5b77ecff3b": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:52.827Z",
+      "calibrated_at": "2026-08-24T05:22:23.936Z",
       "calibrated_top_k": 50
     },
     {
@@ -173,7 +173,7 @@
         "69deca034e2d2a5b77ed02e9": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:52.841Z",
+      "calibrated_at": "2026-08-24T05:22:24.974Z",
       "calibrated_top_k": 50
     },
     {
@@ -192,7 +192,7 @@
         "69deca044e2d2a5b77ed05c0": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:53.916Z",
+      "calibrated_at": "2026-08-24T05:22:27.022Z",
       "calibrated_top_k": 50
     },
     {
@@ -211,7 +211,7 @@
         "69deca074e2d2a5b77ed0bf4": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:53.934Z",
+      "calibrated_at": "2026-08-24T05:22:29.059Z",
       "calibrated_top_k": 50
     },
     {
@@ -230,7 +230,7 @@
         "69deca094e2d2a5b77ed101c": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:53.952Z",
+      "calibrated_at": "2026-08-24T05:22:31.020Z",
       "calibrated_top_k": 50
     },
     {
@@ -249,7 +249,7 @@
         "69deca0c4e2d2a5b77ed186f": 3
       },
       "notes": "Long title truncated; source must appear at rank 1",
-      "calibrated_at": "2026-06-21T22:44:53.968Z",
+      "calibrated_at": "2026-08-24T05:22:32.997Z",
       "calibrated_top_k": 50
     },
     {
@@ -268,7 +268,7 @@
         "69deca474e2d2a5b77ed9e59": 3
       },
       "notes": "Query terms are corpus-common; many distractors expected",
-      "calibrated_at": "2026-06-21T22:44:53.985Z",
+      "calibrated_at": "2026-08-24T05:22:34.774Z",
       "calibrated_top_k": 50
     },
     {
@@ -287,7 +287,7 @@
         "69deca594e2d2a5b77edc8c7": 3
       },
       "notes": "Query terms are corpus-common; many distractors expected",
-      "calibrated_at": "2026-06-21T22:44:54.003Z",
+      "calibrated_at": "2026-08-24T05:22:36.574Z",
       "calibrated_top_k": 50
     },
     {
@@ -307,7 +307,7 @@
         "69deca2f4e2d2a5b77ed6c45": 2
       },
       "notes": "Auto-mined title bigram cluster from corpus",
-      "calibrated_at": "2026-06-21T22:44:55.695Z",
+      "calibrated_at": "2026-08-24T05:22:42.442Z",
       "calibrated_top_k": 50
     },
     {
@@ -326,12 +326,12 @@
         "69deca494e2d2a5b77eda572": 2
       },
       "notes": "Auto-mined title bigram cluster from corpus",
-      "calibrated_at": "2026-06-21T22:44:57.074Z",
+      "calibrated_at": "2026-08-24T05:22:42.489Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-29",
-      "query": "present problem consists",
+      "query": "orthogonality row-sparsity updating",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -342,21 +342,21 @@
       "source_mongo_id": "69dec9f34e2d2a5b77ecdecf",
       "source_title": "A Block Minorization-Maximization Algorithm for Row-Sparse Principal Component Analysis",
       "abstract_terms": [
-        "present",
-        "problem",
-        "consists",
-        "orthogonality"
+        "orthogonality",
+        "row-sparsity",
+        "updating",
+        "subproblem"
       ],
       "relevant": {
         "69dec9f34e2d2a5b77ecdecf": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.187Z",
+      "calibrated_at": "2026-08-24T05:22:52.507Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-30",
-      "query": "demonstrate technique enables",
+      "query": "three-fold seamless resonators",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -367,21 +367,21 @@
       "source_mongo_id": "69dec9f54e2d2a5b77ece245",
       "source_title": "Gigahertz tuning of on-chip RF photonic delay line",
       "abstract_terms": [
-        "demonstrate",
-        "technique",
-        "enables",
-        "three-fold"
+        "three-fold",
+        "seamless",
+        "resonators",
+        "enables"
       ],
       "relevant": {
         "69dec9f54e2d2a5b77ece245": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.204Z",
+      "calibrated_at": "2026-08-24T05:22:54.260Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-31",
-      "query": "present oscilloscopes utilizing",
+      "query": "oscilloscopes hamming programmable",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -392,21 +392,21 @@
       "source_mongo_id": "69dec9f64e2d2a5b77ece5ca",
       "source_title": "A new triggering method for oscilloscope based on associative memory technique",
       "abstract_terms": [
-        "present",
         "oscilloscopes",
-        "utilizing",
-        "weighted"
+        "hamming",
+        "programmable",
+        "successful"
       ],
       "relevant": {
         "69dec9f64e2d2a5b77ece5ca": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.217Z",
+      "calibrated_at": "2026-08-24T05:22:56.033Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-32",
-      "query": "emerged critical globally",
+      "query": "globally recycling win-win",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -417,21 +417,21 @@
       "source_mongo_id": "69dec9f84e2d2a5b77eceaf8",
       "source_title": "Strategic analysis of computer waste management options: Game-theoretic approach",
       "abstract_terms": [
-        "emerged",
-        "critical",
         "globally",
-        "because"
+        "recycling",
+        "win-win",
+        "incentives"
       ],
       "relevant": {
         "69dec9f84e2d2a5b77eceaf8": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.235Z",
+      "calibrated_at": "2026-08-24T05:22:57.831Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-33",
-      "query": "important synthetic strategy",
+      "query": "ligated phosphines electron-rich",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -442,21 +442,21 @@
       "source_mongo_id": "69dec9f94e2d2a5b77ecec3e",
       "source_title": "Organosulphur and related ligands in Suzuki-Miyaura C-C coupling",
       "abstract_terms": [
-        "important",
-        "synthetic",
-        "strategy",
-        "organic"
+        "ligated",
+        "phosphines",
+        "electron-rich",
+        "n-heterocyclic"
       ],
       "relevant": {
         "69dec9f94e2d2a5b77ecec3e": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.252Z",
+      "calibrated_at": "2026-08-24T05:22:59.914Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-34",
-      "query": "induction generally techniques",
+      "query": "triplen multi-carrier phase-voltage",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -467,21 +467,21 @@
       "source_mongo_id": "69dec9fc4e2d2a5b77ecf13d",
       "source_title": "Performance Evaluation of Open-End Winding IM Drive Operated with Synchronous PWM with Even Non-Triplen Pulse Number",
       "abstract_terms": [
-        "induction",
-        "generally",
-        "techniques",
-        "sine-triangle"
+        "triplen",
+        "multi-carrier",
+        "phase-voltage",
+        "satisfied"
       ],
       "relevant": {
         "69dec9fc4e2d2a5b77ecf13d": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.267Z",
+      "calibrated_at": "2026-08-24T05:23:01.771Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-35",
-      "query": "vertically nanostructures synthesized",
+      "query": "electroforming area-to-volume mineralization",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -492,21 +492,21 @@
       "source_mongo_id": "69dec9fd4e2d2a5b77ecf529",
       "source_title": "High aspect ZnO nanorod growth over electrodeposited tubes for photocatalytic degradation of EtBr dye",
       "abstract_terms": [
-        "vertically",
-        "nanostructures",
-        "synthesized",
-        "metallic"
+        "electroforming",
+        "area-to-volume",
+        "mineralization",
+        "theory-based"
       ],
       "relevant": {
         "69dec9fd4e2d2a5b77ecf529": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.282Z",
+      "calibrated_at": "2026-08-24T05:23:04.403Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-36",
-      "query": "advances envelopment provide",
+      "query": "envelopment divisions carryovers",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -517,21 +517,21 @@
       "source_mongo_id": "69dec9fe4e2d2a5b77ecf785",
       "source_title": "Dynamic Metafrontier Malmquist–Luenberger Productivity Index in Network DEA: An Application to Banking Data",
       "abstract_terms": [
-        "advances",
         "envelopment",
-        "provide",
-        "insight"
+        "divisions",
+        "carryovers",
+        "undesirable"
       ],
       "relevant": {
         "69dec9fe4e2d2a5b77ecf785": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.304Z",
+      "calibrated_at": "2026-08-24T05:23:06.150Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-37",
-      "query": "essentially chemicals pathogens",
+      "query": "pathogens preserving nanofilament",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -542,21 +542,21 @@
       "source_mongo_id": "69dec9ff4e2d2a5b77ecf8d1",
       "source_title": "Scope of Electrospun Chitosan Nanofibrous Web for its Potential Application in Water Filtration",
       "abstract_terms": [
-        "essentially",
-        "chemicals",
         "pathogens",
-        "preserving"
+        "preserving",
+        "nanofilament",
+        "economically"
       ],
       "relevant": {
         "69dec9ff4e2d2a5b77ecf8d1": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.323Z",
+      "calibrated_at": "2026-08-24T05:23:08.062Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-38",
-      "query": "combinations colloids binders",
+      "query": "colloids binders sedimentation",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -567,21 +567,21 @@
       "source_mongo_id": "69deca014e2d2a5b77ecfe0d",
       "source_title": "On the effect of particle surface chemistry in film stratification and morphology regulation",
       "abstract_terms": [
-        "combinations",
         "colloids",
         "binders",
-        "formulate"
+        "sedimentation",
+        "interparticle"
       ],
       "relevant": {
         "69deca014e2d2a5b77ecfe0d": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.337Z",
+      "calibrated_at": "2026-08-24T05:23:09.795Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-39",
-      "query": "twitter customer acquisition",
+      "query": "promotional advertisement timeline",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -592,21 +592,21 @@
       "source_mongo_id": "69deca024e2d2a5b77ecff3b",
       "source_title": "User engagement for mobile payment service providers – introducing the social media engagement model",
       "abstract_terms": [
-        "twitter",
-        "customer",
-        "acquisition",
-        "relationship"
+        "promotional",
+        "advertisement",
+        "timeline",
+        "mobikwik"
       ],
       "relevant": {
         "69deca024e2d2a5b77ecff3b": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.351Z",
+      "calibrated_at": "2026-08-24T05:23:11.601Z",
       "calibrated_top_k": 50
     },
     {
       "id": "hard-abstract-40",
-      "query": "adducts between identified",
+      "query": "adducts ultimately apparently",
       "type": "hard_abstract_gap",
       "difficulty": "high",
       "metric_focus": [
@@ -618,15 +618,95 @@
       "source_title": "Reactions of [Fe2(η-C5H5)2(CO)2(L)(CNMe)](L = CO or CNMe) with lewis acids resulting in adduct formation, dimer scission or both. Structure of[Fe(η-C5H5)(CO)(CNMe)2] [BF4]",
       "abstract_terms": [
         "adducts",
-        "between",
-        "identified",
-        "possible"
+        "ultimately",
+        "apparently",
+        "heavy-atom"
       ],
       "relevant": {
         "69deca024e2d2a5b77ed0137": 3
       },
       "notes": "Query terms appear in abstract but not title — tests semantic/hybrid recall",
-      "calibrated_at": "2026-06-21T22:45:00.373Z",
+      "calibrated_at": "2026-08-24T05:23:13.489Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-paraphrase-41",
+      "query": "what approaches exist for block related minorization-maximization problems",
+      "type": "hard_paraphrase",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f34e2d2a5b77ecdecf",
+      "source_title": "A Block Minorization-Maximization Algorithm for Row-Sparse Principal Component Analysis",
+      "lexical_overlap": 0.29,
+      "relevant": {
+        "69dec9f34e2d2a5b77ecdecf": 2
+      },
+      "notes": "Natural-language paraphrase with low title token overlap",
+      "calibrated_at": "2026-08-24T05:23:15.377Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-paraphrase-42",
+      "query": "mathematics work on gohberg lemma",
+      "type": "hard_paraphrase",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f54e2d2a5b77ece2e8",
+      "source_title": "The Gohberg Lemma, compactness, and essential spectrum of operators on compact Lie groups",
+      "lexical_overlap": 0.5,
+      "relevant": {
+        "69dec9f54e2d2a5b77ece2e8": 2
+      },
+      "notes": "Natural-language paraphrase with low title token overlap",
+      "calibrated_at": "2026-08-24T05:23:17.227Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-paraphrase-43",
+      "query": "research investigating genetic and algorithm and rnn-lstm mechanisms",
+      "type": "hard_paraphrase",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f74e2d2a5b77ece8c9",
+      "source_title": "A Genetic Algorithm and RNN-LSTM Model for Remaining Battery Capacity Prediction",
+      "lexical_overlap": 0.5,
+      "relevant": {
+        "69dec9f74e2d2a5b77ece8c9": 2
+      },
+      "notes": "Natural-language paraphrase with low title token overlap",
+      "calibrated_at": "2026-08-24T05:23:19.036Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-paraphrase-44",
+      "query": "what approaches exist for organosulphur related related problems",
+      "type": "hard_paraphrase",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9f94e2d2a5b77ecec3e",
+      "source_title": "Organosulphur and related ligands in Suzuki-Miyaura C-C coupling",
+      "lexical_overlap": 0.43,
+      "relevant": {
+        "69dec9f94e2d2a5b77ecec3e": 2
+      },
+      "notes": "Natural-language paraphrase with low title token overlap",
+      "calibrated_at": "2026-08-24T05:23:20.879Z",
       "calibrated_top_k": 50
     },
     {
@@ -646,7 +726,7 @@
         "69dec9fc4e2d2a5b77ecf286": 2
       },
       "notes": "Natural-language paraphrase with low title token overlap",
-      "calibrated_at": "2026-06-21T22:45:00.689Z",
+      "calibrated_at": "2026-08-24T05:23:20.986Z",
       "calibrated_top_k": 50
     },
     {
@@ -666,7 +746,27 @@
         "69dec9fe4e2d2a5b77ecf6ac": 2
       },
       "notes": "Natural-language paraphrase with low title token overlap",
-      "calibrated_at": "2026-06-21T22:45:00.706Z",
+      "calibrated_at": "2026-08-24T05:23:21.083Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-paraphrase-47",
+      "query": "what approaches exist for scope related electrospun problems",
+      "type": "hard_paraphrase",
+      "difficulty": "high",
+      "metric_focus": [
+        "mrr",
+        "recall_50",
+        "ndcg_10"
+      ],
+      "source_mongo_id": "69dec9ff4e2d2a5b77ecf8d1",
+      "source_title": "Scope of Electrospun Chitosan Nanofibrous Web for its Potential Application in Water Filtration",
+      "lexical_overlap": 0.29,
+      "relevant": {
+        "69dec9ff4e2d2a5b77ecf8d1": 2
+      },
+      "notes": "Natural-language paraphrase with low title token overlap",
+      "calibrated_at": "2026-08-24T05:23:23.213Z",
       "calibrated_top_k": 50
     },
     {
@@ -686,7 +786,7 @@
         "69deca014e2d2a5b77ecfe4a": 2
       },
       "notes": "Natural-language paraphrase with low title token overlap",
-      "calibrated_at": "2026-06-21T22:45:00.775Z",
+      "calibrated_at": "2026-08-24T05:23:23.295Z",
       "calibrated_top_k": 50
     },
     {
@@ -706,7 +806,26 @@
         "69deca024e2d2a5b77ed0073": 2
       },
       "notes": "Natural-language paraphrase with low title token overlap",
-      "calibrated_at": "2026-06-21T22:45:00.787Z",
+      "calibrated_at": "2026-08-24T05:23:23.354Z",
+      "calibrated_top_k": 50
+    },
+    {
+      "id": "hard-author-53",
+      "query": "Bhim improved",
+      "type": "hard_author_disambiguation",
+      "difficulty": "medium",
+      "metric_focus": [
+        "mrr",
+        "precision_5"
+      ],
+      "source_mongo_id": "69deca104e2d2a5b77ed23ca",
+      "source_title": "Improved single phase active power filter with optimum DC capacitor",
+      "kerberos": "bsingh",
+      "relevant": {
+        "69deca104e2d2a5b77ed23ca": 3
+      },
+      "notes": "Faculty surname + distinctive title keyword",
+      "calibrated_at": "2026-08-24T05:23:28.237Z",
       "calibrated_top_k": 50
     }
   ]

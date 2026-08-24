@@ -47,3 +47,39 @@ export function buildSearchConfig(config) {
         }
     };
 }
+
+/**
+ * How many query tokens the advanced-mode admission gate (_bm25PreCheck) requires before the
+ * hybrid query — whose kNN arm returns nearest neighbours for ANY vector — is allowed to run.
+ *
+ * "Does any ONE token occur anywhere in the corpus" is far too weak for a multi-token query:
+ * tokens like "aaa" and "mmm" genuinely occur here (AAAI, abbreviations, OCR noise), so
+ * multi-token gibberish cleared the gate on an incidental match and kNN then answered it with a
+ * full page of unrelated papers — measured: "aaa bbb ccc" returned 300 results, none containing
+ * any query term, while basic mode correctly returned 0.
+ *
+ * Two is safe for short queries rather than a special case: Lucene requires ALL optional clauses
+ * when a query has fewer of them than the threshold, so single-word queries are unaffected
+ * (measured identical counts at '1' and '2' for oncology/polymer/quantum). Genuine paraphrase
+ * queries keep their semantic recall because they contain several real words — only queries whose
+ * grounding is a lone incidental token are turned away.
+ *
+ * Shared by the papers list and the People sidebar so both admit exactly the same queries; if
+ * they diverge, the sidebar credits faculty for a query the papers list answers with nothing.
+ */
+export const PRECHECK_MIN_TOKENS = '2';
+
+/**
+ * Fuzziness for the typo probe and the fuzzy fallback it routes to.
+ *
+ * AUTO rather than a flat edit distance of 2: at 2 edits a 5-character token like "dhruv" is
+ * within reach of a large slice of the vocabulary, which turned the fallback into a broadening
+ * step. AUTO scales the budget with term length (1 edit up to 5 chars, 2 beyond).
+ *
+ * prefix_length pins the first character. AUTO still grants a 3-character token a full edit —
+ * a third of the token — which is enough for nonsense like "jjj kkk lll mmm" to reach real
+ * vocabulary and come back with a paper. Real typos overwhelmingly preserve the first letter
+ * (quamtum/oncolgy/machien/polimer all do), so requiring it costs recall nothing here and also
+ * bounds the term expansion OpenSearch has to enumerate.
+ */
+export const TYPO_FUZZ = Object.freeze({ fuzziness: 'AUTO', prefix_length: 1 });

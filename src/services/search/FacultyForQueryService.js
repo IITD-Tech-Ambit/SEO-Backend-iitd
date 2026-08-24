@@ -1,17 +1,21 @@
 import crypto from 'crypto';
 import { normalizeChain } from './QueryBuilder.js';
 import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
+import { withPaginationDepth, DEFAULT_STABLE_DEPTH } from './paginationDepth.js';
+import { PRECHECK_MIN_TOKENS, TYPO_FUZZ } from './constants.js';
 
 /**
  * People sidebar (GET /search/faculty-for-query): all IITD faculty matching a query across
  * the entire result set, grouped by department (the professor's own Faculty.department, not
  * the paper's field_associated tag) and sorted by total citation count, highest first.
  *
- * Uses the SAME query builders and relevance bar as POST /search so the sidebar's
- * total_matching_papers and every per-faculty paper_count agree with the papers list.
+ * Uses the SAME query builders and relevance bar as POST /search. `total_matching_papers` is
+ * counted with the papers list's own query shape so the two totals on screen agree; the
+ * per-faculty `paper_count`s come from a deliberately narrower lexical-only aggregation so
+ * each one agrees with that person's drill-down view instead (see _buildFacultyAggQuery).
  */
 export default class FacultyForQueryService {
-    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, rosterService, embeddingService, rrfPipeline, maxResultWindow }) {
+    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, rosterService, embeddingService, rrfPipeline, maxResultWindow, rrfStableDepth }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -24,6 +28,7 @@ export default class FacultyForQueryService {
         this.embeddingService = embeddingService;
         this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
         this.maxResultWindow = maxResultWindow || 10000;
+        this.rrfStableDepth = rrfStableDepth || DEFAULT_STABLE_DEPTH;
     }
 
     /**
@@ -156,14 +161,14 @@ export default class FacultyForQueryService {
             return this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
         };
         try {
-            // BM25-only first; only widen via kNN if that finds nothing (see
-            // InventorScopedSearch._buildRefineAnchorIdFilter for why admitting via kNN whenever
-            // BM25 already found real matches is unsafe once this anchor is used somewhere its
-            // own candidate pool is small).
+            // Don't kNN-widen an ungrounded refine term — it invents membership and broadens.
+            const anchorHitCount = await this._bm25PreCheck(term, searchInNorm, null, false, [], null);
+            if (anchorHitCount === 0) return { filter: { match_none: {} } };
+
             let resp = await runAnchorQuery(true);
             if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(false);
             const ids = resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
-            return { filter: ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} } };
+            return { filter: this.queryBuilder.buildRefineAnchorFilter(term, ids, searchInNorm) };
         } catch (err) {
             this.logger.warn({ err: err?.message, term }, 'Faculty-for-query: refine anchor lookup failed; falling back to literal narrowing');
             return { filter: this.queryBuilder.buildLiteralPrimaryClause(term, searchInNorm) };
@@ -177,7 +182,7 @@ export default class FacultyForQueryService {
      * aggregation's kNN arm surfaces nearest-neighbor faculty even for gibberish queries that
      * the papers list (correctly) returns nothing for.
      */
-    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null, refineFilterClauses = null) {
+    async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null, refineFilterClauses = null, { fuzzy = false } = {}) {
         const chain = normalizeChain(refineChain);
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
         const useAuthorRefine = authorRefineNarrow && authorOnly && chain.length >= 1;
@@ -192,8 +197,9 @@ export default class FacultyForQueryService {
                 multi_match: {
                     query,
                     fields: ['title', 'abstract', 'subject_area', 'field_associated'],
-                    type: 'cross_fields',
-                    minimum_should_match: '1'
+                    minimum_should_match: PRECHECK_MIN_TOKENS,
+                    // cross_fields does not support fuzziness, so the typo probe uses best_fields.
+                    ...(fuzzy ? { type: 'best_fields', ...TYPO_FUZZ } : { type: 'cross_fields' })
                 }
             };
             const iitdAuthor = this.queryBuilder.buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
@@ -210,8 +216,14 @@ export default class FacultyForQueryService {
         return response.body.hits.total.value;
     }
 
-    /** Build the size:0 OpenSearch aggregation query (basic BM25 or hybrid) for the People sidebar. */
-    async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing, refineFilterClauses = null) {
+    /**
+     * Build the size:0 OpenSearch queries backing the People sidebar:
+     *  - `aggQuery`   — the per-faculty aggregation (basic BM25, or restrictKnn'd hybrid).
+     *  - `totalQuery` — count-only, in the exact shape POST /search uses, so the headline
+     *    `total_matching_papers` equals the papers list. Null in basic mode, where the
+     *    aggregation already runs the identical `buildBasicQuery` body the papers list does.
+     */
+    async _buildFacultyAggQuery(mode, query, queryFilters, searchInNorm, refineChain, narrowing, refineFilterClauses = null, { fuzzy = false } = {}) {
         const { facultyAuthorIds, facultyKerberosIds, authorRefineNarrow, refineAnchor } = narrowing;
         const facultyAggs = this.filterBuilder.facultyForQueryAggregations();
 
@@ -233,22 +245,80 @@ export default class FacultyForQueryService {
                 searchInNorm, refineChain,
                 facultyAuthorIds, authorRefineNarrow, facultyKerberosIds
             );
-            return patchFacultyAggBody(base);
+            return { aggQuery: patchFacultyAggBody(base), totalQuery: null };
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
-        // restrictKnn: per-faculty counts here must match what clicking into that person's own
-        // scoped view shows (AuthorScopedSearch, BM25-only, unconditionally) — a product decision,
-        // not the IP search's choice to match the broader papers-list total instead. Prior refine
-        // terms still use anchor-based (not literal) narrowing, matching AuthorScopedSearch, so a
-        // refine chain doesn't collapse to fewer results here than it does there.
-        const base = this.queryBuilder.buildNormalizedHybridQuery(
+
+        // Typo queries: POST /search widens to _fuzzyFallbackSearch when the strict pre-check
+        // finds nothing, so it can serve 1467 papers for "quamtum". The sidebar's exact-matching
+        // hybrid finds nothing for the same query, which left a full papers list beside an empty
+        // People panel. Mirror the fallback's own shape here so both describe the same set. Its
+        // hits.total IS the papers-list total, so no separate count query is needed.
+        if (fuzzy) {
+            const fuzzyMust = searchInNorm?.length
+                ? this.queryBuilder.buildConstrainedSearchInClause(query, searchInNorm, TYPO_FUZZ, facultyAuthorIds, facultyKerberosIds)
+                : this.queryBuilder._buildDefaultBm25Clause(query, this.filterBuilder.getHybridSearchFields(searchInNorm), TYPO_FUZZ, false);
+            return {
+                aggQuery: patchFacultyAggBody({
+                    query: {
+                        bool: {
+                            must: [fuzzyMust],
+                            should: [{ knn: { embedding: { vector: embedding, k: 50 } } }],
+                            filter: this.filterBuilder.buildFilters(queryFilters)
+                        }
+                    }
+                }),
+                totalQuery: null
+            };
+        }
+
+        const buildHybrid = (restrictKnn) => this.queryBuilder.buildNormalizedHybridQuery(
             query, embedding, queryFilters, 1, 1,
             searchInNorm, facultyAuthorIds, authorRefineNarrow,
             refineAnchor, facultyKerberosIds,
-            { refineChain, refineFilterClauses, restrictKnn: true }
+            { refineChain, refineFilterClauses, restrictKnn }
         );
-        return patchFacultyAggBody(base);
+
+        // restrictKnn: the agg omits kNN so per-faculty counts match a click-through that starts
+        // lexical-only. AuthorScopedSearch adds a small kNN arm only after a lexical dead-end.
+        // Prior refine terms still use anchor-based (not literal) narrowing, matching
+        // AuthorScopedSearch, so a refine chain doesn't collapse to fewer results here than there.
+        return {
+            aggQuery: patchFacultyAggBody(buildHybrid(true)),
+            totalQuery: this._buildCountOnlyBody(buildHybrid(false))
+        };
+    }
+
+    /** Strip a query body down to a count: no hits, no aggs, no highlighting, no score floor. */
+    _buildCountOnlyBody(base) {
+        const body = this._withPaginationDepth({ ...base, size: 0, from: 0, track_total_hits: true, _source: false });
+        delete body.aggs;
+        delete body.highlight;
+        delete body.min_score;
+        delete body.sort;
+        return body;
+    }
+
+    /**
+     * The papers-list total for this query. The aggregation body drops the hybrid kNN arm
+     * (restrictKnn), so its own hits.total is lexical-only and can sit below POST /search.
+     * The headline count uses the papers list's own query shape instead. Returns null if the
+     * count can't be taken, so the caller falls back to the aggregation total.
+     */
+    async _fetchPapersListTotal(totalQuery) {
+        if (!totalQuery) return null;
+        try {
+            const resp = await this.opensearch.search({
+                index: this.indexName,
+                body: totalQuery,
+                ...(totalQuery.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+            });
+            return resp.body.hits.total.value;
+        } catch (err) {
+            this.logger.warn({ err: err?.message }, 'Faculty-for-query: papers-list total lookup failed; using aggregation total');
+            return null;
+        }
     }
 
     /** Merge the aggregation buckets into per-author info, applying the dynamic relevance threshold. */
@@ -401,13 +471,14 @@ export default class FacultyForQueryService {
         return facultyDedup;
     }
 
-    /** A `hybrid` query silently caps results below from+size without this hint. Mirrors
-     *  SearchService._withPaginationDepth — this class calls OpenSearch directly, so it needs
-     *  its own copy. No-op on non-hybrid bodies. */
+    /** A `hybrid` query silently caps results below from+size without this hint. This class
+     *  calls OpenSearch directly, and shares the depth policy with SearchService so the sidebar
+     *  fuses the same candidate pool the papers list does. */
     _withPaginationDepth(body) {
-        if (!body?.query?.hybrid) return body;
-        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), 1), this.maxResultWindow);
-        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
+        return withPaginationDepth(body, {
+            maxResultWindow: this.maxResultWindow,
+            stableDepth: this.rrfStableDepth
+        });
     }
 
     /**
@@ -533,6 +604,7 @@ export default class FacultyForQueryService {
         // POST /search so the People sidebar stays empty whenever the papers list is empty.
         let bm25HitCount = null;
         let refineFilterClauses = null;
+        let useFuzzyFallback = false;
         if (mode === 'advanced') {
             const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm, narrowing.authorRefineNarrow, effFilters);
             refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
@@ -543,6 +615,18 @@ export default class FacultyForQueryService {
                 refineChain, narrowing.facultyKerberosIds, refineFilterClauses
             );
             if (bm25HitCount === 0) {
+                // Same order POST /search uses: probe for a typo before declaring no results, so
+                // the two panels agree. Never while refining — narrowing must not broaden, and a
+                // refinement that matches nothing has to stay empty (see _buildRefineAnchorIdFilter).
+                useFuzzyFallback = normalizeChain(refineChain).length === 0
+                    && await this._bm25PreCheck(
+                        query, searchInNorm,
+                        narrowing.facultyAuthorIds, narrowing.authorRefineNarrow,
+                        refineChain, narrowing.facultyKerberosIds, refineFilterClauses,
+                        { fuzzy: true }
+                    ) > 0;
+            }
+            if (bm25HitCount === 0 && !useFuzzyFallback) {
                 this.logger.info({ query, mode }, 'Faculty-for-query: BM25 pre-check returned 0 hits — no faculty');
                 const emptyResponse = { departments: [], total_faculty: 0, total_matching_papers: 0 };
                 try {
@@ -554,18 +638,24 @@ export default class FacultyForQueryService {
             }
         }
 
-        const osQuery = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing, refineFilterClauses);
+        const { aggQuery: osQuery, totalQuery } = await this._buildFacultyAggQuery(mode, query, effFilters, searchInNorm, refineChain, narrowing, refineFilterClauses, { fuzzy: useFuzzyFallback });
 
         this.logger.info({ query, mode, search_in: searchInNorm }, 'Faculty-for-query: querying OpenSearch aggregation');
-        const osResponse = await this.opensearch.search({
-            index: this.indexName,
-            body: osQuery,
-            ...(mode === 'advanced' ? { search_pipeline: this.rrfPipeline } : {})
-        });
+        const [osResponse, papersListTotal] = await Promise.all([
+            this.opensearch.search({
+                index: this.indexName,
+                body: osQuery,
+                ...(mode === 'advanced' ? { search_pipeline: this.rrfPipeline } : {})
+            }),
+            this._fetchPapersListTotal(totalQuery)
+        ]);
 
         const { totalDocs, kerberosBuckets, authorInfos, isEmpty } = this._extractAuthorInfos(osResponse, query);
+        // `totalDocs` stays the aggregation's own hit count — it bounds the mongo_id fetch in
+        // _correctPaperCountsViaMongo, which walks the aggregation body, not the papers-list one.
+        const totalMatchingPapers = papersListTotal ?? totalDocs;
         if (isEmpty) {
-            return { departments: [], total_faculty: 0, total_matching_papers: totalDocs, cacheHit: false };
+            return { departments: [], total_faculty: 0, total_matching_papers: totalMatchingPapers, cacheHit: false };
         }
 
         const { facultyDocs, kerberosFacultyDocs, facultyByScopusId, facultyByKerberos } =
@@ -577,7 +667,7 @@ export default class FacultyForQueryService {
 
         const { departments, includedCount } = this._groupByDepartment(facultyDedup);
 
-        const response = { departments, total_faculty: includedCount, total_matching_papers: totalDocs };
+        const response = { departments, total_faculty: includedCount, total_matching_papers: totalMatchingPapers };
 
         try {
             await this.redis.setex(cacheKey, 600, JSON.stringify(response));

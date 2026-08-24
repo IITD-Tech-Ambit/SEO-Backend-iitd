@@ -1,6 +1,85 @@
 // Search Request/Response Validation Schemas
 
-export const searchRequestSchema = {
+/**
+ * Reject unknown filter keys. Fastify's ajv strips extras under additionalProperties:false
+ * (removeAdditional:true); propertyNames is what actually 400s.
+ */
+const closedFilters = (properties) => ({
+    type: 'object',
+    properties,
+    propertyNames: { enum: Object.keys(properties) },
+    additionalProperties: false
+});
+
+/** Reject unknown top-level request fields. Same Fastify strip issue as closedFilters. */
+const closedRequest = (schema) => ({
+    ...schema,
+    propertyNames: { enum: Object.keys(schema.properties) },
+    additionalProperties: false
+});
+
+/** Parse JSON-encoded `filters` query strings with the same allow-list as POST /search. */
+export function createEncodedFiltersParser(filtersSchema) {
+    const allowedValues = Object.freeze(Object.keys(filtersSchema.properties));
+
+    const invalid = (message, validation) => {
+        const error = new Error(message);
+        error.statusCode = 400;
+        error.validation = validation;
+        error.validationContext = 'querystring';
+        return error;
+    };
+
+    return function parseEncodedFilters(raw) {
+        if (typeof raw !== 'string' || !raw.trim()) return null;
+
+        let parsed;
+        try {
+            parsed = JSON.parse(raw);
+        } catch {
+            parsed = undefined;
+        }
+
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw invalid('querystring/filters must be a JSON-encoded object', [{
+                instancePath: '/filters',
+                schemaPath: '#/properties/filters',
+                keyword: 'type',
+                params: { type: 'object' },
+                message: 'must be a JSON-encoded object'
+            }]);
+        }
+
+        const unsupported = Object.keys(parsed).filter((key) => !allowedValues.includes(key));
+        if (unsupported.length) {
+            throw invalid(
+                `querystring/filters unsupported filter key ${unsupported.map((k) => `'${k}'`).join(', ')} `
+                + `— allowed keys: ${allowedValues.join(', ')}`,
+                unsupported.flatMap((propertyName) => [
+                    {
+                        instancePath: '/filters',
+                        schemaPath: '#/properties/filters/propertyNames/enum',
+                        keyword: 'enum',
+                        params: { allowedValues: [...allowedValues] },
+                        message: 'must be equal to one of the allowed values',
+                        propertyName
+                    },
+                    {
+                        instancePath: '/filters',
+                        schemaPath: '#/properties/filters/propertyNames',
+                        keyword: 'propertyNames',
+                        params: { propertyName },
+                        message: 'property name must be valid'
+                    }
+                ])
+            );
+        }
+
+        return parsed;
+    };
+}
+
+export const searchRequestSchema = closedRequest({
     type: 'object',
     required: ['query'],
     properties: {
@@ -10,56 +89,52 @@ export const searchRequestSchema = {
             maxLength: 500,
             description: 'Search query string'
         },
-        filters: {
-            type: 'object',
-            properties: {
-                year_from: {
-                    type: 'integer',
-                    minimum: 1900,
-                    maximum: 2100
-                },
-                year_to: {
-                    type: 'integer',
-                    minimum: 1900,
-                    maximum: 2100
-                },
-                field_associated: {
-                    type: 'string',
-                    description: 'Department/field filter'
-                },
-                document_type: {
-                    type: 'string',
-                    description: 'Article, Review, Conference Paper, etc.'
-                },
-                document_types: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: 'Multiple document types (Article, Review, etc.)'
-                },
-                subject_area: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: 'Subject area codes'
-                },
-                author_id: {
-                    type: 'string',
-                    description: 'Filter by specific author ID'
-                },
-                first_author_only: {
-                    type: 'boolean',
-                    description: 'Only return first-author papers'
-                },
-                interdisciplinary: {
-                    type: 'boolean',
-                    description: 'Papers spanning 3+ subject areas'
-                },
-                kerberos: {
-                    type: 'string',
-                    description: 'Filter by faculty kerberos ID (matches email prefix)'
-                }
+        filters: closedFilters({
+            year_from: {
+                type: 'integer',
+                minimum: 1900,
+                maximum: 2100
             },
-            additionalProperties: false
-        },
+            year_to: {
+                type: 'integer',
+                minimum: 1900,
+                maximum: 2100
+            },
+            field_associated: {
+                type: 'string',
+                description: 'Department/field filter'
+            },
+            document_type: {
+                type: 'string',
+                description: 'Article, Review, Conference Paper, etc.'
+            },
+            document_types: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Multiple document types (Article, Review, etc.)'
+            },
+            subject_area: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Subject area codes'
+            },
+            author_id: {
+                type: 'string',
+                description: 'Filter by specific author ID'
+            },
+            first_author_only: {
+                type: 'boolean',
+                description: 'Only return first-author papers'
+            },
+            interdisciplinary: {
+                type: 'boolean',
+                description: 'Papers spanning 3+ subject areas'
+            },
+            kerberos: {
+                type: 'string',
+                description: 'Filter by faculty kerberos ID (matches email prefix)'
+            }
+        }),
         sort: {
             type: 'string',
             enum: ['relevance', 'date', 'citations', 'impact', 'normalized'],
@@ -108,9 +183,8 @@ export const searchRequestSchema = {
             type: 'boolean',
             description: 'Advanced mode only. When false, returns the first-stage hybrid ranking without cross-encoder reranking. Defaults to the server reranker setting.'
         }
-    },
-    additionalProperties: false
-};
+    }
+});
 
 export const searchResponseSchema = {
     type: 'object',
@@ -185,7 +259,7 @@ export const searchResponseSchema = {
                 page: { type: 'integer' },
                 per_page: { type: 'integer' },
                 total: { type: 'integer' },
-                ranked_window: { type: 'integer', description: 'Number of top candidates cross-encoder reranked (transparency only). Pages within this window are reranked; deeper pages are paginated in raw hybrid-score order.' },
+                ranked_window: { type: 'integer', description: 'Number of top candidates the cross-encoder actually reranked (0 if this page was supposed to be reranked and the call failed or was skipped). Pages within this window are reranked; deeper pages are paginated in raw hybrid-score order.' },
                 total_pages: { type: 'integer', description: 'Derived from the true match count (total), clamped to the deepest page servable within OpenSearch max_result_window.' }
             }
         },
@@ -204,6 +278,10 @@ export const searchResponseSchema = {
         fuzzy_fallback: {
             type: 'boolean',
             description: 'True if results came from fuzzy fallback search'
+        },
+        reranked: {
+            type: 'boolean',
+            description: 'True only when this page\'s results were reordered by the cross-encoder. False when rerank failed, was disabled, was declined (`rerank: false`), or this page is past the reranked window.'
         },
         mode: {
             type: 'string',
@@ -252,7 +330,7 @@ export const coauthorsParamsSchema = {
     }
 };
 
-export const authorScopedSearchRequestSchema = {
+export const authorScopedSearchRequestSchema = closedRequest({
     type: 'object',
     required: ['query', 'author_id'],
     properties: {
@@ -303,27 +381,22 @@ export const authorScopedSearchRequestSchema = {
             },
             description: 'Same as POST /search. When set, constrains BM25 (and refine_within) to those fields; basic = strict, advanced = fuzzy where applicable.'
         },
-        filters: {
-            // Same facet filters as POST /search so the drill-down paper count matches the
-            // People sidebar per-faculty count for the same query+filters.
-            type: 'object',
-            properties: {
-                year_from: { type: 'integer', minimum: 1900, maximum: 2100 },
-                year_to: { type: 'integer', minimum: 1900, maximum: 2100 },
-                field_associated: { type: 'string' },
-                document_type: { type: 'string' },
-                document_types: { type: 'array', items: { type: 'string' } },
-                subject_area: { type: 'array', items: { type: 'string' } },
-                author_id: { type: 'string' },
-                first_author_only: { type: 'boolean' },
-                interdisciplinary: { type: 'boolean' },
-                kerberos: { type: 'string' }
-            },
-            additionalProperties: false
-        }
-    },
-    additionalProperties: false
-};
+        // Same facet filters as POST /search so the drill-down paper count matches the
+        // People sidebar per-faculty count for the same query+filters.
+        filters: closedFilters({
+            year_from: { type: 'integer', minimum: 1900, maximum: 2100 },
+            year_to: { type: 'integer', minimum: 1900, maximum: 2100 },
+            field_associated: { type: 'string' },
+            document_type: { type: 'string' },
+            document_types: { type: 'array', items: { type: 'string' } },
+            subject_area: { type: 'array', items: { type: 'string' } },
+            author_id: { type: 'string' },
+            first_author_only: { type: 'boolean' },
+            interdisciplinary: { type: 'boolean' },
+            kerberos: { type: 'string' }
+        })
+    }
+});
 
 export const authorScopedSearchResponseSchema = {
     type: 'object',
@@ -390,11 +463,12 @@ export const errorResponseSchema = {
     properties: {
         error: { type: 'string' },
         message: { type: 'string' },
+        details: { type: 'array', items: { type: 'object', additionalProperties: true } },
         statusCode: { type: 'integer' }
     }
 };
 
-export const facultyForQueryRequestSchema = {
+export const facultyForQueryRequestSchema = closedRequest({
     type: 'object',
     required: ['query'],
     properties: {
@@ -428,11 +502,12 @@ export const facultyForQueryRequestSchema = {
         filters: {
             type: 'string',
             maxLength: 2000,
-            description: 'JSON-encoded facet filters identical to POST /search filters (year_from, year_to, document_type, etc.). Applied so total_matching_papers matches POST /search pagination.total.'
+            description: 'JSON-encoded facet filters identical to POST /search filters (year_from, year_to, document_type, etc.). Applied so total_matching_papers matches POST /search pagination.total. Keys are validated against the POST /search allow-list after parsing (see parseFacultyForQueryFilters); an unsupported key is a 400, not a silent drop.'
         }
-    },
-    additionalProperties: false
-};
+    }
+});
+
+export const parseFacultyForQueryFilters = createEncodedFiltersParser(searchRequestSchema.properties.filters);
 
 export const facultyForQueryResponseSchema = {
     type: 'object',

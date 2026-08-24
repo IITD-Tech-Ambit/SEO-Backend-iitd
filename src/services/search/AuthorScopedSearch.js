@@ -1,17 +1,13 @@
 import crypto from 'crypto';
 import { normalizeChain } from './QueryBuilder.js';
 import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
+import { withPaginationDepth, DEFAULT_STABLE_DEPTH } from './paginationDepth.js';
+import { isPastEndOfResults } from './hybridErrors.js';
 
-/**
- * Author-scoped search: rank one author's papers for a query (Explore sidebar drill-down).
- *
- * Resolves author identity (Faculty expert_id/scopus_id, else raw id) with the SAME
- * dual-identity methodology as the People sidebar, queries via shared builders plus an
- * author filter (basic: strict BM25; advanced: normalized hybrid), then hydrates from
- * MongoDB in hit order and attaches similarity scores.
- */
+const MIN_USEFUL_LEXICAL_HITS = 2;
+
 export default class AuthorScopedSearch {
-    constructor({ opensearch, indexName, mongoose, redis, redisTTL, logger, queryBuilder, filterBuilder, rosterService, embeddingService, hydrator, rrfPipeline, maxResultWindow, candidateK }) {
+    constructor({ opensearch, indexName, mongoose, redis, redisTTL, logger, queryBuilder, filterBuilder, rosterService, embeddingService, hydrator, rrfPipeline, maxResultWindow, candidateK, rrfStableDepth }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -26,44 +22,62 @@ export default class AuthorScopedSearch {
         this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
         this.maxResultWindow = maxResultWindow || 10000;
         this.candidateK = candidateK || 50;
+        this.rrfStableDepth = rrfStableDepth || DEFAULT_STABLE_DEPTH;
     }
 
-    /**
-     * OpenSearch's native `hybrid` query rejects any request whose from+size exceeds a default
-     * internal depth ("pagination_depth param is missing" / "Reached end of search result,
-     * increase pagination_depth"). Mirrors SearchService._withPaginationDepth — this class
-     * builds hybrid queries and calls OpenSearch directly, bypassing SearchService entirely, so
-     * it needs its own copy of the same fix. No-op on non-hybrid bodies.
-     */
     _withPaginationDepth(body) {
-        if (!body?.query?.hybrid) return body;
-        const depth = Math.min(Math.max((body.from || 0) + (body.size || 0), this.candidateK), this.maxResultWindow);
-        return { ...body, query: { ...body.query, hybrid: { ...body.query.hybrid, pagination_depth: depth } } };
+        return withPaginationDepth(body, {
+            candidateK: this.candidateK,
+            maxResultWindow: this.maxResultWindow,
+            stableDepth: this.rrfStableDepth
+        });
     }
 
-    /**
-     * Pushes an author-scoping filter into every arm of a hybrid query, built for the `must:
-     * [bm25Clause], filter: [...]` shape (BM25 arm) — but the kNN arm's filter lives nested
-     * inside must[0].knn.embedding.filter.bool.filter instead (efficient k-NN filtering — see
-     * QueryBuilder.buildNormalizedHybridQuery), not as a sibling bool.filter array. A plain
-     * `arm.bool.filter.push` silently skips the kNN arm, leaving it to search embedding
-     * similarity across the WHOLE corpus (when included) instead of just this author's papers —
-     * measured directly: an author-refine-narrow drilldown returned as many hits as the
-     * unscoped corpus-wide total, because the kNN arm's admissions were never actually scoped.
-     */
+    /** Push the author filter into every hybrid arm, including the nested kNN pre-filter. */
     _scopeHybridQueryToAuthor(hybridQuery, authorFilter) {
         if (!authorFilter) return;
         for (const arm of hybridQuery?.query?.hybrid?.queries || []) {
-            if (Array.isArray(arm.bool?.filter)) {
-                arm.bool.filter.push(authorFilter);
-                continue;
-            }
             const knnClause = arm.bool?.must?.[0]?.knn?.embedding;
             if (knnClause) {
                 if (!knnClause.filter) knnClause.filter = { bool: { filter: [] } };
                 knnClause.filter.bool.filter.push(authorFilter);
+                continue;
             }
+            if (Array.isArray(arm.bool?.filter)) arm.bool.filter.push(authorFilter);
         }
+    }
+
+    /**
+     * Loose "does this author write about any of these words at all" probe: an OR across query
+     * terms (`minimum_should_match: 1`), unlike the ranking arm's AND-of-all-terms conjunction,
+     * restricted to this author's own papers.
+     *
+     * This is the guard that stops semantic widening from becoming a gibberish matcher. A kNN arm
+     * returns this author's nearest neighbours for ANY vector, so an ungated widening step answers
+     * "qwxzjkvbnm" with a page of their power-systems papers. Requiring the query to be lexically
+     * grounded in this author's corpus first means widening can only recover papers they genuinely
+     * have on the topic — the same reason SearchService gates its hybrid kNN arm behind
+     * _bm25PreCheck instead of letting the ANN arm admit on its own.
+     */
+    async _countAuthorLexicalGrounding(query, searchInNorm, authorFilter, filters) {
+        const fields = this.filterBuilder.getHybridSearchFields(searchInNorm);
+        // getSearchFields(['author']) is deliberately empty: an author-only search_in is an
+        // identity lookup, not a topic query, so there is no topical neighbourhood to widen into.
+        if (!fields.length) return 0;
+        const resp = await this.opensearch.search({
+            index: this.indexName,
+            body: {
+                size: 0,
+                track_total_hits: true,
+                query: {
+                    bool: {
+                        must: [{ multi_match: { query, fields, type: 'cross_fields', minimum_should_match: '1' } }],
+                        filter: [authorFilter, ...this.filterBuilder.buildFilters(filters)]
+                    }
+                }
+            }
+        });
+        return resp.body.hits.total.value;
     }
 
     /**
@@ -96,19 +110,19 @@ export default class AuthorScopedSearch {
             return this.opensearch.search({ index: this.indexName, body: this._withPaginationDepth(osQuery), search_pipeline: this.rrfPipeline });
         };
         try {
-            // BM25-only first; only widen via kNN if that finds nothing. kNN's k is sized for
-            // corpus-wide recall, but here it's scoped to just this one author's own papers — an
-            // author with fewer total (filter-matching) papers than k makes kNN structurally
-            // unable to discriminate: "top k nearest neighbors within a pool smaller than k" is
-            // just the whole pool, so admitting via kNN whenever BM25 already found real matches
-            // would silently widen a supposedly-narrowing anchor to nearly this author's entire
-            // history (measured on the IP search's InventorScopedSearch twin: an inventor's
-            // 88-patent portfolio, entirely unfiltered, for a refine term real BM25 matched only
-            // 15 of).
+            // Don't kNN-widen an ungrounded refine term — it invents membership and broadens.
+            if (this.filterBuilder.getHybridSearchFields(searchInNorm).length > 0) {
+                const anchorGrounding = await this._countAuthorLexicalGrounding(term, searchInNorm, authorFilter, {});
+                if (anchorGrounding === 0) return { match_none: {} };
+            }
+
             let resp = await runAnchorQuery(true);
             if (resp.body.hits.hits.length === 0) resp = await runAnchorQuery(false);
             const ids = resp.body.hits.hits.map((hit) => hit._source.mongo_id).filter(Boolean);
-            return ids.length > 0 ? { terms: { mongo_id: ids } } : { match_none: {} };
+            // Ids OR the term's own lexical clause: `cap` truncates a broad anchor, and filtering
+            // on the truncated slice alone drops documents basic mode keeps. See
+            // QueryBuilder.buildRefineAnchorFilter.
+            return this.queryBuilder.buildRefineAnchorFilter(term, ids, searchInNorm);
         } catch (err) {
             this.logger.warn({ err: err?.message, term }, 'Author-scoped refine anchor lookup failed; falling back to literal narrowing');
             return this.queryBuilder.buildLiteralPrimaryClause(term, searchInNorm);
@@ -227,6 +241,10 @@ export default class AuthorScopedSearch {
         try {
             const isBasic = mode === 'basic';
             let osQuery;
+            // Set for advanced mode: rebuilds the hybrid body, optionally with the semantic-recall
+            // arm appended. Kept as a closure so the widening retry below reuses the exact same
+            // construction (and the same already-computed embedding and refine filters).
+            let buildAdvancedQuery = null;
 
             if (isBasic) {
                 // `authorScoped: true` skips the IITD roster gate on author-name matching:
@@ -254,9 +272,15 @@ export default class AuthorScopedSearch {
                     ? await Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, authorFilter)))
                     : [];
 
-                // BM25 is the only recall arm within an author's own scope, unconditionally (kNN
-                // excluded — see buildNormalizedHybridQuery: a small single-author candidate pool
-                // makes embedding similarity too flat to trust as an admission signal on its own).
+                // On a fresh (chain-less) query BM25 is the only recall arm buildNormalizedHybridQuery
+                // builds within an author's own scope — a small single-author candidate pool makes
+                // embedding similarity too flat to trust as an admission signal on its own. That is
+                // the right default, but it leaves the lexical conjunction as the sole gate, so
+                // `semanticRecall` opts into the builder's kNN arm (allowKnnRecall) for the retry
+                // below when that gate produces a dead end. The opt-in only ADDS that arm: the
+                // lexical arm is built identically either way and RRF fuses the two, so widening
+                // can add matches but cannot demote or evict a real lexical match. Sizing k for a
+                // single author's pool is the builder's own decision (see _resolveKnnRecall).
                 //
                 // Pass our own already-computed (id-membership) refine filters through so
                 // buildNormalizedHybridQuery doesn't fall back to its internal literal-AND
@@ -264,21 +288,25 @@ export default class AuthorScopedSearch {
                 // alongside ours, and since every entry in a filter array is required, its
                 // near-impossible-to-satisfy literal-AND would silently veto everything even
                 // when our id-membership filter alone correctly matches.
-                // Once a refine chain is active, kNN gets admitted (see excludeKnn in
-                // buildNormalizedHybridQuery) — but this pool is already scoped to just this
-                // author's own papers, so a small knnK keeps it rank- rather than admit-everyone
-                // (see that function for the measured score-distribution rationale).
-                const base = this.queryBuilder.buildNormalizedHybridQuery(
-                    query, embedding, effFilters, page, per_page,
-                    searchInNorm, facultyAuthorIds, authorRefineNarrow,
-                    refineAnchor, facultyKerberosIds,
-                    { authorScoped: true, refineChain, refineFilterClauses: refineFilters, knnK: 5 }
-                );
+                // Once a refine chain is active the builder admits kNN without being asked, so
+                // there the opt-in changes nothing.
+                buildAdvancedQuery = ({ semanticRecall = false } = {}) => {
+                    const base = this.queryBuilder.buildNormalizedHybridQuery(
+                        query, embedding, effFilters, page, per_page,
+                        searchInNorm, facultyAuthorIds, authorRefineNarrow,
+                        refineAnchor, facultyKerberosIds,
+                        { authorScoped: true, refineChain, refineFilterClauses: refineFilters, allowKnnRecall: semanticRecall }
+                    );
 
-                this._scopeHybridQueryToAuthor(base, authorFilter);
+                    // Must run after the body is built so the kNN arm gets scoped too — and it
+                    // deliberately scopes that arm from the inside (see _scopeHybridQueryToAuthor).
+                    this._scopeHybridQueryToAuthor(base, authorFilter);
 
-                delete base.aggs;
-                osQuery = base;
+                    delete base.aggs;
+                    return base;
+                };
+
+                osQuery = buildAdvancedQuery();
             }
 
             osQuery = this._withPaginationDepth(osQuery);
@@ -292,13 +320,39 @@ export default class AuthorScopedSearch {
                 search_in: searchInNorm
             }, 'Author-scoped search: querying OpenSearch');
 
-            const osResponse = await this.opensearch.search({
-                index: this.indexName,
-                body: osQuery,
-                ...(osQuery.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
-            });
+            const runQuery = async (body) => {
+                const searchArgs = {
+                    index: this.indexName,
+                    body,
+                    ...(body.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+                };
+                try {
+                    return await this.opensearch.search(searchArgs);
+                } catch (err) {
+                    if (!isPastEndOfResults(err)) throw err;
+                    // A page past the last result is a normal request, not a failure: report the true
+                    // total (so total_pages stays honest) with no rows rather than surfacing a 502.
+                    this.logger.info({ author_id, query, page }, 'Author-scoped search: page is past the end of the result set; serving an empty page');
+                    return this.opensearch.search({ ...searchArgs, body: { ...body, from: 0, size: 0, _source: false } });
+                }
+            };
+
+            let osResponse = await runQuery(osQuery);
             hits = osResponse.body.hits.hits;
             total = osResponse.body.hits.total.value;
+
+            // Widen only when lexical recall collapsed and the query has vocabulary in this author's papers.
+            if (buildAdvancedQuery && !authorRefineNarrow && total < MIN_USEFUL_LEXICAL_HITS && osQuery.query?.hybrid?.queries?.length === 1) {
+                const groundedCount = await this._countAuthorLexicalGrounding(query, searchInNorm, authorFilter, effFilters);
+                this.logger.info({ author_id, query, total, groundedCount }, 'Author-scoped search: lexical recall is degenerate; probing semantic widening');
+                if (groundedCount > 0) {
+                    osQuery = this._withPaginationDepth(buildAdvancedQuery({ semanticRecall: true }));
+                    osResponse = await runQuery(osQuery);
+                    hits = osResponse.body.hits.hits;
+                    total = osResponse.body.hits.total.value;
+                    this.logger.info({ author_id, query, total }, 'Author-scoped search: widened with the semantic-recall arm');
+                }
+            }
 
             this.logger.info({ hitsCount: hits.length, total }, 'Author-scoped search: OpenSearch results');
         } catch (err) {

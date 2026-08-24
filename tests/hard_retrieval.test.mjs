@@ -15,7 +15,7 @@ import { computeAll } from './eval/metrics.mjs';
  *   npm run test:hard
  */
 
-const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3000}/api/v1`;
+const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3001}/api/v1`;
 const ROOT_BASE = API_BASE.replace(/\/api\/v1$/, '');
 const FIXTURES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
@@ -27,6 +27,7 @@ function loadJson(name) {
 
 const hardSet = loadJson('golden_set_hard.json');
 let serverUp = false;
+let probeError = null;
 
 async function search(query, mode = 'advanced', perPage = 50) {
     const res = await fetch(`${API_BASE}/search`, {
@@ -45,11 +46,20 @@ before(async () => {
     try {
         const res = await fetch(`${ROOT_BASE}/health`, { signal: AbortSignal.timeout(3000) });
         serverUp = res.status === 200;
-    } catch {
+        if (!serverUp) probeError = `GET ${ROOT_BASE}/health returned ${res.status}`;
+    } catch (err) {
         serverUp = false;
+        probeError = err.message;
     }
     if (!hardSet) console.warn('[hard_retrieval] Run npm run test:golden:hard first');
 });
+
+// Asserted inside each case rather than thrown from the hook: a failing hook cancels its
+// subtests, and cancelled tests are reported separately from failures, so the run still
+// summarises as "fail 0".
+function requireApi() {
+    assert.ok(serverUp, `API not reachable at ${ROOT_BASE} — ${probeError}`);
+}
 
 describe('Hard golden set structure', () => {
     it('has diverse difficult categories', (t) => {
@@ -73,8 +83,8 @@ describe('Hard golden set structure', () => {
 
 describe('Hard exact rank-1 (MRR / P@1)', () => {
     for (const entry of (hardSet?.queries || []).filter(q => q.type === 'hard_exact_rank1').slice(0, 8)) {
-        it(`[${entry.id}] source at rank ≤3`, async (t) => {
-            if (!serverUp || !hardSet) return t.skip();
+        it(`[${entry.id}] source at rank ≤3`, async () => {
+            requireApi();
             const { status, body } = await search(entry.query, 'advanced', 20);
             assert.equal(status, 200);
             const rank = rankOf(idsOf(body), entry.source_mongo_id);
@@ -86,8 +96,8 @@ describe('Hard exact rank-1 (MRR / P@1)', () => {
 
 describe('Hard graded clusters (nDCG / recall)', () => {
     for (const entry of (hardSet?.queries || []).filter(q => q.type === 'hard_graded_cluster').slice(0, 6)) {
-        it(`[${entry.id}] "${entry.query}" — calibrated judgments match retrieval`, async (t) => {
-            if (!serverUp || !hardSet) return t.skip();
+        it(`[${entry.id}] "${entry.query}" — calibrated judgments match retrieval`, async () => {
+            requireApi();
             const { status, body } = await search(entry.query, 'advanced', 50);
             assert.equal(status, 200);
             const metrics = computeAll(idsOf(body), entry.relevant);
@@ -99,8 +109,8 @@ describe('Hard graded clusters (nDCG / recall)', () => {
 
 describe('Hard abstract gap (semantic recall)', () => {
     for (const entry of (hardSet?.queries || []).filter(q => q.type === 'hard_abstract_gap').slice(0, 6)) {
-        it(`[${entry.id}] recalls source via abstract terms`, async (t) => {
-            if (!serverUp || !hardSet) return t.skip();
+        it(`[${entry.id}] recalls source via abstract terms`, async () => {
+            requireApi();
             const { status, body } = await search(entry.query, 'advanced', 50);
             assert.equal(status, 200);
             assert.ok(
@@ -113,8 +123,8 @@ describe('Hard abstract gap (semantic recall)', () => {
 
 describe('Hard paraphrase (vector recall)', () => {
     for (const entry of (hardSet?.queries || []).filter(q => q.type === 'hard_paraphrase').slice(0, 5)) {
-        it(`[${entry.id}] advanced ≥ basic recall`, async (t) => {
-            if (!serverUp || !hardSet) return t.skip();
+        it(`[${entry.id}] advanced ≥ basic recall`, async () => {
+            requireApi();
             const [basic, advanced] = await Promise.all([
                 search(entry.query, 'basic', 50),
                 search(entry.query, 'advanced', 50),
@@ -128,8 +138,8 @@ describe('Hard paraphrase (vector recall)', () => {
 
 describe('Hard ambiguous recall', () => {
     for (const entry of (hardSet?.queries || []).filter(q => q.type === 'hard_ambiguous_recall').slice(0, 4)) {
-        it(`[${entry.id}] "${entry.query}" recalls calibrated judged docs`, async (t) => {
-            if (!serverUp || !hardSet) return t.skip();
+        it(`[${entry.id}] "${entry.query}" recalls calibrated judged docs`, async () => {
+            requireApi();
             const { status, body } = await search(entry.query, 'advanced', 50);
             assert.equal(status, 200);
             const judged = new Set(Object.keys(entry.relevant));
@@ -141,8 +151,8 @@ describe('Hard ambiguous recall', () => {
 
 describe('Hard distractor ranking (anchor above peers)', () => {
     for (const entry of (hardSet?.queries || []).filter(q => q.type === 'hard_distractor_ranking').slice(0, 4)) {
-        it(`[${entry.id}] anchor ranks above grade-1 peers`, async (t) => {
-            if (!serverUp || !hardSet) return t.skip();
+        it(`[${entry.id}] anchor ranks above grade-1 peers`, async () => {
+            requireApi();
             const { status, body } = await search(entry.query, 'advanced', 30);
             assert.equal(status, 200);
             const ids = idsOf(body);
@@ -165,8 +175,8 @@ describe('Hard set: basic_count <= advanced_count', () => {
     ).slice(0, 8);
 
     for (const entry of sample) {
-        it(`[${entry.type}] "${entry.query.slice(0, 40)}"`, async (t) => {
-            if (!serverUp || !hardSet) return t.skip();
+        it(`[${entry.type}] "${entry.query.slice(0, 40)}"`, async () => {
+            requireApi();
             const [basic, advanced] = await Promise.all([
                 search(entry.query, 'basic', 5),
                 search(entry.query, 'advanced', 5),

@@ -33,9 +33,8 @@
  *
  * Env
  * ---
- *   BASE_URL          default http://127.0.0.1:3000
- *   OS_URL            default http://localhost:9200          (OpenSearch direct)
- *   OS_INDEX          default research_documents              (the alias or index)
+ *   BASE_URL          default http://127.0.0.1:3001
+ *   OS_INDEX          default from config.opensearch.indexName (the alias or index)
  *   REDIS_URL         default redis://localhost:6379         (cache flush; optional)
  *   AUTHOR_ID         default 60800                           (Prof. Basu expert_id)
  *   AUTHOR_SCOPUS_ID  default 56301902700                     (Prof. Basu Scopus id)
@@ -48,13 +47,28 @@
  */
 
 import assert from 'node:assert/strict';
+import dotenv from 'dotenv';
+import { Client } from '@opensearch-project/opensearch';
 
-const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
-const OS_URL   = process.env.OS_URL   || 'http://localhost:9200';
-const OS_INDEX = process.env.OS_INDEX || 'research_documents';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3001';
+// Resolved before .env is layered in: the flush below must only ever reach a Redis the caller
+// asked for, and the deployment .env names a shared instance whose default DB is not ours.
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const AUTHOR_ID = process.env.AUTHOR_ID || '60800';
 const AUTHOR_SCOPUS_ID = process.env.AUTHOR_SCOPUS_ID || '56301902700';
+
+// src/app.js loads .env before reading config, so doing the same here makes the [Pre] mapping
+// and analyzer assertions inspect the very cluster the running API queries — remote,
+// credentialed and self-signed, none of which a bare localhost URL can reach.
+dotenv.config();
+const { default: config } = await import('../src/config/index.js');
+
+const OS_INDEX = process.env.OS_INDEX || config.opensearch.indexName;
+const osClient = new Client({
+    node: config.opensearch.node,
+    auth: config.opensearch.auth,
+    ssl: config.opensearch.ssl,
+});
 
 // ──────────────────────────── HTTP helpers ────────────────────────────
 
@@ -78,13 +92,13 @@ async function get(path) {
     return { status: res.status, body: json, raw: text };
 }
 
-async function osFetch(method, path, body) {
-    const res = await fetch(`${OS_URL}${path}`, {
-        method,
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
+// Tokens a field's configured analyzer produces for `text`, straight from the live mapping.
+async function analyze(field, text) {
+    const { body } = await osClient.indices.analyze({
+        index: OS_INDEX,
+        body: { field, text },
     });
-    return { status: res.status, body: await res.json() };
+    return body.tokens.map((t) => t.token);
 }
 
 // Convenience: fire a basic-mode search with minimal boilerplate.
@@ -151,29 +165,27 @@ test('Pre', 'service health endpoint reports all subsystems healthy', async () =
 });
 
 test('Pre', 'index exists and has documents', async () => {
-    const { body, status } = await osFetch('GET',
-        `/_cat/indices/${OS_INDEX}?format=json&h=index,docs.count`);
-    assert.equal(status, 200);
-    assert.ok(body.length > 0, `index "${OS_INDEX}" not found`);
-    const docs = parseInt(body[0]['docs.count'], 10);
-    assert.ok(docs > 1000, `index only has ${docs} documents — reindex incomplete?`);
+    const { body: existing } = await osClient.cat.indices({
+        index: OS_INDEX, format: 'json', h: 'index',
+    });
+    assert.ok(existing.length > 0, `index "${OS_INDEX}" not found`);
+
+    // _cat reports Lucene docs, which counts nested children too; _count is the number of
+    // searchable papers, and that is what "reindex incomplete?" is really asking about.
+    const { body: counted } = await osClient.count({ index: OS_INDEX });
+    assert.ok(counted.count > 1000, `index only has ${counted.count} documents — reindex incomplete?`);
 });
 
 test('Pre', 'title uses english analyzer (advanced mode recall) and title.standard uses minimal_english_analyzer (basic mode precision)', async () => {
     // Root `title` field uses Porter (english) — should collapse community & communication.
-    const { body: rootTokens } = await osFetch('POST',
-        `/${OS_INDEX}/_analyze`,
-        { field: 'title', text: 'communication community batteries' });
-    const roots = rootTokens.tokens.map((t) => t.token);
+    const roots = await analyze('title', 'communication community batteries');
     assert.deepEqual(roots.slice(0, 3), ['commun', 'commun', 'batteri'],
         `title root analyzer wrong — got ${JSON.stringify(roots)}`);
 
     // `title.standard` MUST use minimal_english_analyzer — plurals collapse,
     // but distinct roots stay distinct.
-    const { body: standardTokens } = await osFetch('POST',
-        `/${OS_INDEX}/_analyze`,
-        { field: 'title.standard', text: 'communication communications community batteries batteries' });
-    const std = standardTokens.tokens.map((t) => t.token);
+    const std = await analyze('title.standard',
+        'communication communications community batteries batteries');
     assert.equal(std[0], 'communication', `expected 'communication', got '${std[0]}'`);
     assert.equal(std[1], 'communication', `plural must collapse to singular, got '${std[1]}' — .standard is NOT using minimal_english_analyzer`);
     assert.equal(std[2], 'community',     `distinct root must stay, got '${std[2]}' — over-stemming detected`);
@@ -181,9 +193,7 @@ test('Pre', 'title uses english analyzer (advanced mode recall) and title.standa
 });
 
 test('Pre', 'abstract.standard uses minimal_english_analyzer', async () => {
-    const { body } = await osFetch('POST', `/${OS_INDEX}/_analyze`,
-        { field: 'abstract.standard', text: 'optimize optimization optimal' });
-    const tokens = body.tokens.map((t) => t.token);
+    const tokens = await analyze('abstract.standard', 'optimize optimization optimal');
     assert.equal(tokens[0], 'optimize',     `got '${tokens[0]}'`);
     assert.equal(tokens[1], 'optimization', `must be distinct from "optimize" — got '${tokens[1]}'`);
     assert.equal(tokens[2], 'optimal',      `must be distinct from "optimize" — got '${tokens[2]}'`);
@@ -790,7 +800,7 @@ function groupName(g) {
 
 (async () => {
     console.log(`Base URL:         ${BASE_URL}`);
-    console.log(`OpenSearch URL:   ${OS_URL}`);
+    console.log(`OpenSearch URL:   ${config.opensearch.node}`);
     console.log(`OpenSearch index: ${OS_INDEX}`);
     console.log(`Author ID:        ${AUTHOR_ID} (Scopus ${AUTHOR_SCOPUS_ID})`);
     console.log();

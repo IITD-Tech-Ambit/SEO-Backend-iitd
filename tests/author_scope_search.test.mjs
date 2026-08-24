@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 /**
  * Comprehensive tests for the author-scoped search endpoint.
  *
- * Requires a live search API at SEARCH_API_URL (default http://localhost:3000).
+ * Requires a live search API at SEARCH_API_URL (default http://localhost:3001).
  * Run: node --test tests/author_scope_search.test.mjs
  *
  * Uses real author IDs from the 1000-doc test corpus:
@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
  *   - 14824545400 (127 papers)
  */
 
-const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3000}/api/v1`;
+const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3001}/api/v1`;
 
 async function post(path, body) {
     const res = await fetch(`${API_BASE}${path}`, {
@@ -516,7 +516,26 @@ describe('Author-scoped search: multi-page score consistency', () => {
         }
     });
 
-    it('last page results still meet minimum relevance threshold', async () => {
+    it('last page results are still genuine matches, not zero-relevance padding', async () => {
+        // This used to assert `similarity_score >= 1.0`, a raw-BM25-scale threshold. Advanced
+        // author-scoped search fuses its arms with the `rrf-hybrid` search pipeline
+        // (technique: rrf, rank_constant: 60), so a score is the sum over arms of
+        // 1/(60 + rank_in_arm): at most 2/61 ~= 0.033 for a document both arms ranked first,
+        // and 1/61 ~= 0.016 from a single arm. 1.0 is arithmetically unreachable, so that
+        // threshold could only ever fail — and it contradicted two sibling tests in this file
+        // ('advanced mode uses normalized scores' asserts < 10, 'advanced mode scores are in
+        // normalized range' asserts < 5), which together left no satisfiable band.
+        //
+        // The protective intent — the tail of a long result set must not be padding — is kept
+        // and made scale-free below: every last-page document must sit inside the RRF band, be
+        // above the floor implied by the fusion depth (i.e. an arm really ranked it, rather than
+        // it being swept in), rank no higher than page 1's weakest hit, and still be a real
+        // match for the query.
+        const RRF_RANK_CONSTANT = 60;
+        const RRF_FUSION_DEPTH = 500;        // DEFAULT_STABLE_DEPTH in src/services/search/paginationDepth.js
+        const RRF_CEILING = 2 / (RRF_RANK_CONSTANT + 1);
+        const RRF_FLOOR = 1 / (RRF_RANK_CONSTANT + RRF_FUSION_DEPTH);
+
         const { status, body } = await post('/search/author-scope', {
             query: 'power',
             author_id: EXPERT_ID,
@@ -526,22 +545,46 @@ describe('Author-scoped search: multi-page score consistency', () => {
         });
         assert.equal(status, 200);
         const totalPages = body.pagination.total_pages;
+        if (totalPages <= 1) return;
 
-        if (totalPages > 1) {
-            const lastPage = await post('/search/author-scope', {
-                query: 'power',
-                author_id: EXPERT_ID,
-                per_page: 10,
-                page: totalPages,
-                mode: 'advanced',
-            });
-            assert.equal(lastPage.status, 200);
-            for (const r of lastPage.body.results) {
-                assert.ok(
-                    r.similarity_score >= 1.0,
-                    `Last page result "${r.title?.slice(0, 40)}" score ${r.similarity_score} is below 1.0 threshold`
-                );
-            }
+        const lastPage = await post('/search/author-scope', {
+            query: 'power',
+            author_id: EXPERT_ID,
+            per_page: 10,
+            page: totalPages,
+            mode: 'advanced',
+        });
+        assert.equal(lastPage.status, 200);
+        assert.ok(lastPage.body.results.length > 0, 'last page should serve results');
+
+        const page1Min = Math.min(...body.results.map(r => r.similarity_score));
+
+        for (const r of lastPage.body.results) {
+            const label = `Last page result "${r.title?.slice(0, 40)}"`;
+
+            assert.ok(
+                r.similarity_score > 0 && r.similarity_score <= RRF_CEILING + 1e-9,
+                `${label} score ${r.similarity_score} is outside the RRF band (0, ${RRF_CEILING.toFixed(6)}] — a raw BM25 score is leaking through`
+            );
+            assert.ok(
+                r.similarity_score >= RRF_FLOOR,
+                `${label} score ${r.similarity_score} is below the RRF fusion-depth floor ${RRF_FLOOR.toFixed(6)}; no arm actually ranked it`
+            );
+            assert.ok(
+                r.similarity_score <= page1Min + 1e-9,
+                `${label} score ${r.similarity_score} outranks page 1's weakest hit (${page1Min}) — relevance is not decaying monotonically across pages`
+            );
+
+            // Relevance itself, independent of scale. The last page of a 100+ hit result set is
+            // served entirely by the lexical arm (semantic widening only fires when a query has
+            // fewer than 2 lexical matches, which cannot produce more than one page), so every
+            // document here must genuinely carry the query term: OpenSearch returned a highlight
+            // for it, or the term occurs in its title/abstract.
+            const haystack = `${r.title || ''} ${r.abstract || ''}`.toLowerCase();
+            assert.ok(
+                (r.highlight && Object.keys(r.highlight).length > 0) || haystack.includes('power'),
+                `${label} is not a genuine match for "power" — no highlight and the term is absent from title/abstract`
+            );
         }
     });
 });
@@ -565,6 +608,8 @@ describe('General search: full match set is navigable; reranking bounded to top-
             body.pagination.ranked_window <= 50,
             `ranked_window should be <=50, got ${body.pagination.ranked_window}`
         );
+        assert.equal(body.reranked, true, 'page 1 of an advanced relevance search must actually be reranked');
+        assert.ok(body.pagination.ranked_window > 0, 'a successful rerank must advertise a non-zero window');
     });
 
     it('pages beyond the reranked window are still navigable (raw-order tail)', async () => {
