@@ -48,26 +48,24 @@ export function buildSearchConfig(config) {
     };
 }
 
-/**
- * How many query tokens the advanced-mode admission gate (_bm25PreCheck) requires before the
- * hybrid query — whose kNN arm returns nearest neighbours for ANY vector — is allowed to run.
- *
- * "Does any ONE token occur anywhere in the corpus" is far too weak for a multi-token query:
- * tokens like "aaa" and "mmm" genuinely occur here (AAAI, abbreviations, OCR noise), so
- * multi-token gibberish cleared the gate on an incidental match and kNN then answered it with a
- * full page of unrelated papers — measured: "aaa bbb ccc" returned 300 results, none containing
- * any query term, while basic mode correctly returned 0.
- *
- * Two is safe for short queries rather than a special case: Lucene requires ALL optional clauses
- * when a query has fewer of them than the threshold, so single-word queries are unaffected
- * (measured identical counts at '1' and '2' for oncology/polymer/quantum). Genuine paraphrase
- * queries keep their semantic recall because they contain several real words — only queries whose
- * grounding is a lone incidental token are turned away.
- *
- * Shared by the papers list and the People sidebar so both admit exactly the same queries; if
- * they diverge, the sidebar credits faculty for a query the papers list answers with nothing.
- */
-export const PRECHECK_MIN_TOKENS = '2';
+const ENGLISH_STOPWORDS = new Set([
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it',
+    'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these',
+    'they', 'this', 'to', 'was', 'will', 'with'
+]);
+
+export function contentTerms(query) {
+    const terms = String(query ?? '').trim().split(/\s+/).filter((t) => t.length > 0);
+    const content = terms.filter((t) => !ENGLISH_STOPWORDS.has(t.toLowerCase()));
+    return content.length > 0 ? content : terms;
+}
+
+export function admissionMinRequired(termCount) {
+    const n = Number(termCount) || 0;
+    if (n <= 0) return 0;
+    if (n <= 3) return n;
+    return Math.max(3, Math.ceil(n * 0.75));
+}
 
 /**
  * Fuzziness for the typo probe and the fuzzy fallback it routes to.

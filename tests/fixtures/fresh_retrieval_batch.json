@@ -1,0 +1,587 @@
+{
+  "fetched_at": "2026-08-30T11:11:20.134Z",
+  "indexed": 70298,
+  "docs": [
+    {
+      "id": "69deca194e2d2a5b77ed38b1",
+      "os": "69deca194e2d2a5b77ed38b1",
+      "title": "Growth of ZnO hollow needles",
+      "year": 1971,
+      "title_terms": [
+        "growth",
+        "hollow",
+        "needles"
+      ],
+      "bigram": "growth hollow",
+      "author_id": "56140114200",
+      "author_name": "Sharma, S.D.",
+      "expert_id": "-889bc314a48e42ad966c2e3872f66a27",
+      "kerberos": "dstdipika",
+      "document_type": "Article",
+      "field_associated": "Physics and Astronomy",
+      "subject_area": [
+        "Physics and Astronomy",
+        "Chemistry",
+        "Materials Science"
+      ],
+      "first_author_id": "56140114200",
+      "first_author_name": "Sharma, S.D.",
+      "author_is_first": true,
+      "faculty_name": "Dipika Sharma",
+      "faculty_email": "dstdipika@iitd.ac.in"
+    },
+    {
+      "id": "69deca424e2d2a5b77ed93ec",
+      "os": "69deca424e2d2a5b77ed93ec",
+      "title": "Magnetically Reconfigurable Terahertz Active Superlattice Metasurfaces",
+      "year": 2022,
+      "title_terms": [
+        "magnetically",
+        "reconfigurable",
+        "terahertz",
+        "active",
+        "superlattice",
+        "metasurfaces"
+      ],
+      "bigram": "magnetically reconfigurable",
+      "author_id": "57209983526",
+      "author_name": "Karmakar, S.",
+      "expert_id": null,
+      "kerberos": "ravi",
+      "document_type": "Conference Paper",
+      "field_associated": "Materials Science",
+      "subject_area": [
+        "Materials Science",
+        "Engineering"
+      ],
+      "first_author_id": "57209983526",
+      "first_author_name": "Karmakar, S.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca4f4e2d2a5b77edb355",
+      "os": "69deca4f4e2d2a5b77edb355",
+      "title": "Successive phase transitions in Li2TeO4",
+      "year": 2000,
+      "title_terms": [
+        "successive",
+        "phase",
+        "transitions",
+        "li2teo4"
+      ],
+      "bigram": "successive phase",
+      "author_id": "57219918619",
+      "author_name": "Singh, N.K.",
+      "expert_id": null,
+      "kerberos": "seemash",
+      "document_type": "Article",
+      "field_associated": "Materials Science",
+      "subject_area": [
+        "Materials Science",
+        "Physics and Astronomy"
+      ],
+      "first_author_id": "57219918619",
+      "first_author_name": "Singh, N.K.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca224e2d2a5b77ed4fb1",
+      "os": "69deca224e2d2a5b77ed4fb1",
+      "title": "Electrostatically functionalized multiwalled carbon nanotube/PMMA composite thin films for organic vapor detection",
+      "year": 2011,
+      "title_terms": [
+        "electrostatically",
+        "functionalized",
+        "multiwalled",
+        "carbon",
+        "nanotubepmma",
+        "composite"
+      ],
+      "bigram": "electrostatically functionalized",
+      "author_id": "55183213300",
+      "author_name": "Shukla, P.",
+      "expert_id": null,
+      "kerberos": "jkj",
+      "document_type": "Article",
+      "field_associated": "Materials Science",
+      "subject_area": [
+        "Materials Science",
+        "Chemical Engineering"
+      ],
+      "first_author_id": "55183213300",
+      "first_author_name": "Shukla, P.",
+      "author_is_first": true
+    },
+    {
+      "id": "69dec9f84e2d2a5b77ece961",
+      "os": "69dec9f84e2d2a5b77ece961",
+      "title": "Measurement of environmental aspect of 3-D printing process using soft computing methods",
+      "year": 2015,
+      "title_terms": [
+        "measurement",
+        "environmental",
+        "aspect",
+        "printing",
+        "process",
+        "soft"
+      ],
+      "bigram": "measurement environmental",
+      "author_id": "55482431700",
+      "author_name": "Garg, A.",
+      "expert_id": "274691",
+      "kerberos": "akhil",
+      "document_type": "Article",
+      "field_associated": "Physics and Astronomy",
+      "subject_area": [
+        "Physics and Astronomy",
+        "Engineering"
+      ],
+      "first_author_id": "55482431700",
+      "first_author_name": "Garg, A.",
+      "author_is_first": true,
+      "faculty_name": "Akhil Garg",
+      "faculty_email": "akhil@cart.iitd.ernet.in"
+    },
+    {
+      "id": "69deca484e2d2a5b77eda26b",
+      "os": "69deca484e2d2a5b77eda26b",
+      "title": "Right-handed circularly polarized dispersive Alfvén wave: Localization and turbulence in solar wind",
+      "year": 2015,
+      "title_terms": [
+        "right-handed",
+        "circularly",
+        "polarized",
+        "dispersive",
+        "alfvn",
+        "wave"
+      ],
+      "bigram": "right-handed circularly",
+      "author_id": "36067733400",
+      "author_name": "Sharma, R.P.",
+      "expert_id": "16871",
+      "kerberos": "rpsharma",
+      "document_type": "Article",
+      "field_associated": "Earth and Planetary Sciences",
+      "subject_area": [
+        "Earth and Planetary Sciences"
+      ],
+      "first_author_id": "36067733400",
+      "first_author_name": "Sharma, R.P.",
+      "author_is_first": true,
+      "faculty_name": "R. P. Sharma",
+      "faculty_email": "rpsharma@ces.iitd.ac.in"
+    },
+    {
+      "id": "69deca204e2d2a5b77ed4921",
+      "os": "69deca204e2d2a5b77ed4921",
+      "title": "Increasing software reliability through rollback and on-line fault repair",
+      "year": 1997,
+      "title_terms": [
+        "increasing",
+        "software",
+        "reliability",
+        "through",
+        "rollback",
+        "on-line"
+      ],
+      "bigram": "increasing software",
+      "author_id": "59532744700",
+      "author_name": "Gupta, D.",
+      "expert_id": null,
+      "kerberos": "jalote",
+      "document_type": "Conference Paper",
+      "field_associated": "Engineering",
+      "subject_area": [
+        "Engineering"
+      ],
+      "first_author_id": "59532744700",
+      "first_author_name": "Gupta, D.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca3f4e2d2a5b77ed8d5e",
+      "os": "69deca3f4e2d2a5b77ed8d5e",
+      "title": "On Beating 2n for the Closest Vector Problem",
+      "year": 2025,
+      "title_terms": [
+        "beating",
+        "closest",
+        "vector",
+        "problem"
+      ],
+      "bigram": "beating closest",
+      "author_id": "55795554100",
+      "author_name": "Abboud, A.",
+      "expert_id": null,
+      "kerberos": "r_kumar",
+      "document_type": "Conference Paper",
+      "field_associated": "Computer Science",
+      "subject_area": [
+        "Computer Science",
+        "Mathematics"
+      ],
+      "first_author_id": "55795554100",
+      "first_author_name": "Abboud, A.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca0e4e2d2a5b77ed1f13",
+      "os": "69deca0e4e2d2a5b77ed1f13",
+      "title": "Vienna converter fed two stage grid connected photovoltaic pumping system",
+      "year": 2018,
+      "title_terms": [
+        "vienna",
+        "converter",
+        "stage",
+        "grid",
+        "connected",
+        "photovoltaic"
+      ],
+      "bigram": "vienna converter",
+      "author_id": "57213032877",
+      "author_name": "Sharma, U.",
+      "expert_id": null,
+      "kerberos": "bsingh",
+      "document_type": "Conference Paper",
+      "field_associated": "Energy",
+      "subject_area": [
+        "Energy",
+        "Engineering",
+        "Mathematics"
+      ],
+      "first_author_id": "57213032877",
+      "first_author_name": "Sharma, U.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca3e4e2d2a5b77ed8aa0",
+      "os": "69deca3e4e2d2a5b77ed8aa0",
+      "title": "Ethical concerns for theoretical research in linguistics: Issues and best practices",
+      "year": 2025,
+      "title_terms": [
+        "ethical",
+        "concerns",
+        "theoretical",
+        "research",
+        "linguistics",
+        "issues"
+      ],
+      "bigram": "ethical concerns",
+      "author_id": "57195244011",
+      "author_name": "Chandra, P.",
+      "expert_id": "70149",
+      "kerberos": "pritha",
+      "document_type": "Article",
+      "field_associated": "Arts and Humanities",
+      "subject_area": [
+        "Arts and Humanities",
+        "Social Sciences"
+      ],
+      "first_author_id": "57195244011",
+      "first_author_name": "Chandra, P.",
+      "author_is_first": true,
+      "faculty_name": "Pritha Chandra",
+      "faculty_email": "pritha@hss.iitd.ac.in"
+    },
+    {
+      "id": "69deca344e2d2a5b77ed7916",
+      "os": "69deca344e2d2a5b77ed7916",
+      "title": "Hybrid long-range collision avoidancefor crowd simulation",
+      "year": 2014,
+      "title_terms": [
+        "hybrid",
+        "long-range",
+        "collision",
+        "avoidancefor",
+        "crowd",
+        "simulation"
+      ],
+      "bigram": "hybrid long-range",
+      "author_id": "26531106300",
+      "author_name": "Golas, A.",
+      "expert_id": null,
+      "kerberos": "narain",
+      "document_type": "Article",
+      "field_associated": "Computer Science",
+      "subject_area": [
+        "Computer Science"
+      ],
+      "first_author_id": "26531106300",
+      "first_author_name": "Golas, A.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca144e2d2a5b77ed2bd5",
+      "os": "69deca144e2d2a5b77ed2bd5",
+      "title": "Review of light fading mechanism of dyed materials",
+      "year": 1999,
+      "title_terms": [
+        "review",
+        "light",
+        "fading",
+        "mechanism",
+        "dyed",
+        "materials"
+      ],
+      "bigram": "review light",
+      "author_id": "35468622800",
+      "author_name": "Gupta, D.",
+      "expert_id": "673270",
+      "kerberos": "deepti",
+      "document_type": "Short Survey",
+      "field_associated": "Business, Management and Accounting",
+      "subject_area": [
+        "Business, Management and Accounting",
+        "Environmental Science",
+        "Engineering"
+      ],
+      "first_author_id": "35468622800",
+      "first_author_name": "Gupta, D.",
+      "author_is_first": true,
+      "faculty_name": "Deepti Gupta",
+      "faculty_email": "deepti@textile.iitd.ac.in"
+    },
+    {
+      "id": "69deca1d4e2d2a5b77ed402a",
+      "os": "69deca1d4e2d2a5b77ed402a",
+      "title": "Rational design of bimetallic alloys for effective hydrodechlorination of 4-chlorophenol",
+      "year": 2024,
+      "title_terms": [
+        "rational",
+        "design",
+        "bimetallic",
+        "alloys",
+        "effective",
+        "hydrodechlorination"
+      ],
+      "bigram": "rational design",
+      "author_id": "57211924345",
+      "author_name": "Shenoy, C.S.",
+      "expert_id": null,
+      "kerberos": "haider",
+      "document_type": "Article",
+      "field_associated": "Chemical Engineering",
+      "subject_area": [
+        "Chemical Engineering",
+        "Chemistry",
+        "Materials Science"
+      ],
+      "first_author_id": "57211924345",
+      "first_author_name": "Shenoy, C.S.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca004e2d2a5b77ecfc15",
+      "os": "69deca004e2d2a5b77ecfc15",
+      "title": "High-throughput tools and approaches for development of process chromatography steps",
+      "year": 2011,
+      "title_terms": [
+        "high-throughput",
+        "tools",
+        "approaches",
+        "development",
+        "process",
+        "chromatography"
+      ],
+      "bigram": "high-throughput tools",
+      "author_id": "26633518200",
+      "author_name": "Bhambure, R.",
+      "expert_id": null,
+      "kerberos": "arathore",
+      "document_type": "Article",
+      "field_associated": "Chemistry",
+      "subject_area": [
+        "Chemistry"
+      ],
+      "first_author_id": "26633518200",
+      "first_author_name": "Bhambure, R.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca194e2d2a5b77ed38d3",
+      "os": "69deca194e2d2a5b77ed38d3",
+      "title": "Role of Yrn2 under oxidative stress in Deinococcus radiodurans",
+      "year": 2024,
+      "title_terms": [
+        "role",
+        "yrn2",
+        "under",
+        "oxidative",
+        "stress",
+        "deinococcus"
+      ],
+      "bigram": "role yrn2",
+      "author_id": "59140272000",
+      "author_name": "Rai, S.N.",
+      "expert_id": null,
+      "kerberos": "dtanmay",
+      "document_type": "Article",
+      "field_associated": "Biochemistry, Genetics and Molecular Biology",
+      "subject_area": [
+        "Biochemistry, Genetics and Molecular Biology"
+      ],
+      "first_author_id": "59140272000",
+      "first_author_name": "Rai, S.N.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca3a4e2d2a5b77ed8278",
+      "os": "69deca3a4e2d2a5b77ed8278",
+      "title": "Assessment of the magnitude and recent trends in satellite-derived ground-level nitrogen dioxide over North America",
+      "year": 2015,
+      "title_terms": [
+        "assessment",
+        "magnitude",
+        "recent",
+        "trends",
+        "satellite-derived",
+        "ground-level"
+      ],
+      "bigram": "assessment magnitude",
+      "author_id": "15725317300",
+      "author_name": "Kharol, S.K.",
+      "expert_id": null,
+      "kerberos": "philipsajeev",
+      "document_type": "Article",
+      "field_associated": "Environmental Science",
+      "subject_area": [
+        "Environmental Science",
+        "Earth and Planetary Sciences"
+      ],
+      "first_author_id": "15725317300",
+      "first_author_name": "Kharol, S.K.",
+      "author_is_first": true
+    },
+    {
+      "id": "69dec9fe4e2d2a5b77ecf72e",
+      "os": "69dec9fe4e2d2a5b77ecf72e",
+      "title": "Pretreatment of algal biomass using fungal crude enzymes",
+      "year": 2015,
+      "title_terms": [
+        "pretreatment",
+        "algal",
+        "biomass",
+        "fungal",
+        "crude",
+        "enzymes"
+      ],
+      "bigram": "pretreatment algal",
+      "author_id": "55355312800",
+      "author_name": "Prajapati, S.K.",
+      "expert_id": null,
+      "kerberos": "anushree",
+      "document_type": "Article",
+      "field_associated": "Agricultural and Biological Sciences",
+      "subject_area": [
+        "Agricultural and Biological Sciences"
+      ],
+      "first_author_id": "55355312800",
+      "first_author_name": "Prajapati, S.K.",
+      "author_is_first": true
+    },
+    {
+      "id": "69deca3f4e2d2a5b77ed8c13",
+      "os": "69deca3f4e2d2a5b77ed8c13",
+      "title": "Haptoglobin Gene Expression and Anthracycline-Related Cardiomyopathy in Childhood Cancer Survivors: A COG-ALTE03N1 Report",
+      "year": 2023,
+      "title_terms": [
+        "haptoglobin",
+        "gene",
+        "expression",
+        "anthracycline-related",
+        "cardiomyopathy",
+        "childhood"
+      ],
+      "bigram": "haptoglobin gene",
+      "author_id": "8538615100",
+      "author_name": "Singh, P.",
+      "expert_id": "70637",
+      "kerberos": "psingh",
+      "document_type": "Article",
+      "field_associated": "Medicine",
+      "subject_area": [
+        "Medicine"
+      ],
+      "first_author_id": "8538615100",
+      "first_author_name": "Singh, P.",
+      "author_is_first": true,
+      "faculty_name": "Purnima Singh",
+      "faculty_email": "psingh@hss.iitd.ernet.in"
+    }
+  ],
+  "ip": [
+    {
+      "id": "6a5f0fec0d1f60ccbde4f5e7",
+      "os": "6a5f0fec0d1f60ccbde4f5e7",
+      "title": "Polygon Autotransformer based Twenty-Four-Pulse Ac-Dc Converter",
+      "inventor": "Bhim Singh",
+      "year": 2008,
+      "type_of_ip": "patent",
+      "field_of_invention": "ELECTRICAL",
+      "inventor_kerberos": "bsingh",
+      "inventor_is_faculty": true,
+      "expert_id": "42893"
+    },
+    {
+      "id": "6a5f0fec0d1f60ccbde4f57e",
+      "os": "6a5f0fec0d1f60ccbde4f57e",
+      "title": "Method For Manufacturing An Electrode From Biochar Obtained From Pyrolysis Of Rice Straw",
+      "inventor": "Anil Kumar Saroha",
+      "year": 2023,
+      "type_of_ip": "patent",
+      "field_of_invention": "CHEMICAL",
+      "inventor_kerberos": "aksaroha",
+      "inventor_is_faculty": true,
+      "expert_id": "70523"
+    },
+    {
+      "id": "6a5f0feb0d1f60ccbde4f464",
+      "os": "6a5f0feb0d1f60ccbde4f464",
+      "title": "Antimicrobial Non-Woven Fabric for Safe Water Filteration",
+      "inventor": "Mangala Joshi",
+      "year": 2020,
+      "type_of_ip": "patent",
+      "field_of_invention": "MECHANICAL ENGINEERING",
+      "inventor_kerberos": "mangala",
+      "inventor_is_faculty": true,
+      "expert_id": "10649"
+    },
+    {
+      "id": "6a5f0feb0d1f60ccbde4f329",
+      "os": "6a5f0feb0d1f60ccbde4f329",
+      "title": "Mechanical Vapor Recompression of Steam-Carbon Dioxide Mixture for Energy Recovery",
+      "inventor": "DAMARAJU PHANESWARA RAO",
+      "year": 2012,
+      "type_of_ip": "patent",
+      "field_of_invention": "MECHANICAL ENGINEERING",
+      "inventor_kerberos": null,
+      "inventor_is_faculty": false,
+      "expert_id": null
+    },
+    {
+      "id": "6a5f0feb0d1f60ccbde4f385",
+      "os": "6a5f0feb0d1f60ccbde4f385",
+      "title": "In Vitro Engineered Virus-Like Particles from Flock House Virus Capsid Proteins and Uses Thereof",
+      "inventor": "Manidipa Banerjee",
+      "year": 2018,
+      "type_of_ip": "patent",
+      "field_of_invention": "BIOTECHNOLOGY",
+      "inventor_kerberos": "mbanerjee",
+      "inventor_is_faculty": true,
+      "expert_id": "87163"
+    },
+    {
+      "id": "6a5f0fec0d1f60ccbde4f4e8",
+      "os": "6a5f0fec0d1f60ccbde4f4e8",
+      "title": "Ripstop Weaves for Enhanced Tearing Strength and Breathability",
+      "inventor": "Deepti Gupta",
+      "year": 2022,
+      "type_of_ip": "patent",
+      "field_of_invention": "TEXTILE",
+      "inventor_kerberos": "deepti",
+      "inventor_is_faculty": true,
+      "expert_id": "673270"
+    }
+  ],
+  "enriched_at": "2026-08-30T11:14:08.310Z"
+}

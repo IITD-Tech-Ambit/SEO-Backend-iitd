@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import '../../models/departments.js'; // Ensure Department model is registered for populate
 
 import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
-import { buildSearchConfig, PRECHECK_MIN_TOKENS, TYPO_FUZZ } from './constants.js';
+import { buildSearchConfig, TYPO_FUZZ, contentTerms } from './constants.js';
 import FilterBuilder from './FilterBuilder.js';
 import FacultyRosterService from './FacultyRosterService.js';
 import QueryBuilder, { normalizeChain } from './QueryBuilder.js';
@@ -285,7 +285,6 @@ export default class SearchService {
     async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], facultyAuthorIds, authorRefineNarrow, facultyKerberosIds, cacheKey, rerank = null }) {
         this.logger.info({ query, mode: 'advanced' }, 'Running ADVANCED (hybrid) search');
 
-        const embedding = await this.embeddingService.embedQuery(query);
         const refineAnchor = authorRefineNarrow ? refineChain[0] : null;
         const refineAnchors = await this._buildAdvancedRefineAnchors(refineChain, searchInNorm, authorRefineNarrow, filters);
         const refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
@@ -293,10 +292,12 @@ export default class SearchService {
         // Skip hybrid kNN when nothing matches lexically — otherwise kNN returns neighbours for gibberish.
         const bm25HitCount = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds, refineFilterClauses);
         if (bm25HitCount === 0) {
-            // Exact match missed; probe typos without putting fuzziness into ranking.
-            const fuzzyHitCount = await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds, refineFilterClauses, { fuzzy: true });
+            const fuzzyHitCount = contentTerms(query).length <= 2
+                ? await this._bm25PreCheck(query, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds, refineFilterClauses, { fuzzy: true })
+                : 0;
             if (fuzzyHitCount > 0) {
                 this.logger.info({ query }, 'BM25 pre-check matched only fuzzily — routing to fuzzy fallback');
+                const embedding = await this.embeddingService.embedQuery(query);
                 return this._fuzzyFallbackSearch(query, embedding, filters, sort, page, per_page, searchInNorm, facultyAuthorIds, authorRefineNarrow, refineChain, facultyKerberosIds);
             }
             this.logger.info({ query }, 'BM25 pre-check returned 0 hits — skipping hybrid search');
@@ -315,6 +316,7 @@ export default class SearchService {
             };
         }
 
+        const embedding = await this.embeddingService.embedQuery(query);
         const usesRrf = sort === 'relevance' || sort === 'normalized';
         const normalizedHybridArgs = { refineChain, refineFilterClauses };
         const hybridQueryBuildersBySort = {
@@ -461,7 +463,6 @@ export default class SearchService {
         return { page, per_page, total, ranked_window: rankedWindow, total_pages: totalPages };
     }
 
-    /** Lenient lexical probe: pass partial vocabulary, reject gibberish. */
     async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null, refineFilterClauses = null, { fuzzy = false } = {}) {
         const chain = normalizeChain(refineChain);
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
@@ -473,19 +474,7 @@ export default class SearchService {
         } else if (search_in && search_in.length > 0) {
             preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
         } else {
-            const textMatch = {
-                multi_match: {
-                    query,
-                    fields: ['title', 'abstract', 'subject_area', 'field_associated'],
-                    minimum_should_match: PRECHECK_MIN_TOKENS,
-                    // cross_fields does not support fuzziness, so the typo probe uses best_fields.
-                    ...(fuzzy ? { type: 'best_fields', ...TYPO_FUZZ } : { type: 'cross_fields' })
-                }
-            };
-            const iitdAuthor = this.queryBuilder.buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
-            preCheckClause = iitdAuthor
-                ? { bool: { should: [textMatch, iitdAuthor], minimum_should_match: 1 } }
-                : textMatch;
+            preCheckClause = this.queryBuilder.buildAdmissionPreCheckClause(query, { fuzzy });
         }
 
         // Prior refinement terms (standard path) become filters: the pre-check must reflect the

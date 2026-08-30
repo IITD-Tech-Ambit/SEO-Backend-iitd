@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import QueryBuilder, { normalizeChain } from '../../src/services/search/QueryBuilder.js';
 import FilterBuilder from '../../src/services/search/FilterBuilder.js';
-import { buildSearchConfig } from '../../src/services/search/constants.js';
+import { buildSearchConfig, contentTerms, admissionMinRequired } from '../../src/services/search/constants.js';
 
 const searchConfig = buildSearchConfig({});
 const filterBuilder = new FilterBuilder(searchConfig);
@@ -124,6 +124,38 @@ test('buildStrictBm25Must: stopwords are excluded from the term-count threshold'
     // Content terms only: impact, alpha, beta, gamma = 4 (the, of, on, and are stopwords).
     assert.equal(clause.bool.should.length, 4);
     assert.equal(clause.bool.minimum_should_match, Math.max(3, Math.ceil(4 * 0.75)));
+});
+
+test('admission gate: content terms drop stopwords; 4 terms need 3', () => {
+    assert.deepEqual(contentTerms('Cow Dung for curing cancer'), ['Cow', 'Dung', 'curing', 'cancer']);
+    assert.equal(admissionMinRequired(2), 2);
+    assert.equal(admissionMinRequired(3), 3);
+    assert.equal(admissionMinRequired(4), 3);
+    assert.equal(admissionMinRequired(1), 1);
+});
+
+test('admission pre-check uses ranking N-of-M, not any-2-tokens', () => {
+    const qb = makeQB();
+    const clause = qb.buildAdmissionPreCheckClause('Cow Dung for curing cancer');
+    const text = clause.bool?.should?.[0] || clause;
+    assert.ok(text.bool.should, '4 content terms must use should + MSM, not a flat 2-token match');
+    assert.equal(text.bool.should.length, 4);
+    assert.equal(text.bool.minimum_should_match, 3);
+    assert.ok(!JSON.stringify(clause).includes('"minimum_should_match":"2"'));
+});
+
+test('long well-spelled queries are not typo-fallback candidates', () => {
+    assert.ok(contentTerms('Cow Dung for curing cancer').length > 2);
+    assert.ok(contentTerms('quamtum').length <= 2);
+    assert.ok(contentTerms('cow dung').length <= 2);
+});
+
+test('admission pre-check for two content terms requires both', () => {
+    const qb = makeQB();
+    const clause = qb.buildAdmissionPreCheckClause('cow dung');
+    const text = clause.bool?.should?.[0] || clause;
+    assert.ok(text.bool.must);
+    assert.equal(text.bool.must.length, 2);
 });
 
 test('buildIITDAuthorMatchClause returns null when roster is empty', () => {

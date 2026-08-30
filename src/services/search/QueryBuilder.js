@@ -1,17 +1,11 @@
 import { getSpellingVariant } from './SpellingVariants.js';
 import { buildHighlightQuery, buildHighlightBlock, HIGHLIGHT_FIELDS } from '../../utils/highlight.js';
+import { contentTerms, admissionMinRequired, TYPO_FUZZ } from './constants.js';
 
 // Cap fuzzy expansions so long queries don't blow OpenSearch's maxClauseCount (1024).
 const FUZZY_MAX_EXPANSIONS = 10;
 // Skip identity (name) arms on long queries — they redo fuzzy matching per term.
 const MAX_TERMS_FOR_IDENTITY_ARMS = 6;
-
-// Matches OpenSearch's english_stop filter. Stopwords cannot count toward N-of-M term thresholds.
-const STOPWORDS = new Set([
-    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it',
-    'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these',
-    'they', 'this', 'to', 'was', 'will', 'with'
-]);
 
 // Topic text is exact. Fuzzy expansion maps real terms onto other real terms (oncology→ontology)
 // with no edit penalty. Typos go through _fuzzyFallbackSearch; names stay fuzzy.
@@ -426,7 +420,7 @@ export default class QueryBuilder {
      * Per-term BM25 clause for advanced mode, over content (non-stopword) terms.
      * <=3 terms: all required (strict). 4+: should with ~75% minimum_should_match.
      */
-    buildStrictBm25Must(query, searchFields, fuzz = { fuzziness: 'AUTO' }, { strict = false } = {}) {
+    buildStrictBm25Must(query, searchFields, fuzz = { fuzziness: 'AUTO' }) {
         const terms = query.trim().split(/\s+/).filter(t => t.length > 0);
 
         if (terms.length <= 1) {
@@ -453,10 +447,7 @@ export default class QueryBuilder {
         // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
         const fuzzFor = (term) => withExpansionCap((fuzz?.fuzziness != null && fuzz.fuzziness !== 'AUTO' && term.length <= 2) ? {} : fuzz);
 
-        // Drop stopwords before N-of-M: they never match stemmed fields, so counting them
-        // can make the threshold unsatisfiable.
-        const contentTerms = terms.filter(t => !STOPWORDS.has(t.toLowerCase()));
-        const requiredTerms = contentTerms.length > 0 ? contentTerms : terms;
+        const requiredTerms = contentTerms(query);
 
         const clauses = requiredTerms.map(term => {
             const termFuzz = fuzzFor(term);
@@ -477,12 +468,20 @@ export default class QueryBuilder {
             };
         });
 
-        if (requiredTerms.length <= 3 || strict) {
+        const minRequired = admissionMinRequired(requiredTerms.length);
+        if (minRequired >= requiredTerms.length) {
             return { bool: { must: clauses } };
         }
-
-        const minRequired = Math.max(3, Math.ceil(requiredTerms.length * 0.75));
         return { bool: { should: clauses, minimum_should_match: minRequired } };
+    }
+
+    buildAdmissionPreCheckClause(query, { fuzzy = false } = {}) {
+        const fields = ['title', 'abstract', 'subject_area', 'field_associated'];
+        const textMatch = this.buildStrictBm25Must(query, fields, fuzzy ? TYPO_FUZZ : {});
+        const iitdAuthor = this.buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
+        return iitdAuthor
+            ? { bool: { should: [textMatch, iitdAuthor], minimum_should_match: 1 } }
+            : textMatch;
     }
 
     /**

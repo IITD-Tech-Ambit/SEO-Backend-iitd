@@ -1,6 +1,5 @@
 import { normalizeChain } from './QueryBuilder.js';
 import { withPaginationDepth, DEFAULT_STABLE_DEPTH } from '../search/paginationDepth.js';
-import { TYPO_FUZZ } from '../search/constants.js';
 
 // Shared by IpSearchService and IpFacultyForQueryService so a refine chain narrows identically for both.
 export default class RefineChainResolver {
@@ -24,7 +23,6 @@ export default class RefineChainResolver {
         });
     }
 
-    /** Lenient BM25 pre-check (OR across terms) so partial-vocabulary queries pass but gibberish does not. */
     async bm25PreCheck(query, search_in = null, refineChain = [], refineFilterClauses = null) {
         const chain = normalizeChain(refineChain);
 
@@ -32,18 +30,7 @@ export default class RefineChainResolver {
         if (search_in && search_in.length > 0) {
             preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' });
         } else {
-            const textMatch = {
-                multi_match: {
-                    query,
-                    fields: ['title', 'abstract', 'field_of_invention'],
-                    type: 'cross_fields',
-                    minimum_should_match: '1'
-                }
-            };
-            const inventorClause = this.queryBuilder.buildInventorMatchClause(query, TYPO_FUZZ);
-            preCheckClause = inventorClause
-                ? { bool: { should: [textMatch, inventorClause], minimum_should_match: 1 } }
-                : textMatch;
+            preCheckClause = this.queryBuilder.buildAdmissionPreCheckClause(query);
         }
 
         const body = (chain.length > 0)

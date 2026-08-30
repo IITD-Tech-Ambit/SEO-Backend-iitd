@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { normalizeChain } from './QueryBuilder.js';
+import { withPaginationDepth, DEFAULT_STABLE_DEPTH } from '../search/paginationDepth.js';
 
 /**
  * People sidebar for patent search (GET /ip/faculty-for-query): all IITD faculty inventors
@@ -10,7 +11,7 @@ import { normalizeChain } from './QueryBuilder.js';
  * simpler: IP inventors carry kerberos directly (no scopus_id merge needed).
  */
 export default class IpFacultyForQueryService {
-    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, rrfPipeline, refineChainResolver }) {
+    constructor({ opensearch, indexName, mongoose, redis, logger, searchConfig, queryBuilder, filterBuilder, embeddingService, rrfPipeline, refineChainResolver, maxResultWindow, rrfStableDepth }) {
         this.opensearch = opensearch;
         this.indexName = indexName;
         this.mongoose = mongoose;
@@ -22,6 +23,8 @@ export default class IpFacultyForQueryService {
         this.embeddingService = embeddingService;
         this.rrfPipeline = rrfPipeline || 'rrf-hybrid';
         this.refineChainResolver = refineChainResolver;
+        this.maxResultWindow = maxResultWindow || 10000;
+        this.rrfStableDepth = rrfStableDepth || DEFAULT_STABLE_DEPTH;
     }
 
     _buildCacheKey(query, mode, searchInNorm, refineChain, filters) {
@@ -108,18 +111,46 @@ export default class IpFacultyForQueryService {
             // and pull in hundreds of unrelated inventors.
             const phraseQuery = patch(this.queryBuilder.buildBasicPhraseQuery(query, filters, 1, 1, 'relevance', searchInNorm, chain));
             const phraseCount = await this.opensearch.search({ index: this.indexName, body: phraseQuery });
-            if (phraseCount.body.hits.total.value > 0) return phraseQuery;
-            return patch(this.queryBuilder.buildBasicQuery(query, filters, 1, 1, 'relevance', searchInNorm, chain));
+            if (phraseCount.body.hits.total.value > 0) return { aggQuery: phraseQuery, totalQuery: null };
+            return { aggQuery: patch(this.queryBuilder.buildBasicQuery(query, filters, 1, 1, 'relevance', searchInNorm, chain)), totalQuery: null };
         }
 
         const embedding = await this.embeddingService.embedQuery(query);
-        // restrictKnn: per-inventor counts must match InventorScopedSearch's own BM25-only scoped
-        // view (same product decision as the general search's People sidebar).
-        return patch(this.queryBuilder.buildNormalizedHybridQuery(query, embedding, filters, 1, 1, searchInNorm, {
-            refineChain: chain,
-            refineFilterClauses,
-            restrictKnn: true
-        }));
+        const buildHybrid = (restrictKnn) => this.queryBuilder.buildNormalizedHybridQuery(
+            query, embedding, filters, 1, 1, searchInNorm,
+            { refineChain: chain, refineFilterClauses, restrictKnn }
+        );
+        return {
+            aggQuery: patch(buildHybrid(true)),
+            totalQuery: this._buildCountOnlyBody(buildHybrid(false))
+        };
+    }
+
+    _buildCountOnlyBody(base) {
+        const body = withPaginationDepth(
+            { ...base, size: 0, from: 0, track_total_hits: true, _source: false },
+            { maxResultWindow: this.maxResultWindow, stableDepth: this.rrfStableDepth }
+        );
+        delete body.aggs;
+        delete body.highlight;
+        delete body.min_score;
+        delete body.sort;
+        return body;
+    }
+
+    async _fetchIpListTotal(totalQuery) {
+        if (!totalQuery) return null;
+        try {
+            const resp = await this.opensearch.search({
+                index: this.indexName,
+                body: totalQuery,
+                ...(totalQuery.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+            });
+            return resp.body.hits.total.value;
+        } catch (err) {
+            this.logger.warn({ err: err?.message }, 'IP faculty-for-query: list total lookup failed; using aggregation total');
+            return null;
+        }
     }
 
     /** Resolve Faculty docs (with profile image) for the matched kerberos buckets, grouped by department. */
@@ -218,18 +249,21 @@ export default class IpFacultyForQueryService {
             }
         }
 
-        const osQuery = await this._buildAggQuery(mode, query, effFilters, searchInNorm, refineChain, refineFilterClauses);
-        const osResponse = await this.opensearch.search({
-            index: this.indexName,
-            body: osQuery,
-            ...(mode === 'advanced' ? { search_pipeline: this.rrfPipeline } : {})
-        });
+        const { aggQuery: osQuery, totalQuery } = await this._buildAggQuery(mode, query, effFilters, searchInNorm, refineChain, refineFilterClauses);
+        const [osResponse, listTotal] = await Promise.all([
+            this.opensearch.search({
+                index: this.indexName,
+                body: osQuery,
+                ...(mode === 'advanced' ? { search_pipeline: this.rrfPipeline } : {})
+            }),
+            this._fetchIpListTotal(totalQuery)
+        ]);
 
         const totalDocs = osResponse.body.hits.total.value;
         const kerberosBuckets = osResponse.body.aggregations?.faculty_inventors?.affiliated?.by_kerberos?.buckets || [];
 
         const { departments, includedCount } = await this._resolveFaculty(kerberosBuckets);
-        const response = { departments, total_faculty: includedCount, total_matching_ip: totalDocs };
+        const response = { departments, total_faculty: includedCount, total_matching_ip: listTotal ?? totalDocs };
 
         try {
             await this.redis.setex(cacheKey, 600, JSON.stringify(response));

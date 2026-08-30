@@ -52,7 +52,11 @@ function makeService({ ranking, grounding = 0, inventorPatents = 17, anchor = 3 
             const kind = classify(body);
             calls.push({ kind, body });
             if (kind === 'inventorCount') return { body: { hits: { hits: [], total: { value: inventorPatents } } } };
-            if (kind === 'grounding') return { body: { hits: { hits: [], total: { value: grounding } } } };
+            if (kind === 'grounding') {
+                const q = body.query.bool.must[0].multi_match.query;
+                const n = typeof grounding === 'function' ? grounding(q) : grounding;
+                return { body: { hits: { hits: [], total: { value: n } } } };
+            }
             if (kind === 'anchor') return { body: { hits: { hits: hitsFor(anchor), total: { value: anchor } } } };
             const n = typeof ranking === 'function' ? ranking(body) : ranking;
             return { body: { hits: { hits: hitsFor(Math.min(n, body.size ?? 20)), total: { value: n } } } };
@@ -290,8 +294,8 @@ test('a refine chain is never widened: kNN is already admitted there', async () 
     assert.equal(ranked.length, 1, 'no widened retry for a refine-chain query');
     assert.equal(armsOf(ranked[0].body).length, 2, 'the chain already admitted the kNN arm');
     assert.deepEqual(
-        groundedTerms(calls), ['grid'],
-        'the only probe is the anchor gate for the chain term; the main query is never probed for widening here'
+        groundedTerms(calls), ['grid', 'stability'],
+        'anchor gate first, then the newest query is probed so kNN cannot admit a nonsense refine'
     );
 });
 
@@ -331,13 +335,13 @@ test('an anchor term absent from this inventor collapses to match_none instead o
     // unsatisfiable filter here so the collapse is observable end to end.
     const { service, calls } = makeService({
         ranking: (body) => (jsonOf(body).includes('match_none') ? 0 : 20),
-        grounding: 0,
+        grounding: (q) => (q === 'qwxzjkvbnm' ? 0 : 20),
         anchor: 3
     });
 
     const res = await service.search({ query: 'grid', inventor_id: KERBEROS, per_page: 20, refine_chain: ['qwxzjkvbnm'] });
 
-    assert.deepEqual(groundedTerms(calls), ['qwxzjkvbnm'], 'the gate probes the anchor term, not the main query');
+    assert.ok(groundedTerms(calls).includes('qwxzjkvbnm'), 'the gate probes the anchor term');
     assert.equal(calls.filter(c => c.kind === 'anchor').length, 0, 'a gated-out anchor never runs the widening-capable lookup');
     assert.ok(jsonOf(rankingQueries(calls)[0].body).includes('match_none'), 'the anchor must contribute an unsatisfiable filter');
     assert.equal(res.pagination.total, 0, 'refining by a term this inventor never used yields nothing');
@@ -354,4 +358,22 @@ test('a grounded anchor keeps its id membership and ORs the term back in', async
     const body = jsonOf(rankingQueries(calls)[0].body);
     assert.ok(body.includes('doc0'), 'the matched ids are used as a membership filter');
     assert.ok(!body.includes('match_none'), 'a grounded anchor is never collapsed');
+});
+
+test('an ungrounded newest query inside a real refine chain stays empty', async () => {
+    const { service, calls } = makeService({
+        ranking: 20,
+        grounding: (q) => (q === 'qwxzjkvbnm' ? 0 : 9),
+        anchor: 3
+    });
+
+    const res = await service.search({
+        query: 'qwxzjkvbnm', inventor_id: KERBEROS, per_page: 20, refine_chain: ['grid']
+    });
+
+    assert.equal(res.pagination.total, 0);
+    assert.deepEqual(res.results, []);
+    assert.equal(rankingQueries(calls).length, 0, 'kNN must not run inside the refined id set');
+    assert.ok(groundedTerms(calls).includes('qwxzjkvbnm'), 'the newest query is probed');
+    assert.ok(groundedTerms(calls).includes('grid'), 'the anchor is still gated');
 });

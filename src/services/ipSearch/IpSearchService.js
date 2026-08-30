@@ -73,7 +73,9 @@ export default class IpSearchService {
             filterBuilder: this.filters,
             embeddingService: this.embeddingService,
             rrfPipeline: this.rrfPipeline,
-            refineChainResolver: this.refineChainResolver
+            refineChainResolver: this.refineChainResolver,
+            maxResultWindow: this.maxResultWindow,
+            rrfStableDepth: this.rrfStableDepth
         });
         this.inventorScoped = new InventorScopedSearch({
             opensearch: this.opensearch,
@@ -258,7 +260,6 @@ export default class IpSearchService {
     async _runAdvancedSearch({ query, filters, sort, page, per_page, searchInNorm, refineChain = [], cacheKey, cacheTtl, rerank = null }) {
         this.logger.info({ query, mode: 'advanced' }, 'Running ADVANCED (hybrid) IP search');
 
-        const embedding = await this.embeddingService.embedQuery(query);
         const refineAnchors = await this.refineChainResolver.buildAdvancedRefineAnchors(refineChain, searchInNorm, filters);
         const refineFilterClauses = refineAnchors ? refineAnchors.map((a) => a.filter) : null;
 
@@ -281,6 +282,7 @@ export default class IpSearchService {
             };
         }
 
+        const embedding = await this.embeddingService.embedQuery(query);
         const usesRrf = sort === 'relevance' || sort === 'normalized';
         const normalizedHybridArgs = { refineChain, refineFilterClauses };
         const hybridQueryBuildersBySort = {
