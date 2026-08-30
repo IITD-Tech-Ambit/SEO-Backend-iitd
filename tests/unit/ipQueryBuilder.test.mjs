@@ -220,6 +220,15 @@ test('a real one- or two-word name query is unaffected by the corroboration thre
     }
 });
 
+test('admission pre-check uses ranking N-of-M, not any-1-token', () => {
+    const qb = makeQB();
+    const clause = qb.buildAdmissionPreCheckClause('Cow Dung for curing cancer');
+    const text = clause.bool?.should?.[0] || clause;
+    assert.ok(text.bool.should);
+    assert.equal(text.bool.should.length, 4);
+    assert.equal(text.bool.minimum_should_match, 3);
+});
+
 test('the normalized-hybrid kNN arm carries facet filters as a sibling filter', () => {
     const qb = makeQB();
     const body = qb.buildNormalizedHybridQuery('polymer', EMBED, { type_of_ip: 'Patent' }, 1, 20);

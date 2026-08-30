@@ -1,16 +1,11 @@
 import { buildHighlightQuery, buildHighlightBlock, HIGHLIGHT_FIELDS } from '../../utils/highlight.js';
+import { contentTerms, admissionMinRequired, TYPO_FUZZ } from '../search/constants.js';
 
 // Cap fuzzy expansions so long queries don't blow OpenSearch's maxClauseCount (1024).
 const FUZZY_MAX_EXPANSIONS = 10;
 const MAX_TERMS_FOR_IDENTITY_ARMS = 6;
 // Flat inventor_names ORs tokens; require 2 so one junk token matching a surname isn't a name match.
 const NAME_MIN_TOKENS = '2';
-
-const STOPWORDS = new Set([
-    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it',
-    'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these',
-    'they', 'this', 'to', 'was', 'will', 'with'
-]);
 
 // Topic text is exact. Fuzzy expansion maps real terms onto other real terms with no edit penalty.
 // Typos go through _fuzzyFallbackSearch; inventor names stay fuzzy.
@@ -246,7 +241,7 @@ export default class QueryBuilder {
     }
 
     /** Advanced BM25: ≤3 terms all required; 4+ uses ~75% minimum_should_match. */
-    buildStrictBm25Must(query, searchFields, fuzz = { fuzziness: 'AUTO' }, { strict = false } = {}) {
+    buildStrictBm25Must(query, searchFields, fuzz = { fuzziness: 'AUTO' }) {
         const terms = query.trim().split(/\s+/).filter((t) => t.length > 0);
 
         if (terms.length <= 1) {
@@ -261,23 +256,26 @@ export default class QueryBuilder {
         // short — terms of length <=2 always match exactly, mirroring 'AUTO's own length band.
         const fuzzFor = (term) => withExpansionCap((fuzz?.fuzziness != null && fuzz.fuzziness !== 'AUTO' && term.length <= 2) ? {} : fuzz);
 
-        // Drop stopwords before requiring/counting terms — their per-term clause queries
-        // matchFields, which strip the same stopword during analysis, so it could never match
-        // anything anyway. Left in, a sentence query with several of them can make the N-of-M
-        // threshold below structurally impossible to satisfy.
-        const contentTerms = terms.filter((t) => !STOPWORDS.has(t.toLowerCase()));
-        const requiredTerms = contentTerms.length > 0 ? contentTerms : terms;
+        const requiredTerms = contentTerms(query);
 
         const clauses = requiredTerms.map((term) => ({
             multi_match: { query: term, fields: matchFields, type: 'best_fields', tie_breaker: 0.3, ...fuzzFor(term) }
         }));
 
-        if (requiredTerms.length <= 3 || strict) {
+        const minRequired = admissionMinRequired(requiredTerms.length);
+        if (minRequired >= requiredTerms.length) {
             return { bool: { must: clauses } };
         }
-
-        const minRequired = Math.max(3, Math.ceil(requiredTerms.length * 0.75));
         return { bool: { should: clauses, minimum_should_match: minRequired } };
+    }
+
+    buildAdmissionPreCheckClause(query) {
+        const fields = ['title', 'abstract', 'field_of_invention'];
+        const textMatch = this.buildStrictBm25Must(query, fields, {});
+        const inventorClause = this.buildInventorMatchClause(query, TYPO_FUZZ);
+        return inventorClause
+            ? { bool: { should: [textMatch, inventorClause], minimum_should_match: 1 } }
+            : textMatch;
     }
 
     /**

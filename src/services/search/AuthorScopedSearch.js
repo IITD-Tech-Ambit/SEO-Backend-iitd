@@ -59,7 +59,7 @@ export default class AuthorScopedSearch {
      * have on the topic — the same reason SearchService gates its hybrid kNN arm behind
      * _bm25PreCheck instead of letting the ANN arm admit on its own.
      */
-    async _countAuthorLexicalGrounding(query, searchInNorm, authorFilter, filters) {
+    async _countAuthorLexicalGrounding(query, searchInNorm, authorFilter, filters, extraFilters = []) {
         const fields = this.filterBuilder.getHybridSearchFields(searchInNorm);
         // getSearchFields(['author']) is deliberately empty: an author-only search_in is an
         // identity lookup, not a topic query, so there is no topical neighbourhood to widen into.
@@ -72,7 +72,7 @@ export default class AuthorScopedSearch {
                 query: {
                     bool: {
                         must: [{ multi_match: { query, fields, type: 'cross_fields', minimum_should_match: '1' } }],
-                        filter: [authorFilter, ...this.filterBuilder.buildFilters(filters)]
+                        filter: [authorFilter, ...this.filterBuilder.buildFilters(filters), ...extraFilters]
                     }
                 }
             }
@@ -262,95 +262,84 @@ export default class AuthorScopedSearch {
                 delete base.aggs;
                 osQuery = base;
             } else {
-                const embedding = await this.embeddingService.embedQuery(query);
-
-                // Prior refinement terms narrow the result set to what each anchor step actually
-                // matched (id-membership, not literal-AND — see _buildRefineAnchorIdFilter),
-                // scoped to this author so a broad anchor phrase doesn't have to compete against
-                // the whole corpus for a spot in the anchor's own candidate cap.
                 const refineFilters = (refineChain.length > 0 && !authorRefineNarrow)
                     ? await Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, authorFilter)))
                     : [];
 
-                // On a fresh (chain-less) query BM25 is the only recall arm buildNormalizedHybridQuery
-                // builds within an author's own scope — a small single-author candidate pool makes
-                // embedding similarity too flat to trust as an admission signal on its own. That is
-                // the right default, but it leaves the lexical conjunction as the sole gate, so
-                // `semanticRecall` opts into the builder's kNN arm (allowKnnRecall) for the retry
-                // below when that gate produces a dead end. The opt-in only ADDS that arm: the
-                // lexical arm is built identically either way and RRF fuses the two, so widening
-                // can add matches but cannot demote or evict a real lexical match. Sizing k for a
-                // single author's pool is the builder's own decision (see _resolveKnnRecall).
-                //
-                // Pass our own already-computed (id-membership) refine filters through so
-                // buildNormalizedHybridQuery doesn't fall back to its internal literal-AND
-                // computation — that fallback would get pushed into the SAME filter array
-                // alongside ours, and since every entry in a filter array is required, its
-                // near-impossible-to-satisfy literal-AND would silently veto everything even
-                // when our id-membership filter alone correctly matches.
-                // Once a refine chain is active the builder admits kNN without being asked, so
-                // there the opt-in changes nothing.
-                buildAdvancedQuery = ({ semanticRecall = false } = {}) => {
-                    const base = this.queryBuilder.buildNormalizedHybridQuery(
-                        query, embedding, effFilters, page, per_page,
-                        searchInNorm, facultyAuthorIds, authorRefineNarrow,
-                        refineAnchor, facultyKerberosIds,
-                        { authorScoped: true, refineChain, refineFilterClauses: refineFilters, allowKnnRecall: semanticRecall }
+                if (refineFilters.length > 0 && this.filterBuilder.getHybridSearchFields(searchInNorm).length > 0) {
+                    const newestGrounding = await this._countAuthorLexicalGrounding(
+                        query, searchInNorm, authorFilter, effFilters, refineFilters
                     );
+                    if (newestGrounding === 0) {
+                        hits = [];
+                        total = 0;
+                    }
+                }
 
-                    // Must run after the body is built so the kNN arm gets scoped too — and it
-                    // deliberately scopes that arm from the inside (see _scopeHybridQueryToAuthor).
-                    this._scopeHybridQueryToAuthor(base, authorFilter);
+                if (hits == null) {
+                    const embedding = await this.embeddingService.embedQuery(query);
 
-                    delete base.aggs;
-                    return base;
-                };
+                    buildAdvancedQuery = ({ semanticRecall = false } = {}) => {
+                        const base = this.queryBuilder.buildNormalizedHybridQuery(
+                            query, embedding, effFilters, page, per_page,
+                            searchInNorm, facultyAuthorIds, authorRefineNarrow,
+                            refineAnchor, facultyKerberosIds,
+                            { authorScoped: true, refineChain, refineFilterClauses: refineFilters, allowKnnRecall: semanticRecall }
+                        );
 
-                osQuery = buildAdvancedQuery();
+                        // Must run after the body is built so the kNN arm gets scoped too — and it
+                        // deliberately scopes that arm from the inside (see _scopeHybridQueryToAuthor).
+                        this._scopeHybridQueryToAuthor(base, authorFilter);
+
+                        delete base.aggs;
+                        return base;
+                    };
+
+                    osQuery = buildAdvancedQuery();
+                }
             }
 
-            osQuery = this._withPaginationDepth(osQuery);
+            if (hits == null) {
+                osQuery = this._withPaginationDepth(osQuery);
 
-            this.logger.info({
-                author_id,
-                query,
-                totalAuthorPapers,
-                mode: isBasic ? 'basic' : 'advanced',
-                refine_chain: refineChain.length,
-                search_in: searchInNorm
-            }, 'Author-scoped search: querying OpenSearch');
+                this.logger.info({
+                    author_id,
+                    query,
+                    totalAuthorPapers,
+                    mode: isBasic ? 'basic' : 'advanced',
+                    refine_chain: refineChain.length,
+                    search_in: searchInNorm
+                }, 'Author-scoped search: querying OpenSearch');
 
-            const runQuery = async (body) => {
-                const searchArgs = {
-                    index: this.indexName,
-                    body,
-                    ...(body.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+                const runQuery = async (body) => {
+                    const searchArgs = {
+                        index: this.indexName,
+                        body,
+                        ...(body.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+                    };
+                    try {
+                        return await this.opensearch.search(searchArgs);
+                    } catch (err) {
+                        if (!isPastEndOfResults(err)) throw err;
+                        this.logger.info({ author_id, query, page }, 'Author-scoped search: page is past the end of the result set; serving an empty page');
+                        return this.opensearch.search({ ...searchArgs, body: { ...body, from: 0, size: 0, _source: false } });
+                    }
                 };
-                try {
-                    return await this.opensearch.search(searchArgs);
-                } catch (err) {
-                    if (!isPastEndOfResults(err)) throw err;
-                    // A page past the last result is a normal request, not a failure: report the true
-                    // total (so total_pages stays honest) with no rows rather than surfacing a 502.
-                    this.logger.info({ author_id, query, page }, 'Author-scoped search: page is past the end of the result set; serving an empty page');
-                    return this.opensearch.search({ ...searchArgs, body: { ...body, from: 0, size: 0, _source: false } });
-                }
-            };
 
-            let osResponse = await runQuery(osQuery);
-            hits = osResponse.body.hits.hits;
-            total = osResponse.body.hits.total.value;
+                let osResponse = await runQuery(osQuery);
+                hits = osResponse.body.hits.hits;
+                total = osResponse.body.hits.total.value;
 
-            // Widen only when lexical recall collapsed and the query has vocabulary in this author's papers.
-            if (buildAdvancedQuery && !authorRefineNarrow && total < MIN_USEFUL_LEXICAL_HITS && osQuery.query?.hybrid?.queries?.length === 1) {
-                const groundedCount = await this._countAuthorLexicalGrounding(query, searchInNorm, authorFilter, effFilters);
-                this.logger.info({ author_id, query, total, groundedCount }, 'Author-scoped search: lexical recall is degenerate; probing semantic widening');
-                if (groundedCount > 0) {
-                    osQuery = this._withPaginationDepth(buildAdvancedQuery({ semanticRecall: true }));
-                    osResponse = await runQuery(osQuery);
-                    hits = osResponse.body.hits.hits;
-                    total = osResponse.body.hits.total.value;
-                    this.logger.info({ author_id, query, total }, 'Author-scoped search: widened with the semantic-recall arm');
+                if (buildAdvancedQuery && !authorRefineNarrow && total < MIN_USEFUL_LEXICAL_HITS && osQuery.query?.hybrid?.queries?.length === 1) {
+                    const groundedCount = await this._countAuthorLexicalGrounding(query, searchInNorm, authorFilter, effFilters);
+                    this.logger.info({ author_id, query, total, groundedCount }, 'Author-scoped search: lexical recall is degenerate; probing semantic widening');
+                    if (groundedCount > 0) {
+                        osQuery = this._withPaginationDepth(buildAdvancedQuery({ semanticRecall: true }));
+                        osResponse = await runQuery(osQuery);
+                        hits = osResponse.body.hits.hits;
+                        total = osResponse.body.hits.total.value;
+                        this.logger.info({ author_id, query, total }, 'Author-scoped search: widened with the semantic-recall arm');
+                    }
                 }
             }
 

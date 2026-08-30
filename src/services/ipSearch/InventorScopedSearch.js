@@ -56,7 +56,7 @@ export default class InventorScopedSearch {
      * same reason IpSearchService gates its hybrid kNN arm behind a BM25 pre-check rather than
      * letting the ANN arm admit on its own.
      */
-    async _countInventorLexicalGrounding(query, searchInNorm, scopeFilters) {
+    async _countInventorLexicalGrounding(query, searchInNorm, scopeFilters, extraFilters = []) {
         const fields = this.filterBuilder.getHybridSearchFields(searchInNorm);
         if (!fields.length) return 0;
         const resp = await this.opensearch.search({
@@ -67,7 +67,7 @@ export default class InventorScopedSearch {
                 query: {
                     bool: {
                         must: [{ multi_match: { query, fields, type: 'cross_fields', minimum_should_match: '1' } }],
-                        filter: this.filterBuilder.buildFilters(scopeFilters)
+                        filter: [...this.filterBuilder.buildFilters(scopeFilters), ...extraFilters]
                     }
                 }
             }
@@ -273,93 +273,83 @@ export default class InventorScopedSearch {
                 delete base.aggs;
                 osQuery = base;
             } else {
-                const embedding = await this.embeddingService.embedQuery(query);
-
-                // Prior refinement terms narrow to what each anchor step actually matched
-                // (id-membership, not literal-AND), scoped to this inventor.
                 const refineFilters = refineChain.length > 0
                     ? await Promise.all(refineChain.map((term) => this._buildRefineAnchorIdFilter(term, searchInNorm, scopeFilters)))
                     : [];
 
-                // On a fresh (chain-less) query BM25 is the only recall arm buildNormalizedHybridQuery
-                // builds within an inventor's own scope — a small single-inventor candidate pool
-                // makes embedding similarity too flat to trust as an admission signal on its own.
-                // That is the right default, but it leaves the lexical conjunction as the sole
-                // gate, which `semanticRecall` widens below when it produces a dead end.
-                //
-                // Pass our own already-computed (id-membership) refine filters through so
-                // buildNormalizedHybridQuery doesn't fall back to its internal literal-AND
-                // computation into the SAME filter array (see AuthorScopedSearch for why that
-                // would silently veto everything).
-                // Once a refine chain is active, kNN gets admitted (see excludeKnn in
-                // buildNormalizedHybridQuery) — but this pool is already scoped to just this
-                // inventor's own patents, so a small knnK keeps it rank- rather than
-                // admit-everyone (see that function for the measured score-distribution rationale).
-                buildAdvancedQuery = ({ semanticRecall = false } = {}) => {
-                    const base = this.queryBuilder.buildNormalizedHybridQuery(
-                        query, embedding, scopeFilters, page, per_page, searchInNorm,
-                        { refineChain, refineFilterClauses: refineFilters, knnK: INVENTOR_SCOPED_KNN_K }
+                if (refineFilters.length > 0 && this.filterBuilder.getHybridSearchFields(searchInNorm).length > 0) {
+                    const newestGrounding = await this._countInventorLexicalGrounding(
+                        query, searchInNorm, scopeFilters, refineFilters
                     );
-
-                    // Only ever ADDS an arm, never replaces one: the lexical arm keeps ranking
-                    // exactly as before and RRF fuses the semantic arm alongside it, so widening
-                    // can add matches but cannot demote or evict a real lexical match. A body that
-                    // already has two arms is a refine-chain query, where buildNormalizedHybridQuery
-                    // admitted kNN itself — nothing to widen.
-                    const arms = base.query?.hybrid?.queries;
-                    if (semanticRecall && arms?.length === 1) {
-                        arms.push(this._buildSemanticRecallArm(embedding, arms[0], searchInNorm, scopeFilters));
+                    if (newestGrounding === 0) {
+                        hits = [];
+                        total = 0;
                     }
+                }
 
-                    delete base.aggs;
-                    return base;
-                };
+                if (hits == null) {
+                    const embedding = await this.embeddingService.embedQuery(query);
 
-                osQuery = buildAdvancedQuery();
+                    buildAdvancedQuery = ({ semanticRecall = false } = {}) => {
+                        const base = this.queryBuilder.buildNormalizedHybridQuery(
+                            query, embedding, scopeFilters, page, per_page, searchInNorm,
+                            { refineChain, refineFilterClauses: refineFilters, knnK: INVENTOR_SCOPED_KNN_K }
+                        );
+
+                        const arms = base.query?.hybrid?.queries;
+                        if (semanticRecall && arms?.length === 1) {
+                            arms.push(this._buildSemanticRecallArm(embedding, arms[0], searchInNorm, scopeFilters));
+                        }
+
+                        delete base.aggs;
+                        return base;
+                    };
+
+                    osQuery = buildAdvancedQuery();
+                }
             }
 
-            osQuery = this._withPaginationDepth(osQuery);
+            if (hits == null) {
+                osQuery = this._withPaginationDepth(osQuery);
 
-            this.logger.info({
-                inventor_id,
-                query,
-                totalInventorPatents,
-                mode: isBasic ? 'basic' : 'advanced',
-                refine_chain: refineChain.length,
-                search_in: searchInNorm
-            }, 'Inventor-scoped search: querying OpenSearch');
+                this.logger.info({
+                    inventor_id,
+                    query,
+                    totalInventorPatents,
+                    mode: isBasic ? 'basic' : 'advanced',
+                    refine_chain: refineChain.length,
+                    search_in: searchInNorm
+                }, 'Inventor-scoped search: querying OpenSearch');
 
-            const runQuery = async (body) => {
-                const searchArgs = {
-                    index: this.indexName,
-                    body,
-                    ...(body.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+                const runQuery = async (body) => {
+                    const searchArgs = {
+                        index: this.indexName,
+                        body,
+                        ...(body.query?.hybrid ? { search_pipeline: this.rrfPipeline } : {})
+                    };
+                    try {
+                        return await this.opensearch.search(searchArgs);
+                    } catch (err) {
+                        if (!isPastEndOfResults(err)) throw err;
+                        this.logger.info({ inventor_id, query, page }, 'Inventor-scoped search: page is past the end of the result set; serving an empty page');
+                        return this.opensearch.search({ ...searchArgs, body: { ...body, from: 0, size: 0, _source: false } });
+                    }
                 };
-                try {
-                    return await this.opensearch.search(searchArgs);
-                } catch (err) {
-                    if (!isPastEndOfResults(err)) throw err;
-                    // A page past the last result is a normal request, not a failure: report the true
-                    // total (so total_pages stays honest) with no rows rather than surfacing a 502.
-                    this.logger.info({ inventor_id, query, page }, 'Inventor-scoped search: page is past the end of the result set; serving an empty page');
-                    return this.opensearch.search({ ...searchArgs, body: { ...body, from: 0, size: 0, _source: false } });
-                }
-            };
 
-            let osResponse = await runQuery(osQuery);
-            hits = osResponse.body.hits.hits;
-            total = osResponse.body.hits.total.value;
+                let osResponse = await runQuery(osQuery);
+                hits = osResponse.body.hits.hits;
+                total = osResponse.body.hits.total.value;
 
-            // Widen only when lexical recall collapsed and the query has vocabulary in this inventor's patents.
-            if (buildAdvancedQuery && total < MIN_USEFUL_LEXICAL_HITS && osQuery.query?.hybrid?.queries?.length === 1) {
-                const groundedCount = await this._countInventorLexicalGrounding(query, searchInNorm, scopeFilters);
-                this.logger.info({ inventor_id, query, total, groundedCount }, 'Inventor-scoped search: lexical recall is degenerate; probing semantic widening');
-                if (groundedCount > 0) {
-                    osQuery = this._withPaginationDepth(buildAdvancedQuery({ semanticRecall: true }));
-                    osResponse = await runQuery(osQuery);
-                    hits = osResponse.body.hits.hits;
-                    total = osResponse.body.hits.total.value;
-                    this.logger.info({ inventor_id, query, total, k: INVENTOR_SCOPED_KNN_K }, 'Inventor-scoped search: widened with the semantic-recall arm');
+                if (buildAdvancedQuery && total < MIN_USEFUL_LEXICAL_HITS && osQuery.query?.hybrid?.queries?.length === 1) {
+                    const groundedCount = await this._countInventorLexicalGrounding(query, searchInNorm, scopeFilters);
+                    this.logger.info({ inventor_id, query, total, groundedCount }, 'Inventor-scoped search: lexical recall is degenerate; probing semantic widening');
+                    if (groundedCount > 0) {
+                        osQuery = this._withPaginationDepth(buildAdvancedQuery({ semanticRecall: true }));
+                        osResponse = await runQuery(osQuery);
+                        hits = osResponse.body.hits.hits;
+                        total = osResponse.body.hits.total.value;
+                        this.logger.info({ inventor_id, query, total, k: INVENTOR_SCOPED_KNN_K }, 'Inventor-scoped search: widened with the semantic-recall arm');
+                    }
                 }
             }
 

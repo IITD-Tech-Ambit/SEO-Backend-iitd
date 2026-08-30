@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { normalizeChain } from './QueryBuilder.js';
 import { resolveFacultyByAuthorId } from '../../utils/facultyIdentity.js';
 import { withPaginationDepth, DEFAULT_STABLE_DEPTH } from './paginationDepth.js';
-import { PRECHECK_MIN_TOKENS, TYPO_FUZZ } from './constants.js';
+import { TYPO_FUZZ, contentTerms } from './constants.js';
 
 /**
  * People sidebar (GET /search/faculty-for-query): all IITD faculty matching a query across
@@ -175,13 +175,6 @@ export default class FacultyForQueryService {
         }
     }
 
-    /**
-     * BM25 pre-check: does at least one query token appear in at least one document?
-     * Mirrors SearchService._bm25PreCheck so the People sidebar and POST /search agree on
-     * whether the query has ANY lexical footprint. Without this gate, the advanced hybrid
-     * aggregation's kNN arm surfaces nearest-neighbor faculty even for gibberish queries that
-     * the papers list (correctly) returns nothing for.
-     */
     async _bm25PreCheck(query, search_in = null, facultyAuthorIds = null, authorRefineNarrow = false, refineChain = [], facultyKerberosIds = null, refineFilterClauses = null, { fuzzy = false } = {}) {
         const chain = normalizeChain(refineChain);
         const authorOnly = search_in?.length === 1 && search_in[0] === 'author';
@@ -193,19 +186,7 @@ export default class FacultyForQueryService {
         } else if (search_in && search_in.length > 0) {
             preCheckClause = this.queryBuilder.buildConstrainedSearchInClause(query, search_in, { fuzziness: 'AUTO' }, facultyAuthorIds, facultyKerberosIds);
         } else {
-            const textMatch = {
-                multi_match: {
-                    query,
-                    fields: ['title', 'abstract', 'subject_area', 'field_associated'],
-                    minimum_should_match: PRECHECK_MIN_TOKENS,
-                    // cross_fields does not support fuzziness, so the typo probe uses best_fields.
-                    ...(fuzzy ? { type: 'best_fields', ...TYPO_FUZZ } : { type: 'cross_fields' })
-                }
-            };
-            const iitdAuthor = this.queryBuilder.buildIITDAuthorMatchClause(query, { fuzziness: 'AUTO' });
-            preCheckClause = iitdAuthor
-                ? { bool: { should: [textMatch, iitdAuthor], minimum_should_match: 1 } }
-                : textMatch;
+            preCheckClause = this.queryBuilder.buildAdmissionPreCheckClause(query, { fuzzy });
         }
 
         const body = (!useAuthorRefine && chain.length > 0)
@@ -619,6 +600,7 @@ export default class FacultyForQueryService {
                 // the two panels agree. Never while refining — narrowing must not broaden, and a
                 // refinement that matches nothing has to stay empty (see _buildRefineAnchorIdFilter).
                 useFuzzyFallback = normalizeChain(refineChain).length === 0
+                    && contentTerms(query).length <= 2
                     && await this._bm25PreCheck(
                         query, searchInNorm,
                         narrowing.facultyAuthorIds, narrowing.authorRefineNarrow,
