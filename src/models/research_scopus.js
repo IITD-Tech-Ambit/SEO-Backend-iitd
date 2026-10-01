@@ -67,6 +67,21 @@ const ClassificationSchema = new mongoose.Schema({
     }
 }, { _id: false });
 
+const SourceSchema = new mongoose.Schema({
+    title: {
+        type: String,
+    },
+    publisher: {
+        type: String,
+    },
+    source_type: {
+        type: String,
+    },
+    issn: {
+        type: String,
+    },
+}, { _id: false });
+
 const AuthorSchema = new mongoose.Schema({
     author_id: {
         type: String,
@@ -103,6 +118,9 @@ const ResearchMetaDataScopus = new mongoose.Schema({
     },
     document_type: {
         type: String,
+    },
+    source: {
+        type: SourceSchema,
     },
     citation_count: {
         type: Number,
