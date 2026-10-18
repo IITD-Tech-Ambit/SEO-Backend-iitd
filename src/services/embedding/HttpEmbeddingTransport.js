@@ -9,7 +9,7 @@ export default class HttpEmbeddingTransport {
     constructor({ url, timeout, rerankTimeout }) {
         this.baseUrl = url;
         this.timeout = timeout;
-        this.rerankTimeout = rerankTimeout || 800;
+        this.rerankTimeout = rerankTimeout || 15000;
     }
 
     async _post(path, body, timeoutMs) {

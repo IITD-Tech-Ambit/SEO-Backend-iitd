@@ -14,7 +14,7 @@ export default class GrpcEmbeddingTransport {
             grpc.credentials.createInsecure()
         );
         this.timeout = timeout;
-        this.rerankTimeout = rerankTimeout || 800;
+        this.rerankTimeout = rerankTimeout || 15000;
     }
 
     _call(method, request, timeoutMs) {

@@ -1,13 +1,9 @@
 import crypto from 'crypto';
 
 /**
- * Cross-encoder reranking of first-stage candidates. Per-doc rerank scores are cached in
- * Redis so only cache misses are sent to the embedding service. On any failure the original
- * first-stage order is returned unchanged (graceful degradation).
- *
- * Final ordering fuses the cross-encoder score with the (normalized) first-stage hybrid score
- * so a strong lexical/phrase match is never demoted by a merely semantically-similar distractor:
- *   fused = alpha * norm(rerank) + (1 - alpha) * norm(firstStage) + literalTitleBonus
+ * Cross-encoder rerank of first-stage candidates. Cache misses go to the embedding service;
+ * any failure keeps first-stage order.
+ * fused = alpha * norm(rerank) + (1 - alpha) * norm(firstStage) + literalTitleBonus
  */
 function minMaxNormalize(values) {
     if (!values.length) return [];
@@ -22,6 +18,27 @@ function minMaxNormalize(values) {
     return values.map(v => (v - min) / range);
 }
 
+/** 404 / UNIMPLEMENTED = reranker switched off. 503 is not classified (could be a restart). */
+function classifyRerankFailure(message) {
+    const text = String(message || '');
+    if (/reranking is disabled/i.test(text) || /error: 404\b/.test(text) || /\bUNIMPLEMENTED\b/.test(text)) {
+        return 'disabled';
+    }
+    if (/reranker not loaded/i.test(text)) return 'not-loaded';
+    return null;
+}
+
+const MISMATCH_MESSAGES = {
+    disabled: 'Reranker configuration mismatch: this API has RERANK_ENABLED=true but the embedding '
+        + 'service refuses /rerank because reranking is disabled there. Every advanced search is '
+        + 'paying for a wasted call and serving UNRERANKED first-stage order. Set RERANK_ENABLED=true '
+        + 'in the embedding service environment (services/embedding/.env for a local run, the '
+        + 'embedding service block of docker-compose.services.yml for containers) and restart it.',
+    'not-loaded': 'Reranker configuration mismatch: the embedding service has reranking enabled but '
+        + 'no cross-encoder loaded — check RERANK_MODEL_NAME there and its model cache/download. '
+        + 'Search is serving UNRERANKED first-stage order until it loads.'
+};
+
 export default class RerankService {
     constructor({ embeddingService, redis, rerankConfig, logger }) {
         this.embeddingService = embeddingService;
@@ -30,10 +47,49 @@ export default class RerankService {
         this.logger = logger;
         this.fusionAlpha = this.rerankConfig.fusionAlpha ?? 0.7;
         this.literalTitleBonus = this.rerankConfig.literalTitleBonus ?? 0.3;
+        this.modelVersion = this.rerankConfig.modelVersion || 'unset-model';
+        this.mismatchLogIntervalMs = this.rerankConfig.mismatchLogIntervalMs ?? 300000;
+        this._mismatchLoggedAt = 0;
+        this._reportModelIdentityGaps();
+    }
+
+    _reportModelIdentityGaps() {
+        const { modelName, declaredModelVersion } = this.rerankConfig;
+
+        if (!modelName) {
+            this.logger.warn(
+                { modelVersion: this.modelVersion },
+                'RERANK_MODEL_NAME is unset on the API, so cached rerank scores are namespaced by a '
+                + 'placeholder: two environments running different cross-encoders would share cache '
+                + 'entries. Set it to the same model the embedding service loads.'
+            );
+        }
+
+        if (declaredModelVersion && declaredModelVersion !== this.modelVersion) {
+            this.logger.warn(
+                { declaredModelVersion, modelVersion: this.modelVersion },
+                'RERANK_MODEL_VERSION no longer sets the rerank cache namespace (it is derived from '
+                + 'RERANK_MODEL_NAME) and the value left in the environment disagrees with the model '
+                + 'in use. Remove it, or bump RERANK_MODEL_REVISION if the weights changed.'
+            );
+        }
+    }
+
+    _reportMismatch(kind, message) {
+        const now = Date.now();
+        if (now - this._mismatchLoggedAt < this.mismatchLogIntervalMs) {
+            this.logger.warn(
+                { err: message, mismatch: kind },
+                'Reranker still unavailable for a configuration reason already reported, keeping first-stage order'
+            );
+            return;
+        }
+        this._mismatchLoggedAt = now;
+        this.logger.error({ err: message, mismatch: kind }, MISMATCH_MESSAGES[kind]);
     }
 
     async rerank(query, results) {
-        const modelVersion = this.rerankConfig.modelVersion || 'bge-reranker-base-v1';
+        const modelVersion = this.modelVersion;
         const queryHash = crypto.createHash('sha256').update(query).digest('hex').slice(0, 12);
         const ttl = this.rerankConfig.scoreCacheTTL || 3600;
 
@@ -82,8 +138,17 @@ export default class RerankService {
                     this.logger.warn({ err }, 'Redis rerank score cache write failed')
                 );
             } catch (err) {
-                this.logger.warn({ err: err.message }, 'Reranker failed, keeping first-stage order');
-                return { results: results.map(({ _firstStageScore, ...rest }) => rest), reranked: false };
+                const mismatch = classifyRerankFailure(err.message);
+                if (mismatch) {
+                    this._reportMismatch(mismatch, err.message);
+                } else {
+                    this.logger.warn({ err: err.message }, 'Reranker failed, keeping first-stage order');
+                }
+                return {
+                    results: results.map(({ _firstStageScore, ...rest }) => rest),
+                    reranked: false,
+                    reason: mismatch || 'error'
+                };
             }
         }
 
@@ -111,4 +176,17 @@ export default class RerankService {
             reranked: true
         };
     }
+}
+
+/**
+ * ranked_window: actual rerank size, not intent.
+ * succeeded / deep page → min(total, K); this page should have reranked and didn't → 0;
+ * rerank not in play → total.
+ */
+export function resolveRankedWindow({ didRerank, rerankApplicable, rerankEligible, total, candidateK }) {
+    const window = Math.min(total, candidateK);
+    if (didRerank) return window;
+    if (rerankApplicable && !rerankEligible) return window;
+    if (rerankApplicable) return 0;
+    return total;
 }

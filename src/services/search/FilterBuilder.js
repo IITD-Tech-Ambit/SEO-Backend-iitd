@@ -38,12 +38,12 @@ export default class FilterBuilder {
             });
         }
 
+        // Exact term on the same keyword sub-field the `fields` facet buckets on, so clicking a
+        // bucket selects exactly that bucket. An analyzed (let alone fuzzy) match here matched any
+        // shared token instead: "Computer Science" also returned Environmental/Social/Materials
+        // Science, and the typo "Computer Sciencx" returned the identical set.
         if (filters?.field_associated) {
-            mustFilters.push({
-                match: {
-                    field_associated: { query: filters.field_associated, fuzziness: 'AUTO' }
-                }
-            });
+            mustFilters.push({ term: { 'field_associated.keyword': filters.field_associated } });
         }
 
         if (filters?.document_type) {
@@ -58,8 +58,60 @@ export default class FilterBuilder {
             mustFilters.push({ terms: { 'subject_area.keyword': filters.subject_area } });
         }
 
-        // Author filter: union of nested authors.author_id AND top-level kerberos
-        // when _authorKerberos has been pre-resolved from Faculty.email.
+        mustFilters.push(...this.buildScopeFilters(filters));
+
+        if (filters?.first_author_only === true) {
+            mustFilters.push(this._firstAuthorClause(filters));
+        }
+
+        if (filters?.interdisciplinary === true) {
+            mustFilters.push({ range: { subject_area_count: { gte: 3 } } });
+        }
+
+        return mustFilters;
+    }
+
+    /**
+     * "First author" has to be asked of ONE author, inside a single nested query.
+     *
+     * Two sibling `nested` queries on the same path are evaluated independently, so pairing an
+     * author filter with a bare position clause asks "does some author have this id, and does
+     * some author sit at position 1" — satisfied whenever the person appears anywhere and
+     * somebody else leads. Measured on one author: 93 papers returned where they led only 11.
+     *
+     * Without an author to correlate against there is nothing to pin the position to, so the
+     * clause can only assert that a first author exists (true of nearly every document).
+     */
+    _firstAuthorClause(filters) {
+        const isFirst = { term: { 'authors.author_position': 1 } };
+        if (!filters?.author_id) {
+            return { nested: { path: 'authors', query: isFirst } };
+        }
+        return {
+            nested: {
+                path: 'authors',
+                query: { bool: { must: [{ term: { 'authors.author_id': filters.author_id } }, isFirst] } }
+            }
+        };
+    }
+
+    /**
+     * The identity-scoping subset of `buildFilters`: which person's corpus is being searched,
+     * as opposed to the facet filters a user toggles on top of a result set.
+     *
+     * Only these belong inside a kNN clause's own `filter`. Pre-filtering the ANN search is what
+     * lets a scoped candidate earn kNN recall even when its matches don't rank in the global
+     * top-k — but it also makes the recall pool depend on the filter, so pre-filtering a *facet*
+     * made "top k nearest Book Chapters" a different, larger set than the Book Chapters inside
+     * the unfiltered top k. That is why a facet advertising 56 papers returned 307 when clicked.
+     * Facet filters are applied as ordinary post-filters instead, which can only narrow, so
+     * every facet count equals the total you get after selecting it.
+     */
+    buildScopeFilters(filters) {
+        const scopeFilters = [];
+
+        // Union of nested authors.author_id and top-level kerberos when _authorKerberos has
+        // been pre-resolved from Faculty.email.
         if (filters?.author_id) {
             const authorNestedClause = {
                 nested: {
@@ -68,32 +120,22 @@ export default class FilterBuilder {
                 }
             };
             if (filters._authorKerberos) {
-                mustFilters.push({
+                scopeFilters.push({
                     bool: {
                         should: [authorNestedClause, { term: { kerberos: filters._authorKerberos } }],
                         minimum_should_match: 1
                     }
                 });
             } else {
-                mustFilters.push(authorNestedClause);
+                scopeFilters.push(authorNestedClause);
             }
         }
 
-        if (filters?.first_author_only === true) {
-            mustFilters.push({
-                nested: { path: 'authors', query: { term: { 'authors.author_position': 1 } } }
-            });
-        }
-
-        if (filters?.interdisciplinary === true) {
-            mustFilters.push({ range: { subject_area_count: { gte: 3 } } });
-        }
-
         if (filters?.kerberos) {
-            mustFilters.push({ term: { kerberos: filters.kerberos } });
+            scopeFilters.push({ term: { kerberos: filters.kerberos } });
         }
 
-        return mustFilters;
+        return scopeFilters;
     }
 
     /**

@@ -1,3 +1,5 @@
+import { parseIpFacultyForQueryFilters } from '../schemas/ipSearch.js';
+
 export async function search(request, reply, ipSearchService) {
     const startTime = Date.now();
     const { query, filters, sort, page, per_page, search_in, mode, refine_within, refine_chain, rerank } = request.body;
@@ -137,14 +139,11 @@ export async function getAllFacultyForQuery(request, reply, ipSearchService) {
             ? searchInRaw.split(',').map((s) => s.trim()).filter(Boolean)
             : undefined;
 
-    let parsedFilters = null;
-    if (typeof filtersRaw === 'string' && filtersRaw.trim()) {
-        try {
-            parsedFilters = JSON.parse(filtersRaw);
-        } catch (err) {
-            request.log.warn({ err: err?.message, filtersRaw }, 'IP faculty-for-query: ignoring malformed filters param');
-        }
-    }
+    // Keys have to be checked here, not in the schema: `filters` arrives JSON-encoded in the
+    // query string, and no JSON Schema keyword can see inside a string. An unsupported key used
+    // to reach FilterBuilder, get ignored, and return 200 describing the unfiltered corpus,
+    // while the same key on POST /ip/search returned 400 — the two endpoints silently disagreed.
+    const parsedFilters = parseIpFacultyForQueryFilters(filtersRaw);
 
     let parsedRefineChain = null;
     if (typeof refineChainRaw === 'string' && refineChainRaw.trim()) {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import RerankService from '../../src/services/search/RerankService.js';
+import RerankService, { resolveRankedWindow } from '../../src/services/search/RerankService.js';
 
 const noopLogger = { warn() {}, info() {} };
 
@@ -45,4 +45,28 @@ test('literal title match is pinned above an equal-rerank distractor', async () 
     ];
     const { results: out } = await svc.rerank('neural networks', results);
     assert.equal(out[0].mongo_id, 'b', 'exact title match must be pinned to the top');
+});
+
+test('ranked_window is 0 when this page was supposed to be reranked and was not', () => {
+    assert.equal(resolveRankedWindow({
+        didRerank: false, rerankApplicable: true, rerankEligible: true, total: 338, candidateK: 50
+    }), 0);
+});
+
+test('ranked_window is K when rerank succeeded', () => {
+    assert.equal(resolveRankedWindow({
+        didRerank: true, rerankApplicable: true, rerankEligible: true, total: 338, candidateK: 50
+    }), 50);
+});
+
+test('deep pages still report the query-level window even though this page was not reranked', () => {
+    assert.equal(resolveRankedWindow({
+        didRerank: false, rerankApplicable: true, rerankEligible: false, total: 338, candidateK: 50
+    }), 50);
+});
+
+test('sorts that never rerank keep ranked_window = total', () => {
+    assert.equal(resolveRankedWindow({
+        didRerank: false, rerankApplicable: false, rerankEligible: false, total: 338, candidateK: 50
+    }), 338);
 });

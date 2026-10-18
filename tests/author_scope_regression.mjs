@@ -4,7 +4,7 @@
  *
  * Reproduces the reported bugs and pins correct behaviour:
  *   1. `query="lund"` with `search_in=['author']` must NOT fall back to the
- *      clicked author's entire lifetime corpus (was 350 — must narrow).
+ *      clicked author's entire lifetime corpus (must narrow to the co-authored slice).
  *   2. Nonsense queries (no author name match, no faculty match) must return
  *      zero instead of match_all on the author corpus.
  *   3. Clicking yourself after searching your own name is allowed to return
@@ -13,14 +13,14 @@
  *   5. Refine-within still narrows correctly.
  *
  * Run with:   node tests/author_scope_regression.mjs
- *   env BASE_URL=http://127.0.0.1:3000   (default)
+ *   env BASE_URL=http://127.0.0.1:3001   (default)
  *   env AUTHOR_ID=60800                  (Prof. Basu expert_id, default)
  */
 
 import assert from 'node:assert/strict';
 import Redis from 'ioredis';
 
-const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3001';
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const AUTHOR_ID = process.env.AUTHOR_ID || '60800'; // Basu expert_id
 
@@ -160,10 +160,18 @@ test('BUG FIX: author-scope basic + search_in=["author"] + "lund" narrows (not f
         search_in: ['author'],
     });
     assert.equal(status, 200);
-    assert.equal(body.author.total_papers, 350, 'sanity: Basu has 350 indexed papers');
+    // The corpus grows with every crawl, so the sanity check establishes only what the
+    // narrowing claim depends on: this author has a large lifetime corpus, making a two-paper
+    // result a genuine narrowing rather than an artefact of a thin index.
     assert.ok(
-        body.pagination.total < body.author.total_papers,
-        `expected narrowing, got ${body.pagination.total}/${body.author.total_papers}`,
+        body.author.total_papers >= 300,
+        `sanity: expected a large indexed corpus for author ${AUTHOR_ID}, got ${body.author.total_papers}`,
+    );
+    // The bug returned the whole lifetime corpus, and `< total_papers` would still accept
+    // total_papers - 1; a co-author slice is a small fraction of it.
+    assert.ok(
+        body.pagination.total <= body.author.total_papers * 0.1,
+        `expected narrowing to a co-author slice, got ${body.pagination.total}/${body.author.total_papers}`,
     );
     assert.ok(body.pagination.total >= 1, 'at least one co-authored-with-Lund paper expected');
 });

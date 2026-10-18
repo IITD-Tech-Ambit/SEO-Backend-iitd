@@ -47,3 +47,37 @@ export function buildSearchConfig(config) {
         }
     };
 }
+
+const ENGLISH_STOPWORDS = new Set([
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it',
+    'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these',
+    'they', 'this', 'to', 'was', 'will', 'with'
+]);
+
+export function contentTerms(query) {
+    const terms = String(query ?? '').trim().split(/\s+/).filter((t) => t.length > 0);
+    const content = terms.filter((t) => !ENGLISH_STOPWORDS.has(t.toLowerCase()));
+    return content.length > 0 ? content : terms;
+}
+
+export function admissionMinRequired(termCount) {
+    const n = Number(termCount) || 0;
+    if (n <= 0) return 0;
+    if (n <= 3) return n;
+    return Math.max(3, Math.ceil(n * 0.75));
+}
+
+/**
+ * Fuzziness for the typo probe and the fuzzy fallback it routes to.
+ *
+ * AUTO rather than a flat edit distance of 2: at 2 edits a 5-character token like "dhruv" is
+ * within reach of a large slice of the vocabulary, which turned the fallback into a broadening
+ * step. AUTO scales the budget with term length (1 edit up to 5 chars, 2 beyond).
+ *
+ * prefix_length pins the first character. AUTO still grants a 3-character token a full edit —
+ * a third of the token — which is enough for nonsense like "jjj kkk lll mmm" to reach real
+ * vocabulary and come back with a paper. Real typos overwhelmingly preserve the first letter
+ * (quamtum/oncolgy/machien/polimer all do), so requiring it costs recall nothing here and also
+ * bounds the term expansion OpenSearch has to enumerate.
+ */
+export const TYPO_FUZZ = Object.freeze({ fuzziness: 'AUTO', prefix_length: 1 });

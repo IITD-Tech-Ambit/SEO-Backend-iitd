@@ -24,7 +24,7 @@
  * Run:
  *   node tests/explore_exhaustive.mjs
  * Env:
- *   BASE_URL          default http://127.0.0.1:3000
+ *   BASE_URL          default http://127.0.0.1:3001
  *   REDIS_URL         default redis://localhost:6379
  *   AUTHOR_ID         default 60800 (Prof. Suddhasatwa Basu expert_id, accepted by /author-scope)
  *   AUTHOR_SCOPUS_ID  default 56301902700 (Prof. Basu's Scopus id — matches nested authors.author_id)
@@ -33,7 +33,7 @@
 import assert from 'node:assert/strict';
 import Redis from 'ioredis';
 
-const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3000';
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:3001';
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const AUTHOR_ID = process.env.AUTHOR_ID || '60800';
 const AUTHOR_SCOPUS_ID = process.env.AUTHOR_SCOPUS_ID || '56301902700';
@@ -179,15 +179,18 @@ test('B', 'POST /search with page < 1 → 400', async () => {
     assert.equal(status, 400);
 });
 
-test('B', 'POST /search with unknown filter key is tolerated (silently ignored)', async () => {
-    // Fastify's validator does not enforce nested additionalProperties here; the
-    // service should accept the request and behave as if the stray key wasn't sent.
+test('B', 'POST /search with unknown filter key → 400', async () => {
+    // A stray key used to be stripped and answered with an unfiltered 200, so a caller who
+    // typo'd a filter got a plausible-looking result set that ignored their filter entirely.
     const { status, body } = await api('/api/v1/search', {
         query: 'basu',
         filters: { not_a_real_filter: 'x' },
     });
-    assert.equal(status, 200);
-    assert.ok(body.pagination, 'still returns a valid search response');
+    assert.equal(status, 400);
+    assert.ok(
+        JSON.stringify(body.details || []).includes('not_a_real_filter'),
+        `the error should name the offending key, got: ${JSON.stringify(body)}`
+    );
 });
 
 test('B', 'POST /search with year out of range → 400', async () => {
@@ -390,25 +393,16 @@ test('F', 'filter: author_id (Scopus) scopes to that author\'s papers only', asy
     }
 });
 
-test('F', 'KNOWN BUG: first_author_only + author_id does NOT actually require anchor at pos 1', async () => {
-    // The current implementation of `first_author_only` pushes a separate
-    // nested clause `{ authors.author_position: 1 }`, i.e. "some author in the
-    // paper is at position 1". It does not bind that constraint to the
-    // `author_id` filter, so a paper where Basu is position 3 still passes as
-    // long as *someone* is at position 1 (trivially true for almost every paper).
-    //
-    // This test pins the current broken behaviour: at least one returned paper
-    // must have the anchor NOT at position 1. Fix = combine both predicates in
-    // a single nested query:
-    //   { nested: { path: 'authors', query: { bool: { must: [
-    //       { term: { 'authors.author_id': AID } },
-    //       { term: { 'authors.author_position': 1 } },
-    //   ] } } } }
+test('F', 'first_author_only + author_id requires the anchor itself to be at pos 1', async () => {
+    // `first_author_only` used to push an independent nested clause
+    // `{ authors.author_position: 1 }`, i.e. "some author in the paper is at position 1",
+    // without binding it to `author_id` — trivially true for almost every paper, so the
+    // filter was a no-op. Both predicates now live in one nested query, so the position
+    // constraint applies to the anchor's own sub-document.
     const { body } = await api('/api/v1/search', {
         query: 'energy', page: 1, per_page: 10, mode: 'basic',
         filters: { author_id: AUTHOR_SCOPUS_ID, first_author_only: true },
     });
-    assert.ok(body.pagination.total > 0, 'the filter should not collapse the result set');
     const badPapers = body.results.filter((r) => {
         const positions = (r.authors || [])
             .filter((a) => String(a.author_id) === AUTHOR_SCOPUS_ID)
@@ -416,8 +410,23 @@ test('F', 'KNOWN BUG: first_author_only + author_id does NOT actually require an
             .filter((p) => !Number.isNaN(p));
         return positions.length > 0 && !positions.includes(1);
     });
-    assert.ok(badPapers.length > 0,
-        'pinned bug — expected some paper where anchor is not first author. If this fails, the bug has been fixed; update this test.');
+    assert.equal(badPapers.length, 0,
+        `every returned paper must have the anchor at position 1; got ${badPapers.length} where it is not`);
+});
+
+test('F', 'first_author_only actually narrows the result set', async () => {
+    // Guards the other direction: a correlated filter that silently matched nothing would
+    // also pass the assertion above.
+    const base = { query: 'energy', page: 1, per_page: 10, mode: 'basic' };
+    const { body: unfiltered } = await api('/api/v1/search', {
+        ...base, filters: { author_id: AUTHOR_SCOPUS_ID },
+    });
+    const { body: filtered } = await api('/api/v1/search', {
+        ...base, filters: { author_id: AUTHOR_SCOPUS_ID, first_author_only: true },
+    });
+    assert.ok(filtered.pagination.total > 0, 'the filter should not collapse the result set');
+    assert.ok(filtered.pagination.total < unfiltered.pagination.total,
+        `first_author_only should be a strict narrowing: ${filtered.pagination.total} vs ${unfiltered.pagination.total}`);
 });
 
 test('F', 'filter: interdisciplinary=true limits to papers with 3+ subject areas', async () => {
@@ -454,16 +463,16 @@ for (const [s, mode] of SORT_MATRIX) {
     });
 }
 
-test('G', 'KNOWN BUG: sort=normalized + mode=advanced → 502 (painless cosineSimilarity field arg)', async () => {
-    // _buildNormalizedHybridQuery passes the field name as a string literal:
-    //   cosineSimilarity(params.queryVector, 'embedding')
-    // OpenSearch/KNN expects `doc['embedding']` instead. This test pins the
-    // current broken behaviour so we notice when the underlying code is fixed.
+test('G', 'sort=normalized + mode=advanced returns results', async () => {
+    // This used to 502: the painless script passed the field name as a string literal
+    // (`cosineSimilarity(params.queryVector, 'embedding')`) where OpenSearch expects
+    // `doc['embedding']`. The normalized path no longer goes through that script.
     const { status, body } = await api('/api/v1/search', {
         query: 'quantum', page: 1, per_page: 5, mode: 'advanced', sort: 'normalized',
     });
-    assert.equal(status, 502, `expected pinned bug status 502, got ${status}`);
-    assert.equal(body?.error, 'Bad Gateway');
+    assert.equal(status, 200, `expected 200, got ${status}`);
+    assert.ok(body.pagination.total > 0, 'quantum must have papers under normalized sort');
+    for (const r of body.results) assertResultShape(r);
 });
 
 test('G', 'sort=date returns descending publication_year', async () => {

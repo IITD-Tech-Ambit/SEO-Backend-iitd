@@ -1,4 +1,21 @@
-export const ipSearchRequestSchema = {
+import { createEncodedFiltersParser } from './search.js';
+
+/** Reject unknown filter keys. Fastify strips extras under additionalProperties:false. */
+const closedFilters = (properties) => ({
+    type: 'object',
+    properties,
+    propertyNames: { enum: Object.keys(properties) },
+    additionalProperties: false
+});
+
+/** Reject unknown top-level request fields. */
+const closedRequest = (schema) => ({
+    ...schema,
+    propertyNames: { enum: Object.keys(schema.properties) },
+    additionalProperties: false
+});
+
+export const ipSearchRequestSchema = closedRequest({
     type: 'object',
     required: ['query'],
     properties: {
@@ -8,56 +25,52 @@ export const ipSearchRequestSchema = {
             maxLength: 500,
             description: 'Search query string. Empty string with filters set runs a filter-only browse (e.g. "browse by department") with no text-relevance gate.'
         },
-        filters: {
-            type: 'object',
-            properties: {
-                year_from: {
-                    type: 'integer',
-                    minimum: 1900,
-                    maximum: 2100
-                },
-                year_to: {
-                    type: 'integer',
-                    minimum: 1900,
-                    maximum: 2100
-                },
-                type_of_ip: {
-                    type: 'string',
-                    description: 'IP type (e.g. Patent, Copyright, Design)'
-                },
-                type_of_ip_list: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: 'Multiple IP types'
-                },
-                field_of_invention: {
-                    type: 'string',
-                    description: 'Exact field-of-invention filter (keyword)'
-                },
-                classification: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: 'Classification codes (keyword array)'
-                },
-                department: {
-                    type: 'string',
-                    description: 'Exact department name filter (department_name.keyword)'
-                },
-                country: {
-                    type: 'string',
-                    description: 'Filing jurisdiction (e.g. IN)'
-                },
-                kerberos: {
-                    type: 'string',
-                    description: 'Filter by faculty inventor kerberos id'
-                },
-                primary_inventor_only: {
-                    type: 'boolean',
-                    description: 'Only filings where the match is a primary inventor (inventor_position 0)'
-                }
+        filters: closedFilters({
+            year_from: {
+                type: 'integer',
+                minimum: 1900,
+                maximum: 2100
             },
-            additionalProperties: false
-        },
+            year_to: {
+                type: 'integer',
+                minimum: 1900,
+                maximum: 2100
+            },
+            type_of_ip: {
+                type: 'string',
+                description: 'IP type (e.g. Patent, Copyright, Design)'
+            },
+            type_of_ip_list: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Multiple IP types'
+            },
+            field_of_invention: {
+                type: 'string',
+                description: 'Exact field-of-invention filter (keyword)'
+            },
+            classification: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Classification codes (keyword array)'
+            },
+            department: {
+                type: 'string',
+                description: 'Exact department name filter (department_name.keyword)'
+            },
+            country: {
+                type: 'string',
+                description: 'Filing jurisdiction (e.g. IN)'
+            },
+            kerberos: {
+                type: 'string',
+                description: 'Filter by faculty inventor kerberos id'
+            },
+            primary_inventor_only: {
+                type: 'boolean',
+                description: 'Only filings where the match is a primary inventor (inventor_position 0)'
+            }
+        }),
         sort: {
             type: 'string',
             enum: ['relevance', 'date', 'normalized'],
@@ -106,9 +119,8 @@ export const ipSearchRequestSchema = {
             type: 'boolean',
             description: 'Advanced mode only. When false, returns the first-stage hybrid ranking without cross-encoder reranking. Defaults to the server reranker setting.'
         }
-    },
-    additionalProperties: false
-};
+    }
+});
 
 export const ipSearchResponseSchema = {
     type: 'object',
@@ -193,7 +205,7 @@ export const ipSearchResponseSchema = {
                 page: { type: 'integer' },
                 per_page: { type: 'integer' },
                 total: { type: 'integer' },
-                ranked_window: { type: 'integer', description: 'Number of top candidates cross-encoder reranked (transparency only).' },
+                ranked_window: { type: 'integer', description: 'Number of top candidates the cross-encoder actually reranked (0 if this page was supposed to be reranked and the call failed or was skipped).' },
                 total_pages: { type: 'integer', description: 'Derived from the true match count (total), clamped to the deepest page servable within OpenSearch max_result_window.' }
             }
         },
@@ -212,6 +224,10 @@ export const ipSearchResponseSchema = {
         fuzzy_fallback: {
             type: 'boolean',
             description: 'True if results came from fuzzy fallback search'
+        },
+        reranked: {
+            type: 'boolean',
+            description: 'True only when this page\'s results were reordered by the cross-encoder. False when rerank failed, was disabled, was declined (`rerank: false`), or this page is past the reranked window.'
         },
         mode: {
             type: 'string',
@@ -246,11 +262,12 @@ export const errorResponseSchema = {
     properties: {
         error: { type: 'string' },
         message: { type: 'string' },
+        details: { type: 'array', items: { type: 'object', additionalProperties: true } },
         statusCode: { type: 'integer' }
     }
 };
 
-export const inventorScopedSearchRequestSchema = {
+export const inventorScopedSearchRequestSchema = closedRequest({
     type: 'object',
     required: ['query', 'inventor_id'],
     properties: {
@@ -301,27 +318,22 @@ export const inventorScopedSearchRequestSchema = {
             },
             description: 'Same as POST /ip/search. When set, constrains BM25 to those fields.'
         },
-        filters: {
-            // Same facet filters as POST /ip/search (minus kerberos, which this endpoint sets
-            // itself from inventor_id) so the drill-down patent count matches the People
-            // sidebar per-inventor count for the same query+filters.
-            type: 'object',
-            properties: {
-                year_from: { type: 'integer', minimum: 1900, maximum: 2100 },
-                year_to: { type: 'integer', minimum: 1900, maximum: 2100 },
-                type_of_ip: { type: 'string' },
-                type_of_ip_list: { type: 'array', items: { type: 'string' } },
-                field_of_invention: { type: 'string' },
-                classification: { type: 'array', items: { type: 'string' } },
-                department: { type: 'string' },
-                country: { type: 'string' },
-                primary_inventor_only: { type: 'boolean' }
-            },
-            additionalProperties: false
-        }
-    },
-    additionalProperties: false
-};
+        // Same facet filters as POST /ip/search (minus kerberos, which this endpoint sets
+        // itself from inventor_id) so the drill-down patent count matches the People
+        // sidebar per-inventor count for the same query+filters.
+        filters: closedFilters({
+            year_from: { type: 'integer', minimum: 1900, maximum: 2100 },
+            year_to: { type: 'integer', minimum: 1900, maximum: 2100 },
+            type_of_ip: { type: 'string' },
+            type_of_ip_list: { type: 'array', items: { type: 'string' } },
+            field_of_invention: { type: 'string' },
+            classification: { type: 'array', items: { type: 'string' } },
+            department: { type: 'string' },
+            country: { type: 'string' },
+            primary_inventor_only: { type: 'boolean' }
+        })
+    }
+});
 
 export const inventorScopedSearchResponseSchema = {
     type: 'object',
@@ -383,7 +395,7 @@ export const inventorScopedSearchResponseSchema = {
     }
 };
 
-export const ipFacultyForQueryRequestSchema = {
+export const ipFacultyForQueryRequestSchema = closedRequest({
     type: 'object',
     required: ['query'],
     properties: {
@@ -412,11 +424,12 @@ export const ipFacultyForQueryRequestSchema = {
         filters: {
             type: 'string',
             maxLength: 2000,
-            description: 'JSON-encoded facet filters identical to POST /ip/search filters, so total_matching_ip matches POST /ip/search pagination.total'
+            description: 'JSON-encoded facet filters identical to POST /ip/search filters, so total_matching_ip matches POST /ip/search pagination.total. Keys are validated against the POST /ip/search allow-list after parsing (see parseIpFacultyForQueryFilters); an unsupported key is a 400, not a silent drop.'
         }
-    },
-    additionalProperties: false
-};
+    }
+});
+
+export const parseIpFacultyForQueryFilters = createEncodedFiltersParser(ipSearchRequestSchema.properties.filters);
 
 export const ipFacultyForQueryResponseSchema = {
     type: 'object',

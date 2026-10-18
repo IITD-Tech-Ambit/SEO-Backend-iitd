@@ -45,6 +45,60 @@ test('author search_in maps to empty field list (routed via nested authors)', ()
     assert.deepEqual(fb.getSearchFields(['author']), []);
 });
 
+test('field_associated selects exactly the facet bucket it was clicked from', () => {
+    // The `fields` facet buckets on field_associated.keyword, so the filter has to match that
+    // same keyword exactly. An analyzed/fuzzy match let "Computer Science" also pull in
+    // Environmental Science, Social Sciences and Materials Science via the shared "Science" token.
+    const clauses = fb.buildFilters({ field_associated: 'Computer Science' });
+    const aggField = fb.getAggregations().fields.terms.field;
+    const clause = clauses.find(c => c.term?.[aggField]);
+    assert.ok(clause, `expected an exact term filter on ${aggField}`);
+    assert.equal(clause.term[aggField], 'Computer Science');
+    assert.ok(!JSON.stringify(clauses).includes('fuzziness'), 'field filter must not be fuzzy');
+});
+
+test('buildScopeFilters keeps identity scoping and drops facet filters', () => {
+    const filters = {
+        author_id: '123',
+        kerberos: 'jdoe',
+        document_type: 'Article',
+        field_associated: 'Computer Science',
+        year_from: 2010,
+        subject_area: ['Physics'],
+        interdisciplinary: true
+    };
+    const scope = fb.buildScopeFilters(filters);
+    const scopeJson = JSON.stringify(scope);
+    assert.ok(scopeJson.includes('authors.author_id'), 'author scoping belongs in the kNN pre-filter');
+    assert.ok(scopeJson.includes('kerberos'), 'kerberos scoping belongs in the kNN pre-filter');
+    for (const facetSignal of ['document_type', 'field_associated', 'publication_year', 'subject_area', 'subject_area_count']) {
+        assert.ok(!scopeJson.includes(facetSignal), `${facetSignal} must not pre-filter the ANN search`);
+    }
+    // Scope filters are still enforced overall — they are a subset of the full filter list.
+    assert.ok(JSON.stringify(fb.buildFilters(filters)).includes('authors.author_id'));
+});
+
+test('first_author_only is correlated with the author being filtered on', () => {
+    // Sibling nested queries match independently, so an uncorrelated position clause let through
+    // every paper where the author appears anywhere and somebody else led it.
+    const clauses = fb.buildFilters({ author_id: '57206367009', first_author_only: true });
+    const correlated = clauses.find(c =>
+        c.nested?.path === 'authors' && c.nested.query?.bool?.must?.length === 2);
+    assert.ok(correlated, 'expected one nested query asserting both id and position');
+    const terms = correlated.nested.query.bool.must;
+    assert.ok(terms.some(t => t.term?.['authors.author_id'] === '57206367009'));
+    assert.ok(terms.some(t => t.term?.['authors.author_position'] === 1));
+
+    // No bare position-only nested clause should remain alongside it.
+    const bare = clauses.filter(c => c.nested?.query?.term?.['authors.author_position'] === 1);
+    assert.equal(bare.length, 0, 'uncorrelated position clause must not be emitted too');
+});
+
+test('first_author_only without an author still asserts a first author exists', () => {
+    const clauses = fb.buildFilters({ first_author_only: true });
+    assert.ok(clauses.some(c => c.nested?.query?.term?.['authors.author_position'] === 1));
+});
+
 test('getAggregations exposes the expected facets', () => {
     const aggs = fb.getAggregations();
     for (const key of ['years', 'year_ranges', 'document_types', 'fields', 'subject_areas']) {

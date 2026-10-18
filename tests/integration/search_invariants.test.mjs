@@ -12,14 +12,16 @@ import { readFileSync } from 'fs';
  *  - The People sidebar's total_matching_papers equals the advanced papers-list total.
  *  - Author-scoped basic_total <= author-scoped advanced_total.
  *
- * If the API is unreachable every test self-skips (so unit CI is unaffected).
+ * Every case needs the live stack; an unreachable API fails the suite rather than skipping it,
+ * because a skipped invariant reports "fail 0" while verifying nothing.
  * Run with services up: node --test tests/integration/search_invariants.test.mjs
  */
 
-const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3000}/api/v1`;
+const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3001}/api/v1`;
 const ROOT_BASE = API_BASE.replace(/\/api\/v1$/, '');
 
 let serverUp = false;
+let probeError = null;
 
 async function post(path, body) {
     const res = await fetch(`${API_BASE}${path}`, {
@@ -54,14 +56,19 @@ before(async () => {
     try {
         const res = await fetch(`${ROOT_BASE}/health`, { signal: AbortSignal.timeout(3000) });
         serverUp = res.status === 200;
-    } catch {
+        if (!serverUp) probeError = `GET ${ROOT_BASE}/health returned ${res.status}`;
+    } catch (err) {
         serverUp = false;
-    }
-    if (!serverUp) {
-        // eslint-disable-next-line no-console
-        console.warn(`[search_invariants] API not reachable at ${ROOT_BASE} — skipping integration tests.`);
+        probeError = err.message;
     }
 });
+
+// Asserted inside each case rather than thrown from the hook: a failing hook cancels its
+// subtests, and cancelled tests are reported separately from failures, so the run still
+// summarises as "fail 0".
+function requireApi() {
+    assert.ok(serverUp, `API not reachable at ${ROOT_BASE} — ${probeError}`);
+}
 
 const DIVERSE_QUERIES = (() => {
     try {
@@ -89,8 +96,8 @@ const DIVERSE_QUERIES = (() => {
 
 describe('Invariant: basic_total <= advanced_total', () => {
     for (const q of DIVERSE_QUERIES) {
-        it(`"${q}"`, async (t) => {
-            if (!serverUp) return t.skip('API not reachable');
+        it(`"${q}"`, async () => {
+            requireApi();
             const basic = await post('/search', { query: q, mode: 'basic', per_page: 5 });
             const advanced = await post('/search', { query: q, mode: 'advanced', per_page: 5 });
             assert.equal(basic.status, 200);
@@ -105,7 +112,7 @@ describe('Invariant: basic_total <= advanced_total', () => {
 describe('Invariant: whole-phrase matches are prioritized', () => {
     for (const q of ['machine learning', 'solar energy', 'water treatment']) {
         it(`"${q}" — phrase scores are non-increasing over the top results`, async (t) => {
-            if (!serverUp) return t.skip('API not reachable');
+            requireApi();
             const { status, body } = await post('/search', { query: q, mode: 'advanced', per_page: 10 });
             assert.equal(status, 200);
             const results = body.results || [];
@@ -125,8 +132,8 @@ describe('Invariant: search-on-search only narrows', () => {
         { query: 'learning', refine_within: 'machine' },
     ];
     for (const c of cases) {
-        it(`"${c.query}" refined by "${c.refine_within}"`, async (t) => {
-            if (!serverUp) return t.skip('API not reachable');
+        it(`"${c.query}" refined by "${c.refine_within}"`, async () => {
+            requireApi();
             const base = await post('/search', { query: c.query, mode: 'advanced', per_page: 5 });
             const refined = await post('/search', { query: c.query, mode: 'advanced', per_page: 5, refine_within: c.refine_within });
             assert.equal(base.status, 200);
@@ -147,8 +154,8 @@ describe('Invariant: multi-step refine_chain narrows monotonically (count[n] <= 
     ];
     for (const mode of ['basic', 'advanced']) {
         for (const chain of chains) {
-            it(`${mode}: ${chain.join(' -> ')}`, async (t) => {
-                if (!serverUp) return t.skip('API not reachable');
+            it(`${mode}: ${chain.join(' -> ')}`, async () => {
+                requireApi();
                 let prevTotal = Infinity;
                 for (let n = 0; n < chain.length; n++) {
                     const query = chain[n];
@@ -169,8 +176,8 @@ describe('Invariant: multi-step refine_chain narrows monotonically (count[n] <= 
 
 describe('Invariant: legacy refine_within == single-element refine_chain', () => {
     for (const mode of ['basic', 'advanced']) {
-        it(`${mode}: "energy" refined by "solar"`, async (t) => {
-            if (!serverUp) return t.skip('API not reachable');
+        it(`${mode}: "energy" refined by "solar"`, async () => {
+            requireApi();
             const legacy = await post('/search', { query: 'energy', mode, per_page: 5, refine_within: 'solar' });
             const chained = await post('/search', { query: 'energy', mode, per_page: 5, refine_chain: ['solar'] });
             assert.equal(legacy.status, 200);
@@ -185,8 +192,8 @@ describe('Invariant: legacy refine_within == single-element refine_chain', () =>
 
 describe('Invariant: People sidebar total matches the papers list total', () => {
     for (const q of ['machine learning', 'solar energy']) {
-        it(`"${q}"`, async (t) => {
-            if (!serverUp) return t.skip('API not reachable');
+        it(`"${q}"`, async () => {
+            requireApi();
             const papers = await post('/search', { query: q, mode: 'advanced', per_page: 5 });
             const people = await get('/search/faculty-for-query', { query: q, mode: 'advanced' });
             assert.equal(papers.status, 200);

@@ -1,3 +1,5 @@
+import { parseFacultyForQueryFilters } from '../schemas/search.js';
+
 export async function search(request, reply, searchService) {
     const startTime = Date.now();
     const { query, filters, sort, page, per_page, search_in, mode, refine_within, refine_chain, rerank } = request.body;
@@ -160,14 +162,14 @@ export async function getAllFacultyForQuery(request, reply, searchService) {
 
     // Filters arrive as a JSON-encoded object so the People sidebar applies the IDENTICAL
     // facet filters as POST /search and the two paper totals stay consistent.
-    let parsedFilters = null;
-    if (typeof filtersRaw === 'string' && filtersRaw.trim()) {
-        try {
-            parsedFilters = JSON.parse(filtersRaw);
-        } catch (err) {
-            request.log.warn({ err: err?.message, filtersRaw }, 'Faculty-for-query: ignoring malformed filters param');
-        }
-    }
+    //
+    // Which is exactly why the keys have to be validated here. JSON Schema cannot see inside the
+    // encoded string, so `facultyForQueryRequestSchema` can only check that it IS a string:
+    // an unsupported key used to reach FilterBuilder, get ignored, and return 200 describing the
+    // unfiltered corpus — while the same key on POST /search returned 400. The two endpoints
+    // silently disagreed. This throws a Fastify-shaped validation error (400 + `details`) built
+    // from POST /search's own allow-list, so they now agree on rejection too.
+    const parsedFilters = parseFacultyForQueryFilters(filtersRaw);
 
     // refine_chain arrives JSON-encoded (same pattern as filters) so the People sidebar narrows
     // through the IDENTICAL chain as POST /search.

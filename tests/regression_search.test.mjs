@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
  * Run: node --test tests/regression_search.test.mjs
  */
 
-const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3000}/api/v1`;
+const API_BASE = process.env.SEARCH_API_URL || `http://localhost:${process.env.PORT || 3001}/api/v1`;
 const ROOT_BASE = API_BASE.replace(/\/api\/v1$/, '');
 
 async function post(path, body) {
