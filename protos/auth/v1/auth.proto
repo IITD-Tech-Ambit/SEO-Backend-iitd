@@ -25,6 +25,8 @@ message User {
   // IITD category (student / faculty / staff ...).
   string category = 6;
   string uniqueiitdid = 7;
+  // Computed by auth-service; never stored in the JWT.
+  string role = 8;
 }
 
 message VerifyTokenRequest {
