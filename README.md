@@ -247,6 +247,10 @@ Not on this gRPC surface: `POST /ip/search/inventor-scope`, `GET /ip/faculty-for
 
 ---
 
+## Local development
+
+Use the OpenSearch and Redis from this repo's compose file, and a MongoDB you can reset. `MONGODB_URI` and `OPENSEARCH_NODE` on a developer machine must not be the Research Ambit VM. Host ports `27017` and `9200` there are the production stores. This API reads faculty, papers, and IP from whichever database you configure.
+
 ## Quick start
 
 ### Prerequisites
